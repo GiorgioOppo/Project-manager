@@ -9,10 +9,17 @@ binlog_expire_logs_seconds=604800
 replica_preserve_commit_order=ON
 transaction_isolation=READ-COMMITTED
 log_bin_trust_function_creators=ON
+require_secure_transport=ON
+tls_version=TLSv1.2,TLSv1.3
+ssl_ca=/etc/mysql/tls/ca.crt
+ssl_cert=/etc/mysql/tls/server.crt
+ssl_key=/etc/mysql/tls/server.key
+mysqlx=0
 
 loose-group_replication_group_name=8de71c6b-d3bc-4287-9a2a-edf8436340b1
 loose-group_replication_communication_stack=XCOM
 loose-group_replication_group_seeds=db:33061,db2:33061,db3:33061
+loose-group_replication_ip_allowlist=172.30.30.21,172.30.30.22,172.30.30.23
 loose-group_replication_single_primary_mode=OFF
 loose-group_replication_enforce_update_everywhere_checks=ON
 loose-group_replication_auto_increment_increment=3
@@ -28,6 +35,8 @@ loose-group_replication_member_expel_timeout=5
 loose-group_replication_autorejoin_tries=3
 
 # Encrypt both consensus traffic and distributed recovery on the private network.
-# Development uses each node's automatically generated server certificates.
-loose-group_replication_ssl_mode=REQUIRED
+# The private CA and per-node certificates are provisioned before startup.
+loose-group_replication_ssl_mode=VERIFY_IDENTITY
 loose-group_replication_recovery_use_ssl=ON
+loose-group_replication_recovery_ssl_ca=/etc/mysql/tls/ca.crt
+loose-group_replication_recovery_ssl_verify_server_cert=ON

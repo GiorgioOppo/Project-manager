@@ -35,16 +35,15 @@ SELECT (
 
 def writer_ready(host):
     password = os.environ.get("CLUSTER_MONITOR_PASSWORD", "")
-    if not password:
+    ca = os.environ.get("CLUSTER_SSL_CA", "")
+    if not password or not ca or not os.path.isfile(ca):
         return False
     child_env = os.environ.copy()
     child_env["MYSQL_PWD"] = password
     command = [
         "mariadb", "--protocol=TCP", "--host=" + host, "--port=3306",
         "--user=" + os.environ.get("CLUSTER_MONITOR_USER", "punto_monitor"),
-        # MySQL's container generates its own internal certificate. Keep the
-        # health-query connection encrypted on the private Docker network.
-        "--ssl", "--skip-ssl-verify-server-cert",
+        "--ssl", "--ssl-verify-server-cert", "--ssl-ca=" + ca,
         "--connect-timeout=2", "--batch", "--skip-column-names", "--raw",
         "--execute=" + QUERY,
     ]
@@ -98,6 +97,9 @@ def cluster_ready():
 def serve():
     if not os.environ.get("CLUSTER_MONITOR_PASSWORD"):
         print("CLUSTER_MONITOR_PASSWORD obbligatoria.", file=sys.stderr)
+        return 1
+    if not os.path.isfile(os.environ.get("CLUSTER_SSL_CA", "")):
+        print("CA del cluster obbligatoria per verificare i nodi.", file=sys.stderr)
         return 1
     servers = []
     threads = []

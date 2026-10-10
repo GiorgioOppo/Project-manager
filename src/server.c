@@ -759,8 +759,10 @@ int main(void) {
     if (public_port_env) {
         errno = 0;
         public_port = strtol(public_port_env, &port_end, 10);
-        if (errno || !*public_port_env || *port_end || public_port < 1024 || public_port > 65535) {
-            fprintf(stderr, "PUBLIC_PORT deve essere un numero tra 1024 e 65535.\n"); return 1;
+        /* The proxy may publish standard HTTP/HTTPS ports while this process
+           keeps listening on an unprivileged internal PORT. */
+        if (errno || !*public_port_env || *port_end || public_port < 1 || public_port > 65535) {
+            fprintf(stderr, "PUBLIC_PORT deve essere un numero tra 1 e 65535.\n"); return 1;
         }
     }
     const char *bind_host = getenv("BIND_HOST");

@@ -3,13 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "127.0.0.1:${PUNTO_HTTP_PORT:-8082}:8080"
     environment:
       PORT: "8080"
-      PUBLIC_PORT: "${PUNTO_HTTP_PORT:-8082}"
+      PUBLIC_PORT: "${NPM_HTTP_PORT:-80}"
       PUBLIC_ORIGINS: "${PUBLIC_ORIGINS:-http://localhost,http://127.0.0.1}"
-      BIND_HOST: "0.0.0.0"
+      BIND_HOST: "172.30.20.10"
       PUBLIC_DIR: /app/public
       TZ: Europe/Rome
       DB_HOST: db-proxy
@@ -17,6 +15,8 @@ services:
       DB_NAME: "${MYSQL_DATABASE:-punto}"
       DB_USER: "${MYSQL_USER:-punto}"
       DB_PASSWORD: "${MYSQL_PASSWORD:?Imposta MYSQL_PASSWORD nel file .env.docker}"
+      DB_TLS_MODE: verify_identity
+      DB_SSL_CA: /etc/punto/tls/ca.crt
       PUNTO_EMAIL: "${PUNTO_EMAIL:?Imposta PUNTO_EMAIL nel file .env.docker}"
       PUNTO_PASSWORD: "${PUNTO_PASSWORD:?Imposta PUNTO_PASSWORD nel file .env.docker}"
     depends_on:
@@ -31,12 +31,22 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    volumes:
+      - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
     networks:
-      - backend
-      - proxy
+      private_app:
+        ipv4_address: 172.30.20.10
+        interface_name: private_app
+      backend_app:
+        ipv4_address: 172.30.30.10
+        interface_name: backend_app
 
   nginx-proxy-manager:
-    image: jc21/nginx-proxy-manager:2.16.0
+    build:
+      context: ./docker/nginx-proxy-manager
     restart: unless-stopped
     ports:
       - "${NPM_HTTP_PORT:-80}:80"
@@ -56,8 +66,22 @@ services:
     depends_on:
       app:
         condition: service_healthy
+    cap_drop:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
     networks:
-      - proxy
+      public:
+        ipv4_address: 172.30.10.2
+        interface_name: public
+        gw_priority: 100
+      private_app:
+        ipv4_address: 172.30.20.2
+        interface_name: private_app
 
   db:
     image: mysql:8.4
@@ -75,6 +99,9 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/cluster.cnf:/etc/mysql/conf.d/cluster.cnf:ro
+      - ./data/network-tls/ca.crt:/etc/mysql/tls/ca.crt:ro
+      - ./data/network-tls/db.crt:/etc/mysql/tls/server.crt:ro
+      - ./data/network-tls/db.key:/etc/mysql/tls/server.key:ro
     healthcheck:
       test:
         - CMD-SHELL
@@ -85,8 +112,15 @@ services:
       retries: 20
     restart: unless-stopped
     stop_grace_period: 30s
+    cap_drop: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
     networks:
-      - backend
+      backend_app:
+        ipv4_address: 172.30.30.21
+        interface_name: backend_app
 
   db2:
     image: mysql:8.4
@@ -104,6 +138,9 @@ services:
     volumes:
       - mysql_data_2:/var/lib/mysql
       - ./docker/mysql/cluster.cnf:/etc/mysql/conf.d/cluster.cnf:ro
+      - ./data/network-tls/ca.crt:/etc/mysql/tls/ca.crt:ro
+      - ./data/network-tls/db2.crt:/etc/mysql/tls/server.crt:ro
+      - ./data/network-tls/db2.key:/etc/mysql/tls/server.key:ro
     healthcheck:
       test: ["CMD-SHELL", 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --user=root --execute="SELECT 1" >/dev/null 2>&1']
       interval: 5s
@@ -112,8 +149,15 @@ services:
       retries: 20
     restart: unless-stopped
     stop_grace_period: 30s
+    cap_drop: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
     networks:
-      - backend
+      backend_app:
+        ipv4_address: 172.30.30.22
+        interface_name: backend_app
 
   db3:
     image: mysql:8.4
@@ -131,6 +175,9 @@ services:
     volumes:
       - mysql_data_3:/var/lib/mysql
       - ./docker/mysql/cluster.cnf:/etc/mysql/conf.d/cluster.cnf:ro
+      - ./data/network-tls/ca.crt:/etc/mysql/tls/ca.crt:ro
+      - ./data/network-tls/db3.crt:/etc/mysql/tls/server.crt:ro
+      - ./data/network-tls/db3.key:/etc/mysql/tls/server.key:ro
     healthcheck:
       test: ["CMD-SHELL", 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --user=root --execute="SELECT 1" >/dev/null 2>&1']
       interval: 5s
@@ -139,14 +186,24 @@ services:
       retries: 20
     restart: unless-stopped
     stop_grace_period: 30s
+    cap_drop: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
     networks:
-      - backend
+      backend_app:
+        ipv4_address: 172.30.30.23
+        interface_name: backend_app
 
   db-proxy:
     build:
       context: ./docker/db-proxy
     environment:
       CLUSTER_MONITOR_PASSWORD: "${CLUSTER_MONITOR_PASSWORD:?Imposta CLUSTER_MONITOR_PASSWORD oppure esegui manage_cluster.py init}"
+      CLUSTER_SSL_CA: /etc/punto/tls/ca.crt
+    volumes:
+      - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
     depends_on:
       db:
         condition: service_healthy
@@ -162,8 +219,18 @@ services:
       retries: 12
     restart: unless-stopped
     stop_grace_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
     networks:
-      - backend
+      backend_app:
+        ipv4_address: 172.30.30.20
+        interface_name: backend_app
 
 volumes:
   mysql_data:
@@ -171,5 +238,24 @@ volumes:
   mysql_data_3:
 
 networks:
-  backend:
-  proxy:
+  public:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  private_app:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24
+  backend_app:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.30.0/24

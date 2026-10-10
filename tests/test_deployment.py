@@ -165,7 +165,7 @@ class DeploymentIntegrationTests(unittest.TestCase):
     def test_invalid_network_configuration_exits_before_creating_database(self):
         invalid = [("BIND_HOST", "localhost"), ("BIND_HOST", "::1"),
                    ("BIND_HOST", "999.1.1.1"), ("PUBLIC_PORT", ""),
-                   ("PUBLIC_PORT", "1023"), ("PUBLIC_PORT", "65536"),
+                   ("PUBLIC_PORT", "0"), ("PUBLIC_PORT", "65536"),
                    ("PUBLIC_PORT", "8082x")]
         for key, value in invalid:
             with self.subTest(variable=key, value=value):

@@ -225,12 +225,37 @@ static int open_connection(Db *database) {
     const char *host = getenv("DB_HOST"), *port_text = getenv("DB_PORT");
     const char *name = getenv("DB_NAME"), *user = getenv("DB_USER");
     const char *password = getenv("DB_PASSWORD");
+    const char *tls_mode = getenv("DB_TLS_MODE"), *ca_path = getenv("DB_SSL_CA");
     if (!host || !*host) host = "db";
     if (!name || !*name) name = "punto";
     if (!user || !*user) user = "punto";
     if (!password || !*password) {
         fprintf(stderr, "MySQL: DB_PASSWORD è obbligatoria.\n");
         return DB_ERROR;
+    }
+    /* Connector/C 3.3 permits an authentication fallback without TLS when only
+       SSL_ENFORCE is set. Requiring identity verification rejects that fallback
+       before sending authentication material, as well as validating the peer. */
+    if (!tls_mode || !*tls_mode) tls_mode = "verify_identity";
+    my_bool enforce_tls = 1, verify_identity = 1;
+    if (strcmp(tls_mode, "verify_identity") != 0) {
+        fprintf(stderr, "MySQL: DB_TLS_MODE deve essere verify_identity.\n");
+        return DB_ERROR;
+    }
+    if (!ca_path || !*ca_path) {
+        fprintf(stderr, "MySQL: DB_SSL_CA è obbligatoria per verify_identity.\n");
+        return DB_ERROR;
+    }
+    {
+        /* Reject missing, empty, or unreadable trust stores before authentication.
+           Connector/C validates the PEM certificates during the TLS handshake. */
+        FILE *ca_file = ca_path[0] == '/' ? fopen(ca_path, "rb") : NULL;
+        bool readable = ca_file && fgetc(ca_file) != EOF;
+        if (ca_file) fclose(ca_file);
+        if (!readable) {
+            fprintf(stderr, "MySQL: DB_SSL_CA deve essere un file assoluto leggibile e non vuoto.\n");
+            return DB_ERROR;
+        }
     }
     unsigned int port = 3306;
     if (port_text && *port_text) {
@@ -258,11 +283,23 @@ static int open_connection(Db *database) {
         mysql_options(database->connection, MYSQL_OPT_READ_TIMEOUT, &io_timeout) ||
         mysql_options(database->connection, MYSQL_OPT_WRITE_TIMEOUT, &io_timeout) ||
         mysql_options(database->connection, MYSQL_OPT_PROTOCOL, &protocol) ||
+        mysql_options(database->connection, MYSQL_OPT_SSL_ENFORCE, &enforce_tls) ||
+        mysql_options(database->connection, MYSQL_OPT_SSL_VERIFY_SERVER_CERT, &verify_identity) ||
+        mysql_options(database->connection, MARIADB_OPT_TLS_VERSION, "TLSv1.2,TLSv1.3") ||
+        mysql_options(database->connection, MYSQL_OPT_SSL_CA, ca_path) ||
         !mysql_real_connect(database->connection, host, user, password, name,
                             port, NULL, CLIENT_FOUND_ROWS)) {
         int error = connection_failure(database, "connessione");
         mysql_close(database->connection); database->connection = NULL;
         return error;
+    }
+    /* Defence in depth against connector/version behaviour: never execute any
+       application query on a connection that did not negotiate TLS. */
+    const char *cipher = mysql_get_ssl_cipher(database->connection);
+    if (!cipher || !*cipher) {
+        fprintf(stderr, "MySQL: connessione rifiutata perché TLS non è attivo.\n");
+        mysql_close(database->connection); database->connection = NULL;
+        return local_failure(database, DB_ERROR);
     }
     unsigned int seconds = database->busy_timeout_ms > 0 ?
         (unsigned int)((database->busy_timeout_ms - 1) / 1000 + 1) : 1;
