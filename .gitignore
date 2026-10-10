@@ -1,0 +1,15 @@
+/build/
+/data/
+/backups/
+/nginx-proxy-manager/data/
+/nginx-proxy-manager/letsencrypt/
+__pycache__/
+*.pyc
+.DS_Store
+.env*
+!.env.example
+!.env.docker.example
+/.agents/
+/.codex/
+*-preview.jpg
+*-preview.png

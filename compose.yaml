@@ -1,0 +1,175 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${PUNTO_HTTP_PORT:-8082}:8080"
+    environment:
+      PORT: "8080"
+      PUBLIC_PORT: "${PUNTO_HTTP_PORT:-8082}"
+      PUBLIC_ORIGINS: "${PUBLIC_ORIGINS:-http://localhost,http://127.0.0.1}"
+      BIND_HOST: "0.0.0.0"
+      PUBLIC_DIR: /app/public
+      TZ: Europe/Rome
+      DB_HOST: db-proxy
+      DB_PORT: "3306"
+      DB_NAME: "${MYSQL_DATABASE:-punto}"
+      DB_USER: "${MYSQL_USER:-punto}"
+      DB_PASSWORD: "${MYSQL_PASSWORD:?Imposta MYSQL_PASSWORD nel file .env.docker}"
+      PUNTO_EMAIL: "${PUNTO_EMAIL:?Imposta PUNTO_EMAIL nel file .env.docker}"
+      PUNTO_PASSWORD: "${PUNTO_PASSWORD:?Imposta PUNTO_PASSWORD nel file .env.docker}"
+    depends_on:
+      db-proxy:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+      - proxy
+
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:2.16.0
+    restart: unless-stopped
+    ports:
+      - "${NPM_HTTP_PORT:-80}:80"
+      - "${NPM_HTTPS_PORT:-443}:443"
+      - "127.0.0.1:${NPM_ADMIN_PORT:-81}:81"
+    environment:
+      TZ: "${NPM_TZ:-Australia/Brisbane}"
+    volumes:
+      - ./nginx-proxy-manager/data:/data
+      - ./nginx-proxy-manager/letsencrypt:/etc/letsencrypt
+    healthcheck:
+      test: ["CMD", "/usr/bin/check-health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - proxy
+
+  db:
+    image: mysql:8.4
+    hostname: db
+    command:
+      - --server-id=1
+      - --report-host=db
+      - --loose-group-replication-local-address=db:33061
+    environment:
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-punto}"
+      MYSQL_USER: "${MYSQL_USER:-punto}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Imposta MYSQL_PASSWORD nel file .env.docker}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Imposta MYSQL_ROOT_PASSWORD nel file .env.docker}"
+      TZ: Europe/Rome
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/cluster.cnf:/etc/mysql/conf.d/cluster.cnf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP --host=127.0.0.1 --user="$${MYSQL_USER}" --database="$${MYSQL_DATABASE}" --execute="SELECT 1" >/dev/null 2>&1'
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+  db2:
+    image: mysql:8.4
+    hostname: db2
+    command:
+      - --server-id=2
+      - --report-host=db2
+      - --loose-group-replication-local-address=db2:33061
+    environment:
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-punto}"
+      MYSQL_USER: "${MYSQL_USER:-punto}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Imposta MYSQL_PASSWORD nel file .env.docker}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Imposta MYSQL_ROOT_PASSWORD nel file .env.docker}"
+      TZ: Europe/Rome
+    volumes:
+      - mysql_data_2:/var/lib/mysql
+      - ./docker/mysql/cluster.cnf:/etc/mysql/conf.d/cluster.cnf:ro
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --user=root --execute="SELECT 1" >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+  db3:
+    image: mysql:8.4
+    hostname: db3
+    command:
+      - --server-id=3
+      - --report-host=db3
+      - --loose-group-replication-local-address=db3:33061
+    environment:
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-punto}"
+      MYSQL_USER: "${MYSQL_USER:-punto}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Imposta MYSQL_PASSWORD nel file .env.docker}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Imposta MYSQL_ROOT_PASSWORD nel file .env.docker}"
+      TZ: Europe/Rome
+    volumes:
+      - mysql_data_3:/var/lib/mysql
+      - ./docker/mysql/cluster.cnf:/etc/mysql/conf.d/cluster.cnf:ro
+    healthcheck:
+      test: ["CMD-SHELL", 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --user=root --execute="SELECT 1" >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+  db-proxy:
+    build:
+      context: ./docker/db-proxy
+    environment:
+      CLUSTER_MONITOR_PASSWORD: "${CLUSTER_MONITOR_PASSWORD:?Imposta CLUSTER_MONITOR_PASSWORD oppure esegui manage_cluster.py init}"
+    depends_on:
+      db:
+        condition: service_healthy
+      db2:
+        condition: service_healthy
+      db3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "/usr/local/bin/punto-db-health.py", "ready"]
+      interval: 5s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    restart: unless-stopped
+    stop_grace_period: 10s
+    networks:
+      - backend
+
+volumes:
+  mysql_data:
+  mysql_data_2:
+  mysql_data_3:
+
+networks:
+  backend:
+  proxy:

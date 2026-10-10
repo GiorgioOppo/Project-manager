@@ -1,0 +1,33 @@
+[mysqld]
+plugin_load_add=group_replication.so
+gtid_mode=ON
+enforce_gtid_consistency=ON
+log_bin=mysql-bin
+binlog_format=ROW
+log_replica_updates=ON
+binlog_expire_logs_seconds=604800
+replica_preserve_commit_order=ON
+transaction_isolation=READ-COMMITTED
+log_bin_trust_function_creators=ON
+
+loose-group_replication_group_name=8de71c6b-d3bc-4287-9a2a-edf8436340b1
+loose-group_replication_communication_stack=XCOM
+loose-group_replication_group_seeds=db:33061,db2:33061,db3:33061
+loose-group_replication_single_primary_mode=OFF
+loose-group_replication_enforce_update_everywhere_checks=ON
+loose-group_replication_auto_increment_increment=3
+loose-group_replication_consistency=BEFORE_AND_AFTER
+
+# The controller enables start_on_boot only after provisioning recovery accounts.
+# Bootstrap is always explicit and is never persisted.
+loose-group_replication_start_on_boot=OFF
+loose-group_replication_bootstrap_group=OFF
+loose-group_replication_exit_state_action=READ_ONLY
+loose-group_replication_unreachable_majority_timeout=5
+loose-group_replication_member_expel_timeout=5
+loose-group_replication_autorejoin_tries=3
+
+# Encrypt both consensus traffic and distributed recovery on the private network.
+# Development uses each node's automatically generated server certificates.
+loose-group_replication_ssl_mode=REQUIRED
+loose-group_replication_recovery_use_ssl=ON

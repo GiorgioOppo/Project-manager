@@ -1,0 +1,41 @@
+CC ?= cc
+DB_BACKEND ?= sqlite
+CPPFLAGS += -D_POSIX_C_SOURCE=200809L
+CFLAGS ?= -O2
+CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
+SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+LDLIBS += -framework Security
+else
+LDLIBS += -lcrypto
+endif
+ifeq ($(DB_BACKEND),mysql)
+CPPFLAGS += -DPUNTO_MYSQL $(shell pkg-config --cflags libmariadb)
+LDLIBS += $(shell pkg-config --libs libmariadb)
+SOURCES += src/db_mysql.c src/mysql_schema.c
+else ifeq ($(DB_BACKEND),sqlite)
+LDLIBS += -lsqlite3
+else
+$(error DB_BACKEND deve essere sqlite oppure mysql)
+endif
+
+.PHONY: all run test clean FORCE
+all: build/punto
+
+build/$(DB_BACKEND)/punto: $(SOURCES) $(wildcard src/*.h) Makefile
+	mkdir -p build/$(DB_BACKEND)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) -o $@ $(LDLIBS)
+
+build/punto: build/$(DB_BACKEND)/punto FORCE
+	cp build/$(DB_BACKEND)/punto $@.tmp
+	mv -f $@.tmp $@
+
+run: build/punto
+	./build/punto
+
+test: build/punto
+	python3 -m unittest discover -s tests -v
+
+clean:
+	rm -rf build

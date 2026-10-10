@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f6f2">
+    <meta name="description" content="Organizza le commesse e registra il tempo dedicato al tuo lavoro con punto.">
+    <title>Commesse e ore · punto</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/workspace.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body class="work-app">
+    <a class="skip-link" href="#main-content">Vai al contenuto</a>
+    <div class="app-shell">
+      <header class="app-header">
+        <a class="brand" href="/app" aria-label="punto, il tuo spazio"><svg class="brand-mark" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="1" y="1" width="11" height="11" rx="3.5" fill="currentColor"/><rect x="17" y="1" width="11" height="11" rx="3.5" fill="currentColor"/><rect x="1" y="17" width="11" height="11" rx="3.5" fill="currentColor"/><circle cx="22.5" cy="22.5" r="5.5" fill="#ee654b"/></svg><span>punto<span class="brand-period">.</span></span></a>
+        <span class="header-workspace">Il tuo spazio di lavoro <span class="header-separator">/</span> <strong>Commesse e ore</strong></span>
+        <div class="account"><span id="user-avatar" class="account-avatar" aria-hidden="true">P</span><div class="account-details"><div class="account-heading"><span id="session-name" class="account-name">Il tuo account</span><span id="session-role" class="role-badge" hidden></span></div><span id="session-email">Caricamento…</span></div><button id="logout" class="account-logout" type="button" aria-label="Esci dall’account">Esci <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4H5v16h5m5-13 5 5-5 5m-6-5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+      </header>
+      <p id="session-status" class="session-state" role="status">Stiamo aprendo il tuo spazio di lavoro…</p>
+      <div id="workspace" class="app-layout" hidden>
+        <aside class="app-sidebar" aria-label="Navigazione dello spazio di lavoro">
+          <span class="nav-caption">IL TUO LAVORO</span>
+          <div class="app-navigation" role="tablist" aria-label="Sezioni" aria-orientation="vertical">
+            <button id="tab-jobs" class="nav-item is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-jobs"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M3 12h18m-11 0v3h4v-3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Commesse</span><span id="nav-jobs-count" class="nav-count">0</span></button>
+            <button id="tab-hours" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-hours" tabindex="-1"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Registro ore</span></button>
+            <button id="tab-users" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-users" tabindex="-1" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m1-16a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 4v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>Utenti</span></button>
+            <button id="tab-audit" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-audit" tabindex="-1" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 4h14v17H5zM9 2v4m6-4v4M8 10h8m-8 4h8m-8 4h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Storico</span></button>
+          </div>
+          <div class="sidebar-note"><span class="note-symbol" aria-hidden="true">✳</span><p>Un passo avanti.<br><strong>Ogni giorno.</strong></p><span>Le tue commesse e il tempo che dedichi a farle crescere.</span></div>
+          <div class="sidebar-bottom"><span class="status-dot"></span> Tutto parte da un punto.</div>
+        </aside>
+        <main id="main-content" class="app-main" tabindex="-1">
+          <div class="workspace-intro"><div><p class="work-eyebrow"><span></span> CHIAREZZA, OGNI GIORNO</p><h1>Il lavoro, al punto.</h1><p class="intro-description">Organizza le commesse. Dai valore al tuo tempo.</p></div><div class="intro-actions"><button id="new-entry" class="button button-secondary" type="button"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Registra ore</button><button id="new-job" class="button button-primary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Nuova commessa</button></div></div>
+          <p id="permission-hint" class="permission-hint"></p>
+          <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="notice-text"></span><button id="notice-close" type="button" aria-label="Chiudi messaggio">×</button></div>
+          <div id="load-error" class="notice notice-error" role="alert" hidden><span id="load-error-text"></span><button id="retry-load" type="button">Riprova</button></div>
+          <section class="summary-grid" aria-label="Il lavoro in sintesi">
+            <div class="summary-card"><div class="summary-label">Commesse in corso<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 17 5-5 4 3 7-9m-5 0h5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="summary-value"><span id="stat-active">—</span><span class="metric-dot" aria-hidden="true"></span></div><p id="stat-active-caption">Il lavoro che prende forma</p></div>
+            <div class="summary-card"><div class="summary-label">Le tue ore di oggi<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div><div id="stat-today" class="summary-value">—</div><p id="stat-today-caption">Il tempo dedicato alle commesse</p></div>
+            <div class="summary-card summary-card-tinted"><div class="summary-label">Commesse totali<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="m14 17 2 2 4-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div id="stat-jobs" class="summary-value">—</div><p>Ogni progetto ha il suo spazio</p></div>
+          </section>
+          <section id="panel-jobs" class="content-panel" role="tabpanel" aria-labelledby="tab-jobs" tabindex="0">
+            <div class="panel-heading"><div><p class="section-kicker">PROGETTI, IN ORDINE</p><h2>Le tue commesse <span id="jobs-count" class="heading-count">0</span></h2><p id="jobs-panel-description">Dal primo passo all’ultimo dettaglio, tutto sotto controllo.</p></div><span class="panel-small-label"><span class="status-dot"></span> Il tuo portafoglio lavori</span></div>
+            <div class="jobs-toolbar"><div class="search-field"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.6"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><label class="sr-only" for="job-search">Cerca commesse per nome, codice o cliente</label><input id="job-search" type="search" placeholder="Cerca per nome, codice o cliente…" autocomplete="off"></div><div class="status-filter"><label for="job-filter">Stato</label><select id="job-filter"><option value="">Tutti gli stati</option><option value="planned">Da avviare</option><option value="active">In corso</option><option value="paused">In pausa</option><option value="completed">Completata</option><option value="cancelled">Annullata</option></select></div></div>
+            <div id="jobs-loading" class="data-loading" role="status">Caricamento delle commesse…</div>
+            <div id="jobs-table-wrap" class="table-wrap" hidden><table class="jobs-table"><caption class="sr-only">Commesse e ore che hai registrato su ciascuna commessa</caption><thead><tr><th scope="col">Commessa</th><th scope="col">Cliente</th><th scope="col">Stato</th><th scope="col">Le tue ore</th><th scope="col"><span class="sr-only">Azioni</span></th></tr></thead><tbody id="jobs-body"></tbody></table></div>
+            <div id="jobs-empty" class="empty-state" hidden><div class="empty-illustration" aria-hidden="true"><svg width="56" height="56" viewBox="0 0 56 56" fill="none"><rect x="9" y="14" width="36" height="30" rx="5" fill="#fffdf8" stroke="#8b9a7d" stroke-width="1.5"/><path d="M20 14v-4h14v4M9 26h36m-21 0v6h8v-6" stroke="#8b9a7d" stroke-width="1.5" stroke-linejoin="round"/><circle cx="42" cy="41" r="10" fill="#e96850"/><path d="M42 37v8m-4-4h8" stroke="white" stroke-width="1.7" stroke-linecap="round"/></svg></div><h3 id="jobs-empty-title">La prossima commessa parte da qui.</h3><p id="jobs-empty-description">Aggiungi la prima commessa, scegli il suo stato e inizia a registrare il lavoro.</p><button id="empty-new-job" class="button button-primary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Crea la prima commessa</button><button id="clear-filters" class="button button-secondary" type="button" hidden>Azzera i filtri</button></div>
+            <div id="jobs-table-footer" class="table-footer" hidden><span id="jobs-visible-count"></span><span>Un posto per ogni progetto.</span></div>
+          </section>
+          <section id="panel-hours" class="content-panel" role="tabpanel" aria-labelledby="tab-hours" tabindex="0" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">IL TEMPO, BEN SPESO</p><h2>Il tuo registro ore</h2><p>Annota le ore dedicate a ciascuna commessa, giorno per giorno.</p></div><button id="panel-new-entry" class="button button-secondary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Aggiungi ore</button></div>
+            <div class="day-toolbar"><div class="day-picker"><button id="previous-day" class="icon-button" type="button" aria-label="Giorno precedente">‹</button><div><label for="entry-date-filter">Giornata lavorativa</label><input id="entry-date-filter" type="date" required></div><button id="next-day" class="icon-button" type="button" aria-label="Giorno successivo">›</button><button id="go-today" class="today-button" type="button">Oggi</button></div><div class="daily-total"><span>Totale della giornata</span><strong id="day-total">—</strong></div></div>
+            <div id="entries-loading" class="data-loading" role="status">Caricamento delle ore…</div>
+            <div id="entries-table-wrap" class="table-wrap" hidden><table class="entries-table"><caption class="sr-only">Le tue ore registrate per la giornata selezionata</caption><thead><tr><th scope="col">Commessa</th><th scope="col">Attività / nota</th><th scope="col">Ore lavorate</th><th id="entries-actions-heading" scope="col"><span class="sr-only">Azioni</span></th></tr></thead><tbody id="entries-body"></tbody></table></div>
+            <div id="entries-empty" class="empty-state" hidden><div class="empty-illustration" aria-hidden="true"><svg width="53" height="53" viewBox="0 0 56 56" fill="none"><circle cx="27" cy="27" r="19" fill="#fffdf8" stroke="#8b9a7d" stroke-width="1.5"/><path d="M27 15v13l8 5" stroke="#8b9a7d" stroke-width="1.5" stroke-linecap="round"/><circle cx="42" cy="41" r="10" fill="#e96850"/><path d="M42 37v8m-4-4h8" stroke="white" stroke-width="1.7" stroke-linecap="round"/></svg></div><h3>Il tuo tempo merita una traccia.</h3><p>Nessuna ora registrata per questa giornata.<br>Aggiungi il lavoro svolto sulle tue commesse.</p><button id="empty-new-entry" class="button button-primary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Registra le prime ore</button></div>
+            <div class="table-footer"><span>Le registrazioni sono associate al tuo account.</span><span id="day-entries-count"></span></div>
+          </section>
+          <section id="panel-users" class="content-panel" role="tabpanel" aria-labelledby="tab-users" tabindex="0" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">LE PERSONE, AL CENTRO</p><h2>Utenti <span id="users-count" class="heading-count">0</span></h2><p>Assegna a ogni persona il ruolo adatto al suo lavoro.</p></div><button id="new-user" class="button button-primary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Nuovo utente</button></div>
+            <div class="users-permissions"><p><strong>Gestore</strong><span>Crea e modifica commesse e stati, gestisce gli utenti e le proprie ore.</span></p><p><strong>Operatore</strong><span>Consulta le commesse abilitate e aggiunge le proprie ore, senza modificare o eliminare le registrazioni già inserite.</span></p></div>
+            <div id="users-loading" class="data-loading" role="status">Caricamento degli utenti…</div>
+            <div id="users-table-wrap" class="table-wrap" hidden><table class="users-table"><caption class="sr-only">Utenti dello spazio di lavoro e relativi permessi</caption><thead><tr><th scope="col">Utente</th><th scope="col">Ruolo</th><th scope="col">Accesso</th><th scope="col"><span class="sr-only">Azioni</span></th></tr></thead><tbody id="users-body"></tbody></table></div>
+            <div class="table-footer"><span>Disattivare un utente conserva il suo lavoro e impedisce l’accesso.</span><span id="users-active-count"></span></div>
+          </section>
+          <section id="panel-audit" class="content-panel" role="tabpanel" aria-labelledby="tab-audit" tabindex="0" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">IL LAVORO, NEL TEMPO</p><h2>Storico delle modifiche</h2><p>Chi ha fatto cosa, con i dettagli prima e dopo ogni cambiamento.</p></div><button id="audit-refresh" class="button button-secondary" type="button">Aggiorna</button></div>
+            <div class="audit-toolbar"><div class="status-filter"><label for="audit-filter">Mostra</label><select id="audit-filter"><option value="">Tutte le modifiche</option><option value="job">Commesse</option><option value="time_entry">Ore lavorate</option><option value="assignment">Abilitazioni</option><option value="user">Utenti</option><option value="system">Sistema</option></select></div><span id="audit-count" class="audit-count" aria-live="polite"></span></div>
+            <div id="audit-loading" class="data-loading" role="status">Caricamento dello storico…</div>
+            <div id="audit-error" class="audit-error" role="alert" hidden><span id="audit-error-text"></span><button id="audit-retry" class="row-button" type="button">Riprova</button></div>
+            <ol id="audit-list" class="audit-list" aria-label="Modifiche in ordine dalla più recente"></ol>
+            <div id="audit-empty" class="empty-state" hidden><h3>La storia comincia da qui.</h3><p>Non ci sono ancora modifiche per il filtro selezionato.</p></div>
+            <div class="audit-footer"><span>Gli orari sono mostrati nel tuo fuso locale.</span><button id="audit-more" class="button button-secondary" type="button" hidden>Carica precedenti</button></div>
+          </section>
+          <footer class="workspace-footer"><span>© <span id="current-year">2026</span> punto</span><span>Più chiarezza. Più spazio per il tuo lavoro.<span class="footer-dot"></span></span></footer>
+        </main>
+      </div>
+    </div>
+    <dialog id="job-dialog" class="work-dialog" aria-labelledby="job-dialog-title" aria-describedby="job-dialog-description">
+      <form id="job-form" novalidate>
+        <div class="dialog-heading"><div><p class="section-kicker">UN POSTO PER IL TUO PROGETTO</p><h2 id="job-dialog-title">Nuova commessa</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="job-dialog" aria-label="Chiudi finestra">×</button></div>
+        <p id="job-dialog-description" class="dialog-description">Definisci i dettagli della commessa. Potrai aggiornarli in ogni momento.</p>
+        <div id="job-error" class="dialog-error" role="alert" hidden></div>
+        <input id="job-id" type="hidden">
+        <div class="form-grid"><div class="work-field"><label for="job-code">Codice commessa <span aria-hidden="true">*</span></label><input id="job-code" name="code" maxlength="40" placeholder="Es. COM-001" required autocomplete="off"></div><div class="work-field"><label for="job-status">Stato <span aria-hidden="true">*</span></label><select id="job-status" name="status" required><option value="planned">Da avviare</option><option value="active">In corso</option><option value="paused">In pausa</option><option value="completed">Completata</option><option value="cancelled">Annullata</option></select></div></div>
+        <div class="work-field"><label for="job-name">Nome commessa <span aria-hidden="true">*</span></label><input id="job-name" name="name" maxlength="120" placeholder="Es. Nuovo sito aziendale" required autocomplete="off"></div>
+        <div class="work-field"><label for="job-client">Cliente <span class="optional">Facoltativo</span></label><input id="job-client" name="client" maxlength="120" placeholder="Nome del cliente" autocomplete="organization"></div>
+        <div class="work-field"><label for="job-description">Descrizione <span class="optional">Facoltativa</span></label><textarea id="job-description" name="description" rows="3" maxlength="1000" placeholder="Obiettivi, dettagli o informazioni utili…"></textarea></div>
+        <div class="dialog-footer"><span class="required-note">* Campi obbligatori</span><div><button class="button button-secondary" type="button" data-close-dialog="job-dialog">Annulla</button><button id="job-save" class="button button-primary" type="submit">Crea commessa</button></div></div>
+      </form>
+    </dialog>
+    <dialog id="entry-dialog" class="work-dialog" aria-labelledby="entry-dialog-title" aria-describedby="entry-dialog-description">
+      <form id="entry-form" novalidate>
+        <div class="dialog-heading"><div><p class="section-kicker">IL TUO LAVORO CONTA</p><h2 id="entry-dialog-title">Registra ore</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="entry-dialog" aria-label="Chiudi finestra">×</button></div>
+        <p id="entry-dialog-description" class="dialog-description">Associa il tempo lavorato alla commessa e alla giornata.</p>
+        <div id="entry-error" class="dialog-error" role="alert" hidden></div>
+        <input id="entry-id" type="hidden">
+        <div class="work-field"><label for="entry-job">Commessa <span aria-hidden="true">*</span></label><select id="entry-job" name="job_id" required><option value="">Seleziona una commessa</option></select></div>
+        <div class="form-grid"><div class="work-field"><label for="entry-date">Giornata lavorativa <span aria-hidden="true">*</span></label><input id="entry-date" name="date" type="date" required></div><div class="work-field"><label for="entry-hours">Ore lavorate <span aria-hidden="true">*</span></label><input id="entry-hours" type="text" inputmode="decimal" maxlength="12" placeholder="Es. 1,5" required aria-describedby="hours-help" autocomplete="off"></div></div>
+        <p id="hours-help" class="field-help">Puoi scrivere 1,5 o 1.5 per un’ora e mezza, oppure 1:30. Precisione al minuto; massimo 24 ore al giorno.</p>
+        <div class="work-field"><label for="entry-note">Attività svolta / nota <span class="optional">Facoltativa</span></label><textarea id="entry-note" name="note" rows="3" maxlength="1000" placeholder="Es. Progettazione della homepage e revisione con il cliente…"></textarea></div>
+        <div class="dialog-account"><span class="status-dot"></span> Le ore saranno registrate sul tuo account personale.</div>
+        <div class="dialog-footer"><span class="required-note">* Campi obbligatori</span><div><button class="button button-secondary" type="button" data-close-dialog="entry-dialog">Annulla</button><button id="entry-save" class="button button-primary" type="submit">Salva ore</button></div></div>
+      </form>
+    </dialog>
+    <dialog id="delete-dialog" class="work-dialog confirm-dialog" aria-labelledby="delete-dialog-title" aria-describedby="delete-description">
+      <form id="delete-form"><div class="dialog-heading"><h2 id="delete-dialog-title">Eliminare queste ore?</h2><button class="dialog-close icon-button" type="button" data-close-dialog="delete-dialog" aria-label="Chiudi finestra">×</button></div><p id="delete-description" class="dialog-description"></p><div id="delete-error" class="dialog-error" role="alert" hidden></div><div class="dialog-footer"><button class="button button-secondary" type="button" data-close-dialog="delete-dialog" autofocus>Annulla</button><button id="delete-save" class="button button-danger" type="submit">Elimina registrazione</button></div></form>
+    </dialog>
+    <dialog id="assignment-dialog" class="work-dialog assignment-dialog" aria-labelledby="assignment-dialog-title" aria-describedby="assignment-dialog-description">
+      <div class="dialog-heading"><div><p class="section-kicker">IL LAVORO, ALLE PERSONE GIUSTE</p><h2 id="assignment-dialog-title">Abilitazioni commessa</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="assignment-dialog" aria-label="Chiudi finestra">×</button></div>
+      <p id="assignment-dialog-description" class="dialog-description">Scegli chi può usare questa commessa. Le registrazioni esistenti restano nello storico anche dopo una revoca.</p>
+      <div id="assignment-error" class="dialog-error" role="alert" hidden></div>
+      <div id="assignment-loading" class="data-loading" role="status">Caricamento delle abilitazioni…</div>
+      <div id="assignment-retry-wrap" class="assignment-retry" hidden><button id="assignment-retry" class="button button-secondary" type="button">Riprova</button></div>
+      <ul id="assignment-list" class="assignment-list" aria-label="Utenti abilitati alla commessa"></ul>
+      <p id="assignment-empty" class="field-help" hidden>Nessun utente abilitato. Aggiungi una persona dal modulo qui sotto. I gestori hanno comunque accesso a tutte le commesse.</p>
+      <div id="assignment-revoke" class="assignment-revoke" hidden><p id="assignment-revoke-description"></p><div><button id="assignment-revoke-cancel" class="button button-secondary" type="button">Annulla</button><button id="assignment-revoke-save" class="button button-danger" type="button">Conferma revoca</button></div></div>
+      <form id="assignment-form" class="assignment-form" novalidate>
+        <h3 id="assignment-form-title">Abilita un utente</h3>
+        <div class="work-field"><label for="assignment-user">Utente <span aria-hidden="true">*</span></label><select id="assignment-user" name="user_id" required><option value="">Seleziona un utente attivo</option></select></div>
+        <div class="form-grid"><div class="work-field"><label for="assignment-start">Dal giorno <span class="optional">Facoltativo</span></label><input id="assignment-start" type="date" name="starts_on"></div><div class="work-field"><label for="assignment-end">Al giorno <span class="optional">Facoltativo</span></label><input id="assignment-end" type="date" name="ends_on"></div></div>
+        <p class="field-help">Lascia entrambe le date vuote per abilitare subito, senza scadenza. Le date indicate sono comprese nel periodo di abilitazione.</p>
+        <div class="dialog-footer"><button id="assignment-reset" class="button button-secondary" type="button" hidden>Annulla modifica</button><button id="assignment-save" class="button button-primary" type="submit">Abilita utente</button></div>
+      </form>
+      <div class="assignment-close"><button class="button button-secondary" type="button" data-close-dialog="assignment-dialog">Chiudi</button></div>
+    </dialog>
+    <dialog id="user-dialog" class="work-dialog" aria-labelledby="user-dialog-title" aria-describedby="user-dialog-description">
+      <form id="user-form" novalidate autocomplete="off">
+        <div class="dialog-heading"><div><p class="section-kicker">UNA SQUADRA, UN PUNTO</p><h2 id="user-dialog-title">Nuovo utente</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="user-dialog" aria-label="Chiudi finestra">×</button></div>
+        <p id="user-dialog-description" class="dialog-description">Crea un account e scegli cosa può fare nello spazio di lavoro.</p>
+        <div id="user-error" class="dialog-error" role="alert" hidden></div>
+        <input id="user-id" type="hidden">
+        <div class="work-field"><label for="user-name">Nome <span aria-hidden="true">*</span></label><input id="user-name" name="name" maxlength="120" required autocomplete="off" placeholder="Es. Giulia Rossi"></div>
+        <div class="work-field"><label for="user-email">Email <span aria-hidden="true">*</span></label><input id="user-email" name="email" type="email" maxlength="254" required autocomplete="off" placeholder="nome@azienda.it" aria-describedby="user-email-help"><p id="user-email-help" class="field-help" hidden>L’email identifica l’account e non può essere modificata.</p></div>
+        <div id="user-password-field" class="work-field"><label for="user-password">Password iniziale <span aria-hidden="true">*</span></label><input id="user-password" name="password" type="password" minlength="8" maxlength="1024" required autocomplete="new-password" aria-describedby="user-password-help"><p id="user-password-help" class="field-help">Almeno 8 caratteri. La password non sarà mostrata nell’elenco utenti.</p></div>
+        <div class="form-grid"><div class="work-field"><label for="user-role">Ruolo <span aria-hidden="true">*</span></label><select id="user-role" name="role" required aria-describedby="user-role-help"><option value="worker">Operatore</option><option value="manager">Gestore</option></select></div><div id="user-active-field" class="work-field" hidden><label for="user-active">Accesso</label><select id="user-active" name="active"><option value="1">Attivo</option><option value="0">Disattivato</option></select></div></div>
+        <p id="user-role-help" class="field-help">L’operatore può consultare le commesse abilitate e aggiungere le proprie ore. Il gestore può anche gestire commesse, utenti e le proprie registrazioni.</p>
+        <div class="dialog-footer"><span class="required-note">* Campi obbligatori</span><div><button class="button button-secondary" type="button" data-close-dialog="user-dialog">Annulla</button><button id="user-save" class="button button-primary" type="submit">Crea utente</button></div></div>
+      </form>
+    </dialog>
+  </body>
+</html>
