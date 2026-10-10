@@ -20,6 +20,7 @@
 #include "storage.h"
 #include "procurement.h"
 #include "documents.h"
+#include "organization.h"
 
 #ifdef __APPLE__
 #include <Security/SecRandom.h>
@@ -634,8 +635,10 @@ static void session_response(int fd, const Session *session) {
         "{\"authenticated\":true,\"email\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
         "\"permissions\":{\"manage_jobs\":%s,\"manage_users\":%s,\"edit_time_entries\":%s,"
         "\"manage_assignments\":%s,\"view_audit\":%s,"
-        "\"manage_suppliers\":%s,\"manage_contracts\":%s}}",
-        email, name, account.role, allowed, allowed, allowed, allowed, allowed, allowed, allowed);
+        "\"manage_suppliers\":%s,\"manage_contracts\":%s,"
+        "\"manage_groups\":%s,\"manage_job_roles\":%s}}",
+        email, name, account.role, allowed, allowed, allowed, allowed, allowed, allowed, allowed,
+        allowed, allowed);
     json(fd, 200, body, NULL);
 }
 
@@ -646,6 +649,8 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         strcmp(target, "/api/users") != 0 && strncmp(target, "/api/users/", 11) != 0 &&
         strcmp(target, "/api/suppliers") != 0 && strncmp(target, "/api/suppliers/", 15) != 0 &&
         strcmp(target, "/api/contracts") != 0 && strncmp(target, "/api/contracts/", 15) != 0 &&
+        strcmp(target, "/api/groups") != 0 && strncmp(target, "/api/groups/", 12) != 0 &&
+        strcmp(target, "/api/job-roles") != 0 && strncmp(target, "/api/job-roles/", 15) != 0 &&
         strncmp(target, "/api/contract-documents/", 24) != 0 &&
         strcmp(target, "/api/audit") != 0)
         return false;
@@ -719,6 +724,8 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         if (data) { erase(data, size); free(data); }
         return true;
     }
+    if (!handled) handled = organization_handle(request->method, target, query, request->body,
+                                                account.id, account.role, &response);
     if (!handled) handled = procurement_handle(request->method, target, query, request->body,
                                               account.id, account.role, &response);
     if (!handled) handled = accounts_handle(request->method, target, query, request->body,
@@ -895,9 +902,13 @@ int main(void) {
         fprintf(stderr, "Impossibile aggiornare il database. I dati restano conservati; controlla la versione e i permessi.\n");
         accounts_close(); workspace_close(); return 1;
     }
+    if (!organization_open(database_path)) {
+        fprintf(stderr, "Impossibile configurare gruppi, ruoli e abilitazioni. Controlla database e permessi.\n");
+        organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+    }
     if (!procurement_open(database_path) || !documents_open(database_path)) {
         fprintf(stderr, "Impossibile configurare contratti e archivio documentale. Controlla database e impostazioni documenti.\n");
-        documents_close(); procurement_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+        documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
     snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
@@ -910,7 +921,7 @@ int main(void) {
     (void)sigaction(SIGINT, &stop_action, NULL);
     (void)sigaction(SIGTERM, &stop_action, NULL);
     int server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server < 0) { perror("socket"); documents_close(); procurement_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
+    if (server < 0) { perror("socket"); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
     int reuse = 1;
     (void)setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     struct sockaddr_in address = {0};
@@ -918,7 +929,7 @@ int main(void) {
     address.sin_port = htons((uint16_t)port);
     address.sin_addr = bind_address;
     if (bind(server, (struct sockaddr *)&address, sizeof(address)) < 0 || listen(server, 16) < 0) {
-        perror("Avvio server"); close(server); documents_close(); procurement_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+        perror("Avvio server"); close(server); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     printf("\n  punto · Project management\n  http://127.0.0.1:%ld\n  Utenti e dati: %s\n\n", public_port, database_path);
     fflush(stdout);
@@ -945,6 +956,7 @@ int main(void) {
     close(server);
     documents_close();
     procurement_close();
+    organization_close();
     storage_close();
     accounts_close();
     workspace_close();

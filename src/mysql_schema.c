@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-#define MYSQL_SCHEMA_VERSION 2
+#define MYSQL_SCHEMA_VERSION 3
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -75,6 +75,20 @@ static bool ensure_job_contract(Db *database) {
         "ADD CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
         "ADD KEY jobs_contract(contract_id,id)",NULL,NULL,NULL) != DB_OK) return false;
     return true;
+}
+
+static bool ensure_assignment_role(Db *database) {
+    DbStmt *statement = NULL;
+    bool okay = db_prepare_v2(database,
+        "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='job_assignments' AND COLUMN_NAME='role_id'", -1, &statement, NULL) == DB_OK &&
+        db_step(statement) == DB_ROW;
+    bool exists = okay && db_column_int64(statement, 0) == 1;
+    db_finalize(statement);
+    return okay && (exists || db_exec(database,
+        "ALTER TABLE job_assignments ADD COLUMN role_id BIGINT NULL,"
+        "ADD CONSTRAINT job_assignments_role_fk FOREIGN KEY(role_id) REFERENCES job_roles(id)",
+        NULL, NULL, NULL) == DB_OK);
 }
 
 bool mysql_schema_prepare(void) {
@@ -167,14 +181,50 @@ bool mysql_schema_prepare(void) {
         "CHECK(minutes BETWEEN 1 AND 1440),CHECK(CHAR_LENGTH(date)=10)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
+        "CREATE TABLE IF NOT EXISTS job_roles ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "code VARCHAR(40) COLLATE utf8mb4_general_ci NOT NULL,"
+        "name VARCHAR(120) NOT NULL,can_log_time TINYINT NOT NULL,builtin TINYINT NOT NULL DEFAULT 0,"
+        "UNIQUE KEY job_roles_code(code),CHECK(CHAR_LENGTH(code)>=1),CHECK(CHAR_LENGTH(name)>=1),"
+        "CHECK(can_log_time IN (0,1)),CHECK(builtin IN (0,1))"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS organization_groups ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,name VARCHAR(120) NOT NULL,parent_id BIGINT NULL,"
+        "KEY organization_groups_parent(parent_id,id),"
+        "CONSTRAINT organization_groups_parent_fk FOREIGN KEY(parent_id) REFERENCES organization_groups(id),"
+        "CHECK(CHAR_LENGTH(name)>=1)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS group_members ("
+        "group_id BIGINT NOT NULL,user_id BIGINT NOT NULL,PRIMARY KEY(group_id,user_id),"
+        "KEY group_members_user(user_id,group_id),"
+        "CONSTRAINT group_members_group_fk FOREIGN KEY(group_id) REFERENCES organization_groups(id),"
+        "CONSTRAINT group_members_user_fk FOREIGN KEY(user_id) REFERENCES users(id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS job_group_grants ("
+        "job_id BIGINT NOT NULL,group_id BIGINT NOT NULL,role_id BIGINT NOT NULL,"
+        "starts_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "ends_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,PRIMARY KEY(job_id,group_id),"
+        "KEY job_group_grants_group(group_id,job_id),"
+        "CONSTRAINT job_group_grants_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),"
+        "CONSTRAINT job_group_grants_group_fk FOREIGN KEY(group_id) REFERENCES organization_groups(id),"
+        "CONSTRAINT job_group_grants_role_fk FOREIGN KEY(role_id) REFERENCES job_roles(id),"
+        "CHECK(starts_on IS NULL OR CHAR_LENGTH(starts_on)=10),"
+        "CHECK(ends_on IS NULL OR CHAR_LENGTH(ends_on)=10),"
+        "CHECK(starts_on IS NULL OR ends_on IS NULL OR starts_on<=ends_on)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
         "CREATE TABLE IF NOT EXISTS job_assignments ("
-        "job_id BIGINT NOT NULL,user_id BIGINT NOT NULL,"
+        "job_id BIGINT NOT NULL,user_id BIGINT NOT NULL,role_id BIGINT NULL,"
         "starts_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
         "ends_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
         "PRIMARY KEY(job_id,user_id),"
         "KEY job_assignments_user(user_id,job_id),"
         "CONSTRAINT job_assignments_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),"
         "CONSTRAINT job_assignments_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CONSTRAINT job_assignments_role_fk FOREIGN KEY(role_id) REFERENCES job_roles(id),"
         "CHECK(starts_on IS NULL OR CHAR_LENGTH(starts_on)=10),"
         "CHECK(ends_on IS NULL OR CHAR_LENGTH(ends_on)=10),"
         "CHECK(starts_on IS NULL OR ends_on IS NULL OR starts_on<=ends_on)"
@@ -221,6 +271,7 @@ bool mysql_schema_prepare(void) {
     for (size_t i = 0; okay && i < sizeof(tables) / sizeof(tables[0]); i++)
         okay = db_exec(database, tables[i], NULL, NULL, NULL) == DB_OK;
     if (okay) okay = ensure_job_contract(database);
+    if (okay) okay = ensure_assignment_role(database);
     if (okay) okay = db_exec(database,
         "INSERT IGNORE INTO schema_metadata(id,version) VALUES(1,0)",
         NULL, NULL, NULL) == DB_OK;

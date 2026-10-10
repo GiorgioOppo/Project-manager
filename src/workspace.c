@@ -1,5 +1,6 @@
 #include "workspace.h"
 #include "storage.h"
+#include "organization.h"
 
 #include <limits.h>
 #include "db.h"
@@ -450,8 +451,10 @@ static int entry_snapshot(DbInt id, DbInt actor_id, Json *json) {
 static int assignment_snapshot(DbInt job_id, DbInt user_id, Json *json) {
     DbStmt *statement = NULL;
     if (!prepare(&statement,
-        "SELECT a.job_id,a.user_id,a.starts_on,a.ends_on,j.code,j.name,u.name,u.email "
+        "SELECT a.job_id,a.user_id,a.starts_on,a.ends_on,j.code,j.name,u.name,u.email,"
+        "COALESCE(a.role_id,2),r.code,r.name,r.can_log_time "
         "FROM job_assignments a JOIN jobs j ON j.id=a.job_id JOIN users u ON u.id=a.user_id "
+        "LEFT JOIN job_roles r ON r.id=COALESCE(a.role_id,2) "
         "WHERE a.job_id=? AND a.user_id=?") ||
         !bind_id(statement, 1, job_id) || !bind_id(statement, 2, user_id)) {
         db_finalize(statement);
@@ -467,6 +470,10 @@ static int assignment_snapshot(DbInt job_id, DbInt user_id, Json *json) {
         append(json, ",\"job_name\":"); append_string(json, column_text(statement, 5));
         append(json, ",\"user_name\":"); append_string(json, column_text(statement, 6));
         append(json, ",\"user_email\":"); append_string(json, column_text(statement, 7));
+        append(json, ",\"role_id\":"); append_integer(json, db_column_int64(statement, 8));
+        append(json, ",\"role_code\":"); append_string(json, column_text(statement, 9));
+        append(json, ",\"role_name\":"); append_string(json, column_text(statement, 10));
+        append(json, ",\"can_log_time\":"); append(json, db_column_int(statement, 11) == 1 ? "true" : "false");
         append(json, "}");
     }
     db_finalize(statement);
@@ -485,39 +492,52 @@ static void success(WorkspaceResponse *response, int status, DbInt id) {
 static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response) {
     char today[11];
     if (!today_date(today)) { server_error(response); return; }
+    OrganizationAccess access = {0};
+    if (!manager && !organization_access_list(database, actor_id, today, NULL, &access)) {
+        server_error(response); return;
+    }
     DbStmt *statement = NULL;
     if (!prepare(&statement,
         "SELECT j.id,j.code,j.name,j.client,j.description,j.status,"
         "COALESCE((SELECT SUM(t.minutes) FROM time_entries t WHERE t.job_id=j.id AND t.user_id=?),0),"
         "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_assignments a_count WHERE a_count.job_id=j.id) ELSE 0 END, "
-        "j.contract_id,c.code,c.title,s.name "
+        "j.contract_id,c.code,c.title,s.name,"
+        "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_group_grants gg WHERE gg.job_id=j.id) ELSE 0 END "
         "FROM jobs j LEFT JOIN contracts c ON c.id=j.contract_id LEFT JOIN suppliers s ON s.id=c.supplier_id "
-        "WHERE ? OR EXISTS(SELECT 1 FROM job_assignments a "
-        "WHERE a.job_id=j.id AND a.user_id=? AND (a.starts_on IS NULL OR a.starts_on<=?) "
-        "AND (a.ends_on IS NULL OR a.ends_on>=?)) ORDER BY j.id DESC LIMIT 1001") ||
+        "ORDER BY j.id DESC LIMIT 1001") ||
         !bind_id(statement, 1, actor_id) || !bind_id(statement, 2, manager) ||
-        !bind_id(statement, 3, manager) || !bind_id(statement, 4, actor_id) ||
-        !bind_text(statement, 5, today) || !bind_text(statement, 6, today)) {
+        !bind_id(statement, 3, manager)) {
         db_finalize(statement);
         server_error(response);
         return;
     }
     Json json = {0};
     append(&json, "{\"jobs\":[");
-    int result, count = 0;
+    int result, count = 0, scanned = 0;
     while ((result = db_step(statement)) == DB_ROW) {
-        if (++count > RESULT_LIMIT) break;
+        if (++scanned > RESULT_LIMIT) break;
+        int permission = manager ? 3 : 0;
+        if (!manager) {
+            DbInt id = db_column_int64(statement, 0);
+            for (size_t i = 0; i < access.count; i++) {
+                if (access.job_ids[i] == id) { permission = access.permissions[i]; break; }
+            }
+        }
+        if (!(permission & 1)) continue;
+        count++;
         if (count > 1) append(&json, ",");
         job_json(&json, statement);
         job_contract_json(&json,statement,8);
         append(&json, ",\"total_minutes\":"); append_integer(&json, db_column_int64(statement, 6));
         append(&json, ",\"assigned_users\":"); append_integer(&json, db_column_int64(statement, 7));
+        append(&json, ",\"assigned_groups\":"); append_integer(&json, db_column_int64(statement, 12));
+        append(&json, ",\"can_log_time\":"); append(&json, (permission & 2) ? "true" : "false");
         append(&json, "}");
     }
     db_finalize(statement);
-    if (count > RESULT_LIMIT || result != DB_DONE) {
+    if (scanned > RESULT_LIMIT || result != DB_DONE) {
         free(json.data);
-        if (count > RESULT_LIMIT)
+        if (scanned > RESULT_LIMIT)
             error(response, 409, "Sono presenti troppe commesse: il limite è di 1000.");
         else server_error(response);
         return;
@@ -689,23 +709,24 @@ static void write_entry(const char *body, DbInt actor_id, const char *owner,
             free_fields(fields, count); return;
         }
     }
-    if (!prepare(&statement, manager ? "SELECT 1 FROM jobs WHERE id=?" :
-        "SELECT 1 FROM job_assignments WHERE job_id=? AND user_id=? "
-        "AND (starts_on IS NULL OR (starts_on<=? AND starts_on<=?)) "
-        "AND (ends_on IS NULL OR (ends_on>=? AND ends_on>=?))") ||
-        !bind_id(statement, 1, job_id) || (!manager &&
-        (!bind_id(statement, 2, actor_id) || !bind_text(statement, 3, today) ||
-         !bind_text(statement, 4, date) || !bind_text(statement, 5, today) ||
-         !bind_text(statement, 6, date)))) goto database_failure;
-    result = db_step(statement);
-    db_finalize(statement); statement = NULL;
-    if (result == DB_DONE) {
+    int permission;
+    if (manager) {
+        if (!prepare(&statement, "SELECT 1 FROM jobs WHERE id=?") ||
+            !bind_id(statement, 1, job_id)) goto database_failure;
+        result = db_step(statement);
+        db_finalize(statement); statement = NULL;
+        if (result != DB_ROW && result != DB_DONE) goto database_failure;
+        permission = result == DB_ROW ? 3 : 0;
+    } else {
+        permission = organization_job_access(database, job_id, actor_id, today, date);
+        if (permission < 0) goto database_failure;
+    }
+    if (!(permission & 2)) {
         rollback();
         error(response, manager ? 404 : 403, manager ? "Commessa non trovata." :
-            "La commessa non è abilitata per te oggi e nella data lavorata. Contatta il gestore.");
+            "Non hai il permesso di registrare ore su questa commessa oggi e nella data lavorata. Contatta il gestore.");
         free(before.data); free_fields(fields, count); return;
     }
-    if (result != DB_ROW) goto database_failure;
     if (!prepare(&statement,
         "SELECT COALESCE(SUM(minutes),0),COUNT(*) FROM time_entries "
         "WHERE user_id=? AND date=? AND id<>?") || !bind_id(statement, 1, actor_id) ||
@@ -780,8 +801,10 @@ static void list_assignments(DbInt job_id, WorkspaceResponse *response) {
     if (!found) { error(response, 404, "Commessa non trovata."); return; }
     DbStmt *statement = NULL;
     if (!prepare(&statement,
-        "SELECT u.id,u.name,u.email,u.role,u.active,a.starts_on,a.ends_on "
+        "SELECT u.id,u.name,u.email,u.role,u.active,a.starts_on,a.ends_on,"
+        "COALESCE(a.role_id,2),r.code,r.name,r.can_log_time "
         "FROM job_assignments a JOIN users u ON u.id=a.user_id "
+        "LEFT JOIN job_roles r ON r.id=COALESCE(a.role_id,2) "
         "WHERE a.job_id=? ORDER BY u.name COLLATE NOCASE,u.id LIMIT 201") ||
         !bind_id(statement, 1, job_id)) {
         db_finalize(statement); server_error(response); return;
@@ -800,6 +823,10 @@ static void list_assignments(DbInt job_id, WorkspaceResponse *response) {
         append(&json, ",\"active\":"); append(&json, db_column_int(statement, 4) ? "true" : "false");
         append(&json, ",\"starts_on\":"); append_string(&json, column_text(statement, 5));
         append(&json, ",\"ends_on\":"); append_string(&json, column_text(statement, 6));
+        append(&json, ",\"role_id\":"); append_integer(&json, db_column_int64(statement, 7));
+        append(&json, ",\"role_code\":"); append_string(&json, column_text(statement, 8));
+        append(&json, ",\"role_name\":"); append_string(&json, column_text(statement, 9));
+        append(&json, ",\"can_log_time\":"); append(&json, db_column_int(statement, 10) == 1 ? "true" : "false");
         append(&json, "}");
     }
     db_finalize(statement);
@@ -813,12 +840,13 @@ static bool bind_date(DbStmt *statement, int index, const char *date) {
 
 static void write_assignment(const char *body, DbInt actor_id,
                              DbInt job_id, WorkspaceResponse *response) {
-    Field fields[] = {{"user_id", NULL}, {"starts_on", NULL}, {"ends_on", NULL}};
+    Field fields[] = {{"user_id", NULL}, {"starts_on", NULL}, {"ends_on", NULL}, {"role_id", NULL}};
     const size_t count = sizeof(fields) / sizeof(fields[0]);
     if (!parse_fields(body, fields, count, response)) return;
-    DbInt user_id;
+    DbInt user_id, role_id = 2;
     const char *starts_on = field_value(&fields[1]), *ends_on = field_value(&fields[2]);
     if (!parse_positive(field_value(&fields[0]), &user_id) ||
+        (fields[3].value && !parse_positive(fields[3].value, &role_id)) ||
         (*starts_on && !valid_date(starts_on)) || (*ends_on && !valid_date(ends_on)) ||
         (*starts_on && *ends_on && strcmp(starts_on, ends_on) > 0)) {
         error(response, 400, "Seleziona un utente e un intervallo di date valido. La fine non può precedere l'inizio.");
@@ -846,6 +874,22 @@ static void write_assignment(const char *body, DbInt actor_id,
     if (result != DB_ROW) goto database_failure;
     int existing = assignment_snapshot(job_id, user_id, &before);
     if (existing < 0) goto database_failure;
+    if (existing && !fields[3].value) {
+        if (!prepare(&statement, "SELECT COALESCE(role_id,2) FROM job_assignments WHERE job_id=? AND user_id=?") ||
+            !bind_id(statement, 1, job_id) || !bind_id(statement, 2, user_id) ||
+            db_step(statement) != DB_ROW) goto database_failure;
+        role_id = db_column_int64(statement, 0);
+        db_finalize(statement); statement = NULL;
+    }
+    if (!prepare(&statement, "SELECT 1 FROM job_roles WHERE id=?") ||
+        !bind_id(statement, 1, role_id)) goto database_failure;
+    result = db_step(statement);
+    db_finalize(statement); statement = NULL;
+    if (result == DB_DONE) {
+        rollback(); error(response, 404, "Ruolo della commessa non trovato.");
+        free(before.data); free_fields(fields, count); return;
+    }
+    if (result != DB_ROW) goto database_failure;
     if (!existing) {
         if (!prepare(&statement, "SELECT COUNT(*) FROM job_assignments WHERE job_id=?") ||
             !bind_id(statement, 1, job_id) || db_step(statement) != DB_ROW)
@@ -858,15 +902,16 @@ static void write_assignment(const char *body, DbInt actor_id,
         }
     }
     if (!prepare(&statement,
-        "INSERT INTO job_assignments(job_id,user_id,starts_on,ends_on) VALUES(?,?,?,?) "
+        "INSERT INTO job_assignments(job_id,user_id,starts_on,ends_on,role_id) VALUES(?,?,?,?,?) "
 #ifdef PUNTO_MYSQL
-        "ON DUPLICATE KEY UPDATE starts_on=VALUES(starts_on),ends_on=VALUES(ends_on)"
+        "ON DUPLICATE KEY UPDATE starts_on=VALUES(starts_on),ends_on=VALUES(ends_on),role_id=VALUES(role_id)"
 #else
-        "ON CONFLICT(job_id,user_id) DO UPDATE SET starts_on=excluded.starts_on,ends_on=excluded.ends_on"
+        "ON CONFLICT(job_id,user_id) DO UPDATE SET starts_on=excluded.starts_on,ends_on=excluded.ends_on,role_id=excluded.role_id"
 #endif
         ) ||
         !bind_id(statement, 1, job_id) || !bind_id(statement, 2, user_id) ||
         !bind_date(statement, 3, starts_on) || !bind_date(statement, 4, ends_on) ||
+        !bind_id(statement, 5, role_id) ||
         db_step(statement) != DB_DONE) goto database_failure;
     db_finalize(statement); statement = NULL;
     if (assignment_snapshot(job_id, user_id, &after) != 1 ||

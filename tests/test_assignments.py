@@ -82,7 +82,8 @@ class AssignmentIntegrationTests(unittest.TestCase):
         self.assertEqual(data["assignments"], [{
             "user_id": user_id, "name": 'Mario "Tecnico" ✓', "email": roles.WORKER_EMAIL,
             "role": "worker", "active": True, "starts_on": self.today(-2),
-            "ends_on": self.today(2)}])
+            "ends_on": self.today(2), "role_id": 2, "role_code": "contributor",
+            "role_name": "Collaboratore", "can_log_time": True}])
         self.assign(job_id, user_id, expected=200)
         status, data, _ = self.api("GET", "/api/jobs/%d/assignments" % job_id,
                                    cookie=self.manager_cookie)
@@ -418,7 +419,7 @@ class AssignmentIntegrationTests(unittest.TestCase):
         manager_id = self.users()[0]["id"]
         self.assertEqual(self.day(self.manager_cookie)["total_minutes"], 75)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (2,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (3,))
             self.assertEqual(db.execute("SELECT owner,user_id FROM time_entries WHERE id=?", (entry_id,)).fetchone(),
                              ("MaNaGeR@PuNtO.LoCaL", manager_id))
             self.assertEqual(db.execute("SELECT user_id FROM time_entries WHERE id=?", (legacy_id,)).fetchone(), (None,))
@@ -432,14 +433,14 @@ class AssignmentIntegrationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT owner,user_id FROM time_entries WHERE id=?", (legacy_id,)).fetchone(),
                              ("FuTuRe@punto.local", future_id))
         before_events = self.events("limit=100")
-        self.assertEqual(sum(event["action"] == "system.migration" for event in before_events), 2)
+        self.assertEqual(sum(event["action"] == "system.migration" for event in before_events), 3)
         self.stop_server()
         self.start_server(password="Replacement-only!2026")
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         self.assertEqual(self.events("limit=100"), before_events)
         self.assertEqual(self.day(self.login("future@punto.local", roles.WORKER_PASSWORD))["total_minutes"], 35)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (2,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (3,))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM time_entries").fetchone(), (3,))
 
     def test_upgrade_preserves_existing_accounts_and_claims_only_unowned_history(self):

@@ -3152,3 +3152,53 @@
   #supplier-dialog .form-grid,#contract-dialog .form-grid { grid-template-columns:1fr; gap:0; }
   .work-app .job-identity .job-contract-label { max-width:200px; }
 }
+
+/* Groups, memberships and per-job access roles. */
+.organization-explanation { margin:0 0 25px; max-width:850px; font-size:13px; line-height:1.8; color:#6c7f61; }
+.organization-grid { display:grid; grid-template-columns:minmax(220px,.8fr) minmax(0,1.2fr); gap:20px; align-items:start; }
+.organization-card { padding:22px; border:1px solid #e3e8d9; border-radius:10px; background:#fffdf8; min-width:0; }
+.organization-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:18px; }
+.organization-heading h3 { margin:0; color:#415c3c; font-size:17px; line-height:1.5; font-weight:600; overflow-wrap:anywhere; }
+.organization-heading .field-help { margin:8px 0 0; }
+.organization-heading .row-actions { flex-shrink:0; flex-wrap:wrap; }
+.organization-heading>.button { flex-shrink:0; }
+.groups-tree,.groups-tree ul { list-style:none; padding:0; margin:0; }
+.groups-tree ul { margin:5px 0 8px 12px; padding-left:12px; border-left:1px solid #d9e1ce; }
+.groups-tree ul ul ul { margin-left:0; padding-left:0; }
+.groups-tree li { margin:4px 0; }
+.group-tree-button { display:flex; justify-content:space-between; align-items:center; gap:9px; width:100%; min-height:42px; padding:10px 12px; text-align:left; border:1px solid transparent; border-radius:7px; background:transparent; color:#566d4b; font:inherit; font-size:13px; cursor:pointer; }
+.group-tree-button:hover { background:#f0f2e7; }
+.group-tree-button[aria-pressed=true] { background:#eaf0df; border-color:#cbd7ba; color:#364f2f; font-weight:600; }
+.group-tree-button:focus-visible { outline:2px solid #e96850; outline-offset:2px; }
+.group-tree-name { overflow-wrap:anywhere; min-width:0; }
+.group-tree-count { min-width:22px; padding:2px 5px; border-radius:5px; background:#f2f3ec; text-align:center; font-size:11px; flex-shrink:0; }
+.organization-members { margin:20px 0; padding:0; list-style:none; }
+.organization-member { display:flex; justify-content:space-between; gap:15px; align-items:flex-start; padding:15px 0; border-bottom:1px solid #e7eadd; }
+.organization-member:first-child { border-top:1px solid #e7eadd; }
+.organization-member>.row-button { flex-shrink:0; }
+.organization-member .field-help { display:block; margin:6px 0 0; }
+.group-member-form { border-top:1px solid #e7eadd; padding-top:20px; }
+.group-member-form .button { margin-top:2px; }
+.organization-roles { margin-top:20px; }
+.job-roles-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; list-style:none; padding:0; margin:0; }
+.job-role-card { display:flex; justify-content:space-between; align-items:flex-start; gap:15px; border:1px solid #e3e8d9; border-radius:8px; padding:18px; background:#fff; min-width:0; }
+.job-role-card>div { min-width:0; }
+.job-role-card strong { font-size:14px; color:#415c3c; overflow-wrap:anywhere; }
+.job-role-card .field-help { margin:10px 0 0; }
+.job-access-role { display:inline-block; border-radius:5px; padding:4px 7px; font-size:11px; line-height:1.4; color:#54674c; background:#edf1e7; overflow-wrap:anywhere; }
+.readonly-job-label { font-size:12px; line-height:1.6; color:#76856c; }
+.assignment-groups { margin-top:28px; border-top:1px solid #d7dfcd; padding-top:22px; }
+.assignment-groups>h3 { margin:0 0 10px; font-size:18px; color:#415c3c; }
+#group-detail-path { overflow-wrap:anywhere; }
+@media (max-width:1100px) {
+  .organization-grid { grid-template-columns:minmax(190px,.75fr) minmax(0,1.25fr); gap:14px; }
+  .organization-card { padding:18px; }
+  .organization-heading { flex-wrap:wrap; gap:10px; }
+}
+@media (max-width:760px) {
+  .organization-grid,.job-roles-list { grid-template-columns:1fr; }
+  .organization-card { padding:18px; }
+  .organization-roles { margin-top:14px; }
+  .organization-member { gap:12px; }
+  .job-role-card { padding:15px; }
+}

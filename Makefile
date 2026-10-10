@@ -3,7 +3,7 @@ DB_BACKEND ?= sqlite
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L
 CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
-SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c
+SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c src/organization.c
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 LDLIBS += -framework Security

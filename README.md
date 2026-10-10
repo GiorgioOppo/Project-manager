@@ -1,6 +1,6 @@
 # punto — Commesse e ore di lavoro in C
 
-Web app in italiano con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, ruoli, fornitori, contratti e PDF originali, commesse abilitate, registrazioni delle ore e storico delle modifiche.
+Web app in italiano con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, gruppi gerarchici, ruoli sulle commesse, fornitori, contratti e PDF originali, registrazioni delle ore e storico delle modifiche.
 
 Sono disponibili due modalità indipendenti: **Docker con MySQL** per i dati strutturati e **MongoDB GridFS** per i PDF, oppure **avvio nativo con SQLite** e archivio documentale locale. Le due modalità non condividono dati e non eseguono importazioni automatiche.
 
@@ -28,7 +28,7 @@ La CA locale dura dieci anni e i certificati server un anno. **Il rinnovo è man
 
 Lo script ferma l’app durante la preparazione, esegue un backup dei dati del primo nodo, inizializza i nuovi nodi vuoti con una copia coerente, crea il gruppo e avvia gli altri servizi. Il primo nodo conserva il volume `mysql_data` già usato dal progetto: non occorre eliminare il database per aggiungere le repliche. Il file locale `data/cluster-state.json` conserva i marcatori dei nodi già preparati, così il seed non viene ripetuto sui dati esistenti. Gli account interni vengono creati su ciascun nodo e il seed viene importato localmente, senza registrare le password nell’output del controller. Su macOS il comando usa per impostazione predefinita il contesto Docker `desktop-linux`; `--docker-context` permette di sceglierne un altro.
 
-Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica la migrazione SQL alla versione 2, conservando utenti, commesse e registrazioni; Compose avvia MongoDB come dipendenza dell’app.
+Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 3, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
 
 Per applicare la segmentazione e il TLS a un **cluster già inizializzato**, usa invece:
 
@@ -56,7 +56,7 @@ Apri [http://localhost](http://localhost) tramite Nginx Proxy Manager e accedi c
 | `app` | Server C, con `DB_HOST=db-proxy` e `DOC_DB_HOST=documents` | Dati strutturati nel cluster; PDF in MongoDB |
 | `nginx-proxy-manager` | Reverse proxy HTTP/HTTPS e pannello amministrativo | Directory locali NPM |
 
-Ogni membro MySQL conserva una copia completa di utenti, fornitori, contratti, metadati documentali, commesse, abilitazioni, ore e storico. Tutti e tre possono ricevere scritture; HAProxy sceglie un nodo per ciascuna nuova connessione, mantenendo su quel nodo l’intera transazione. Il monitor ammette nel bilanciamento soltanto membri `ONLINE`, con ruolo `PRIMARY`, scrivibili e con almeno due membri disponibili. MySQL e HAProxy non pubblicano porte database sull’host; il loro traffico rimane sulla rete Compose `backend_app`.
+Ogni membro MySQL conserva una copia completa di utenti, gruppi, appartenenze, ruoli, fornitori, contratti, metadati documentali, commesse, abilitazioni, ore e storico. Tutti e tre possono ricevere scritture; HAProxy sceglie un nodo per ciascuna nuova connessione, mantenendo su quel nodo l’intera transazione. Il monitor ammette nel bilanciamento soltanto membri `ONLINE`, con ruolo `PRIMARY`, scrivibili e con almeno due membri disponibili. MySQL e HAProxy non pubblicano porte database sull’host; il loro traffico rimane sulla rete Compose `backend_app`.
 
 Il **quorum è 2 su 3**: il gruppo può continuare a lavorare se un membro si arresta. Con due membri indisponibili le scritture vengono bloccate per proteggere la consistenza. Group Replication e le sue limitazioni sono descritte nel [manuale Oracle MySQL 8.4](https://dev.mysql.com/doc/refman/8.4/en/group-replication-multi-primary-mode.html).
 
@@ -288,16 +288,34 @@ L’account iniziale è un **Gestore**. Dalla scheda **Utenti** può creare acco
 | Creare e modificare commesse | Sì | No |
 | Censire e modificare fornitori e contratti | Sì | No |
 | Caricare, elencare e scaricare i PDF contrattuali | Sì | No |
-| Abilitare utenti alle commesse | Sì | No |
-| Aggiungere ore e descrivere il lavoro svolto | Sì | Solo su commesse abilitate |
+| Abilitare utenti o gruppi alle commesse | Sì | No |
+| Aggiungere ore e descrivere il lavoro svolto | Sì | Solo con un ruolo che permette di registrare ore |
 | Consultare le proprie registrazioni, anche dopo una revoca | Sì | Sì |
 | Modificare o eliminare le proprie registrazioni | Sì | No |
 | Gestire utenti e ruoli | Sì | No |
+| Gestire gruppi, sottogruppi e appartenenze | Sì | No |
 | Consultare lo storico delle modifiche | Sì | No |
 
 I permessi sono verificati dal server a ogni richiesta, anche se l’utente tenta di inviare direttamente una chiamata API. Un cambio di ruolo vale per le sessioni già aperte; disattivare un account ne revoca le sessioni, che non vengono ripristinate riattivandolo. Il sistema impedisce di disattivare o declassare l’ultimo gestore attivo. L’email non è modificabile dall’interfaccia o dall’API.
 
 Le password vengono salvate come derivazioni PBKDF2-HMAC-SHA256 con sale casuale. Le sessioni usano token casuali e cookie HttpOnly/SameSite, durano 8 ore oppure 30 giorni con “Ricordami” e terminano al riavvio del server. Per le origini HTTPS autorizzate il cookie include anche `Secure`; il certificato TLS viene gestito da Nginx Proxy Manager.
+
+## Gruppi e ruoli sulle commesse
+
+La scheda **Gruppi e ruoli**, riservata ai gestori, mostra un albero di gruppi con i rispettivi membri. Un gruppo ha un nome e un eventuale gruppo padre; un utente può appartenere a più gruppi. Sono ammessi fino a 200 gruppi e 16 livelli, contando la radice come primo livello. Il server rifiuta cicli e spostamenti che superano la profondità massima. Un gruppo può essere eliminato soltanto quando non ha membri, sottogruppi o abilitazioni a commesse.
+
+I profili globali **Gestore** e **Operatore** continuano a determinare le funzioni amministrative. Separatamente, ogni abilitazione a una commessa assegna un ruolo operativo:
+
+| Ruolo predefinito | Codice | Consulta la commessa | Registra ore |
+| --- | --- | --- | --- |
+| Lettore | `reader` | Sì | No |
+| Collaboratore | `contributor` | Sì | Sì |
+
+I ruoli predefiniti non sono modificabili. Il gestore può creare fino a 100 ruoli complessivi con codice, nome e scelta della possibilità di registrare ore; tutti consentono la consultazione. Il codice, massimo 40 caratteri, inizia con una lettera minuscola e accetta lettere minuscole, numeri, trattini e underscore. Questi ruoli non attribuiscono privilegi amministrativi o accesso a contratti, PDF, utenti e storico.
+
+Dal comando **Abilitazioni** della commessa si assegnano utenti o gruppi, scegliendo ruolo ed eventuali date inclusive. Un’abilitazione a un gruppo si applica anche ai membri dei suoi sottogruppi: un accesso assegnato a “Sviluppo” include gli utenti di “Sviluppo / Backend”, mentre il percorso inverso non concede accesso. Più abilitazioni si sommano; un ruolo Lettore non annulla un altro accesso da Collaboratore. Per revocare completamente l’accesso occorre rimuovere tutte le abilitazioni applicabili.
+
+Le modifiche ad appartenenze, parentela, ruoli e abilitazioni hanno effetto dalla richiesta successiva, anche con una sessione già aperta. Non esiste una cache persistente dei permessi. La consultazione richiede un’abilitazione valida oggi; per registrare ore **una stessa abilitazione** deve permettere l’operazione e coprire sia oggi sia la giornata lavorata. Due intervalli distinti non possono essere combinati per aggirare questo controllo. Le registrazioni già effettuate restano consultabili dal loro autore dopo una revoca.
 
 ## Fornitori, contratti e documenti
 
@@ -335,9 +353,9 @@ Il gestore crea una commessa con codice univoco, nome, cliente, descrizione e co
 
 Ricerca e filtro per stato aiutano a ritrovare le commesse. Le ore mostrate per commessa sono quelle registrate dall’utente autenticato, su tutte le date.
 
-Dal comando **Abilitazioni** il gestore sceglie gli utenti autorizzati a utilizzare una commessa, con data di inizio e fine facoltative. Le date sono inclusive; un campo vuoto non pone un limite su quel lato dell’intervallo.
+Dal comando **Abilitazioni** il gestore sceglie utenti o gruppi, ruolo e date facoltative. Le date sono inclusive; un campo vuoto non pone un limite su quel lato dell’intervallo. Le commesse in sola lettura compaiono nell’elenco dell’operatore, senza l’azione di registrazione ore.
 
-Per un operatore, l’abilitazione deve essere valida sia **oggi** sia **nella data del lavoro registrato**. Una commessa futura, scaduta o revocata non compare nell’elenco utilizzabile e il server rifiuta nuove ore. Le registrazioni precedenti restano consultabili. I gestori possono utilizzare tutte le commesse senza assegnazione; lo stato della commessa, da solo, non blocca la registrazione delle ore.
+Per un operatore, l’abilitazione alla registrazione deve essere valida sia **oggi** sia **nella data del lavoro registrato**. Un accesso futuro, scaduto o revocato non abilita nuove ore. Le registrazioni precedenti restano consultabili. I gestori possono utilizzare tutte le commesse senza assegnazione; lo stato della commessa, da solo, non blocca la registrazione delle ore.
 
 Gli utenti non vengono abilitati automaticamente a tutte le commesse quando si aggiorna un database esistente: il gestore assegna esplicitamente gli accessi.
 
@@ -351,17 +369,17 @@ Ogni registrazione appartiene all’**identificativo stabile dell’utente** (`u
 
 ## Storico delle modifiche e aggiornamenti dei dati
 
-La scheda **Storico** è riservata ai gestori. Mostra creazioni e modifiche di utenti, fornitori, contratti e commesse, caricamenti PDF, aggiunte e correzioni delle ore, eliminazioni delle registrazioni e modifiche alle abilitazioni. Ogni evento conserva data UTC, autore e valori precedenti e successivi; non contiene password, hash o sali. I filtri per tipo e la paginazione consentono di consultare anche uno storico esteso.
+La scheda **Storico** è riservata ai gestori. Mostra creazioni e modifiche di utenti, gruppi, ruoli, fornitori, contratti e commesse, cambiamenti delle appartenenze, caricamenti PDF, aggiunte e correzioni delle ore, eliminazioni delle registrazioni e modifiche alle abilitazioni dirette o per gruppo. Ogni evento conserva data UTC, autore e valori precedenti e successivi; non contiene password, hash o sali. I filtri per tipo e la paginazione consentono di consultare anche uno storico esteso.
 
 Una modifica applicativa e il suo evento di audit vengono salvati nella stessa transazione. Se lo storico non può essere scritto, viene annullata anche la modifica. Le richieste rifiutate non producono eventi di modifica.
 
 Gli aggiornamenti dello schema sono versionati. Per un precedente database SQLite, la migrazione conserva i dati e associa le ore agli utenti attraverso l’email, senza distinguere maiuscole e minuscole. Le righe senza un account corrispondente restano conservate ma non vengono esposte ad altri utenti; la creazione successiva dell’account corrispondente può associarle al suo `user_id`. Un database con versione futura non supportata viene rifiutato senza modificarlo.
 
-La base attuale gestisce fino a 200 utenti, 1000 commesse, 1000 fornitori, 1000 contratti, 1000 documenti per contratto e 1000 registrazioni per utente nella stessa giornata. Un superamento restituisce un errore esplicito senza troncare gli elenchi.
+La base attuale gestisce fino a 200 utenti, 200 gruppi, 100 ruoli sulle commesse, 1000 commesse, 1000 fornitori, 1000 contratti, 1000 documenti per contratto e 1000 registrazioni per utente nella stessa giornata. Un superamento restituisce un errore esplicito senza troncare gli elenchi.
 
 ## Tabelle del database
 
-Nel backend MySQL il database applicativo, predefinito `punto`, contiene dieci tabelle InnoDB; lo schema corrente è la **versione 2**. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
+Nel backend MySQL il database applicativo, predefinito `punto`, contiene quattordici tabelle InnoDB; lo schema corrente è la **versione 3**. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
 
 | Tabella | Dati principali e struttura |
 | --- | --- |
@@ -370,7 +388,11 @@ Nel backend MySQL il database applicativo, predefinito `punto`, contiene dieci t
 | `contracts` | ID `BIGINT`, codice univoco, titolo, `supplier_id` obbligatorio, stato, date `CHAR(10)` nullable, `value_cents BIGINT` nullable, valuta `EUR` e note |
 | `contract_documents` | ID `BIGINT`, `contract_id`, chiave archivio univoca `CHAR(64)`, nome `VARCHAR(180)`, dimensione `INT`, SHA-256 `CHAR(64)`, autore `uploaded_by` e data UTC; nessun byte PDF |
 | `jobs` | ID commessa `BIGINT`, codice univoco, nome, cliente, descrizione, stato e `contract_id BIGINT` nullable |
-| `job_assignments` | Chiave composta `(job_id,user_id)`, riferimenti a commessa e utente, date di validità facoltative |
+| `job_assignments` | Chiave composta `(job_id,user_id)`, riferimenti a commessa, utente e `role_id`, date di validità facoltative |
+| `organization_groups` | ID, nome e `parent_id` nullable verso la stessa tabella; albero senza cicli |
+| `group_members` | Chiave composta `(group_id,user_id)`; appartenenze multiple degli utenti |
+| `job_roles` | ID, codice univoco, nome, `can_log_time` e `builtin`; Lettore e Collaboratore predefiniti |
+| `job_group_grants` | Chiave composta `(job_id,group_id)`, riferimento al ruolo e date di validità facoltative |
 | `time_entries` | ID registrazione `BIGINT`, riferimenti a commessa e utente, copia storica dell’email, giornata, minuti e nota |
 | `audit_events` | ID evento `BIGINT`, autore, data UTC, azione, tipo e ID dell’elemento, JSON precedenti e successivi |
 | `schema_metadata` | Versione dello schema, conservata in una singola riga |
@@ -378,7 +400,7 @@ Nel backend MySQL il database applicativo, predefinito `punto`, contiene dieci t
 
 I testi usano `utf8mb4`; email e codici sono univoci senza distinzione tra maiuscole e minuscole. Le giornate e gli intervalli sono stringhe ISO `YYYY-MM-DD`, le durate sono minuti interi e i JSON dello storico sono testo. I trigger proteggono lo storico da aggiornamenti ed eliminazioni e impediscono di cambiare l’utente già associato a una registrazione. La definizione completa si trova in `src/mysql_schema.c`.
 
-SQLite conserva le stesse tabelle funzionali della modalità nativa e usa `PRAGMA user_version=2` per la versione dello schema. `cluster_write_guard` appartiene alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi.
+SQLite conserva le stesse tabelle funzionali della modalità nativa e usa `PRAGMA user_version=3` per la versione dello schema. `cluster_write_guard` appartiene alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi.
 
 Il database MongoDB, predefinito **`punto_documents`**, contiene i PDF nel bucket GridFS `contract_pdfs`:
 
@@ -398,12 +420,21 @@ Le risposte sono JSON. Gli endpoint applicativi richiedono una sessione. I POST 
 | --- | --- |
 | `GET /healthz` | Controllo di salute senza login |
 | `GET /api/session` | Identità, ruolo e permessi dell’utente autenticato |
-| `GET /api/jobs` | Commesse visibili con totale minuti dell’utente |
+| `GET /api/jobs` | Commesse visibili con totale minuti dell’utente e `can_log_time`; conteggi delle abilitazioni per i gestori |
 | `POST /api/jobs` | Gestore: crea con `code`, `name`, `client`, `description`, `status`, `contract_id` facoltativo |
 | `POST /api/jobs/<id>` | Gestore: modifica gli stessi campi |
 | `GET /api/jobs/<id>/assignments` | Gestore: elenco utenti abilitati e relativi intervalli |
-| `POST /api/jobs/<id>/assignments` | Gestore: crea o aggiorna abilitazione con `user_id`, `starts_on`, `ends_on` |
+| `POST /api/jobs/<id>/assignments` | Gestore: crea o aggiorna abilitazione con `user_id`, `role_id`, `starts_on`, `ends_on` |
 | `DELETE /api/jobs/<id>/assignments/<user_id>` | Gestore: revoca un’abilitazione, senza corpo della richiesta |
+| `GET /api/jobs/<id>/group-grants` | Gestore: elenco gruppi abilitati con ruolo e intervallo |
+| `POST /api/jobs/<id>/group-grants` | Gestore: assegna/aggiorna `group_id`, `role_id`, `starts_on`, `ends_on` |
+| `DELETE /api/jobs/<id>/group-grants/<group_id>` | Gestore: revoca l’abilitazione del gruppo |
+| `GET /api/groups`, `POST /api/groups` | Gestore: elenco/creazione gruppi con `name` e `parent_id` facoltativo |
+| `POST /api/groups/<id>`, `DELETE /api/groups/<id>` | Gestore: aggiorna nome/parentela oppure elimina un gruppo vuoto |
+| `GET /api/groups/<id>/members`, `POST /api/groups/<id>/members` | Gestore: elenco membri oppure aggiunta con `user_id` |
+| `DELETE /api/groups/<id>/members/<user_id>` | Gestore: rimuove l’appartenenza al gruppo |
+| `GET /api/job-roles`, `POST /api/job-roles` | Gestore: elenco/creazione ruoli con `code`, `name`, `can_log_time` (`0`/`1`) |
+| `POST /api/job-roles/<id>` | Gestore: modifica un ruolo personalizzato; vietato per quelli predefiniti |
 | `GET /api/time-entries?date=YYYY-MM-DD` | Registro giornaliero dell’utente e totale minuti |
 | `POST /api/time-entries` | Registra tempo con `job_id`, `date`, `minutes`, `note` |
 | `POST /api/time-entries/<id>` | Gestore: modifica una propria registrazione |
@@ -420,11 +451,11 @@ Le risposte sono JSON. Gli endpoint applicativi richiedono una sessione. I POST 
 | `POST /api/users/<id>` | Gestore: aggiorna `name`, `role`, `active` (`1` oppure `0`) |
 | `GET /api/audit?limit=30&before_id=123&entity_type=job` | Gestore: storico con filtri facoltativi |
 
-`client`, `description` e `note` sono facoltativi. `starts_on` e `ends_on` accettano date `YYYY-MM-DD`, valori vuoti o campi omessi. L’utente abilitato deve esistere ed essere attivo. L’audit accetta `limit` da 1 a 100, un `before_id` positivo e `entity_type` tra `job`, `time_entry`, `assignment`, `user`, `supplier`, `contract`, `contract_document` e `system`; restituisce `next_before_id` per la pagina successiva.
+`client`, `description` e `note` sono facoltativi. `starts_on` e `ends_on` accettano date `YYYY-MM-DD`, valori vuoti o campi omessi. L’utente abilitato deve esistere ed essere attivo. Omettere `role_id` in una nuova abilitazione diretta sceglie Collaboratore; ometterlo in modifica conserva il ruolo precedente. L’audit accetta `limit` da 1 a 100, un `before_id` positivo e `entity_type` tra `job`, `time_entry`, `assignment`, `user`, `group`, `group_member`, `job_role`, `group_grant`, `supplier`, `contract`, `contract_document` e `system`; restituisce `next_before_id` per la pagina successiva.
 
 Gli elenchi fornitori e contratti rispondono con `{suppliers:[...]}` e `{contracts:[...]}`; i documenti con `{documents:[...]}`. Le date e il valore del contratto possono essere vuoti/nulli; `currency` accetta soltanto `EUR`. In modifica i campi facoltativi omessi conservano il valore precedente.
 
-I ruoli sono `manager` e `worker`. Le operazioni non autorizzate restituiscono HTTP 403. I dati delle ore sono sempre limitati all’utente autenticato, anche per un gestore.
+I profili globali sono `manager` e `worker`; i ruoli sulle commesse appartengono al catalogo `job_roles`. La sessione espone anche i permessi amministrativi `manage_groups` e `manage_job_roles`. Le operazioni non autorizzate restituiscono HTTP 403. I dati delle ore sono sempre limitati all’utente autenticato, anche per un gestore.
 
 ## Verifica
 
@@ -451,6 +482,14 @@ PUNTO_PROCUREMENT_TEST_URL=http://localhost python3 tests/test_procurement_mysql
 ```
 
 La suite non legge `.env.docker`: le credenziali provengono da `PUNTO_MYSQL_TEST_EMAIL`/`PUNTO_MYSQL_TEST_PASSWORD`, con fallback su `PUNTO_EMAIL`/`PUNTO_PASSWORD`. Crea fixture `codex-test-*` e PDF, compreso un documento composto da più chunk; verifica relazioni, ruoli, rifiuti, audit e download esatto. Conserva le fixture e disattiva l’operatore creato durante la pulizia. `PUNTO_PROCUREMENT_TEST_MANIFEST` salva ID e hash senza password per successive verifiche di persistenza.
+
+Per verificare ereditarietà, sola lettura e revoca dei permessi sul deployment MySQL:
+
+```sh
+PUNTO_GROUPS_TEST_URL=http://localhost python3 tests/test_groups_mysql.py -v
+```
+
+Usa le stesse variabili di credenziali, senza caricare file `.env`. Crea fixture univoche e disattiva l’operatore nel blocco finale di pulizia. La suite SQLite `test_groups.py` verifica anche cicli, profondità, intervalli, autorizzazioni, rollback dell’audit e migrazione dalla versione 2.
 
 ### Verifica della disponibilità del cluster
 
@@ -500,12 +539,15 @@ Il 10 ottobre 2026, dopo l’aggiunta di fornitori, contratti e GridFS, la suite
 
 Durante la precedente migrazione delle reti erano passati anche gli otto casi negativi TLS in un container isolato; prima delle fixture, le impronte delle cinque tabelle applicative preesistenti erano identiche al baseline su tutti i nodi. I backup sono conservati in `backups/`.
 
+Dopo l’aggiunta di gruppi e ruoli, sempre il 10 ottobre 2026, la suite locale ha completato **128 controlli: 114 superati e 14 opzionali saltati**, inclusi 13 nuovi test dell’organizzazione. Sono passate le tre suite live su MySQL per commesse/ore, contratti/GridFS e gruppi/ruoli. Prima di creare le nuove fixture, le impronte delle sette tabelle preesistenti erano invariate su tutti e tre i nodi dopo la migrazione allo schema 3. I sette servizi risultano sani e i conteggi delle nuove tabelle concordano. Nel browser sono stati verificati albero, membri, catalogo ruoli e moduli di abilitazione per utenti e gruppi, senza errori JavaScript.
+
 ## Struttura
 
 ```text
 src/server.c           HTTP, sessioni e health check
 src/accounts.c         Utenti, password e ruoli
 src/workspace.c        Commesse, abilitazioni e ore
+src/organization.c     Albero dei gruppi, membri, ruoli e valutazione degli accessi
 src/storage.c          Migrazioni e audit
 src/procurement.c      Fornitori, contratti e metadati documentali
 src/documents.c        PDF: GridFS con TLS o archivio locale nativo

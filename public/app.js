@@ -5,9 +5,10 @@
   const states = { planned: "Da avviare", active: "In corso", paused: "In pausa", completed: "Completata", cancelled: "Annullata" };
   const roles = { manager: "Gestore", worker: "Operatore" };
   const contractStates = { draft: "Bozza", active: "Attivo", expired: "Scaduto", closed: "Chiuso", cancelled: "Annullato" };
-  const tabs = ["jobs", "hours", "suppliers", "contracts", "users", "audit"];
+  const tabs = ["jobs", "hours", "suppliers", "contracts", "users", "organization", "audit"];
   const state = { session: null, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
   Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
+  Object.assign(state, { organizationGroups: [], organizationRoles: [], organizationUsers: [], organizationReady: false, organizationLoading: false, organizationRequest: 0, selectedGroup: null, groupMembers: [], groupMembersReady: false, groupMembersRequest: 0, organizationBusy: false, organizationConfirm: null, assignmentGroups: [], assignmentRoles: [], groupGrants: [], editingGroupGrant: null, revokeGroupGrant: null });
   const busyDialogs = new Set();
   let noticeTimer;
 
@@ -120,7 +121,7 @@
   }
 
   function availableTabs() {
-    const permissions = { users: "manage_users", audit: "view_audit", suppliers: "manage_suppliers", contracts: "manage_contracts" };
+    const permissions = { users: "manage_users", audit: "view_audit", suppliers: "manage_suppliers", contracts: "manage_contracts", organization: "manage_groups" };
     return tabs.filter((tab) => !permissions[tab] || can(permissions[tab]));
   }
 
@@ -138,6 +139,7 @@
     $("tab-suppliers").hidden = !can("manage_suppliers");
     $("tab-contracts").hidden = !can("manage_contracts");
     $("tab-users").hidden = !can("manage_users");
+    $("tab-organization").hidden = !can("manage_groups");
     $("tab-audit").hidden = !can("view_audit");
     $("new-user").hidden = !can("manage_users");
     document.querySelector(".jobs-table").classList.toggle("jobs-with-assignments", can("manage_assignments"));
@@ -165,6 +167,26 @@
       state.assignmentRequest++;
       state.assignmentJob = null;
       if ($("assignment-dialog").open) $("assignment-dialog").close();
+    }
+    if (!can("manage_groups")) {
+      state.organizationRequest++;
+      state.groupMembersRequest++;
+      state.organizationGroups = [];
+      state.organizationUsers = [];
+      state.organizationRoles = [];
+      state.groupMembers = [];
+      state.selectedGroup = null;
+      state.organizationReady = false;
+      state.groupMembersReady = false;
+      state.organizationLoading = false;
+      state.organizationConfirm = null;
+      $("groups-tree").replaceChildren();
+      $("group-members").replaceChildren();
+      $("job-roles-list").replaceChildren();
+      $("organization-content").hidden = true;
+      $("organization-confirm").hidden = true;
+      if ($("group-dialog").open) $("group-dialog").close();
+      if ($("job-role-dialog").open) $("job-role-dialog").close();
     }
     if (!can("view_audit")) {
       state.auditRequest++;
@@ -219,6 +241,7 @@
     });
     if (moveFocus) $("tab-" + name).focus();
     if (name === "users" && !state.usersReady) refreshUsers();
+    if (name === "organization" && !state.organizationReady && !state.organizationLoading) refreshOrganization();
     if (name === "audit" && !state.auditReady && !state.auditLoading) refreshAudit();
     if (["suppliers", "contracts"].includes(name) && !state[name + "Ready"] && !state[name + "Loading"]) refreshRegistry(name);
   }
@@ -279,9 +302,11 @@
       if (can("manage_jobs")) actions.append(action("Modifica", "Modifica la commessa " + job.name, () => openJob(job)), node("span", "row-divider"));
       if (can("manage_assignments")) {
         const count = Number(job.assigned_users) || 0;
-        actions.append(action("Abilitazioni · " + count, "Gestisci le abilitazioni della commessa " + job.name + ": " + count + " utenti", () => openAssignments(job)), node("span", "row-divider"));
+        const groupCount = Number(job.assigned_groups) || 0;
+        actions.append(action("Abilitazioni · " + count + (groupCount ? " + " + groupCount + " gruppi" : ""), "Gestisci le abilitazioni della commessa " + job.name + ": " + count + " utenti e " + groupCount + " gruppi", () => openAssignments(job)), node("span", "row-divider"));
       }
-      actions.append(action("+ Ore", "Registra ore per " + job.name, () => openEntry(null, job.id)));
+      if (canLogTime(job)) actions.append(action("+ Ore", "Registra ore per " + job.name, () => openEntry(null, job.id)));
+      else actions.append(node("span", "readonly-job-label", "Sola consultazione"));
       actionsCell.append(actions);
       row.append(nameCell, clientCell, statusCell, hoursCell, actionsCell);
       $("jobs-body").append(row);
@@ -296,7 +321,12 @@
     $("empty-new-job").hidden = !noJobs || !can("manage_jobs");
     $("clear-filters").hidden = noJobs;
     $("jobs-visible-count").textContent = `${jobs.length} ${jobs.length === 1 ? "commessa" : "commesse"}${jobs.length !== state.jobs.length ? " su " + state.jobs.length : ""}`;
+    ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => { $(id).hidden = !can("manage_jobs") && !state.jobs.some(canLogTime); });
     renderStats();
+  }
+
+  function canLogTime(job) {
+    return can("manage_jobs") || job.can_log_time === true;
   }
 
   function renderEntries() {
@@ -657,6 +687,9 @@
     $("assignment-dialog").querySelectorAll("input, select, button").forEach((element) => { element.disabled = busy || element.dataset.assignmentInactive === "1"; });
     $("assignment-user").disabled = busy || Boolean(state.editingAssignment) || !state.assignmentsReady;
     $("assignment-save").disabled = busy || !state.assignmentsReady;
+    $("group-grant-group").disabled = busy || Boolean(state.editingGroupGrant) || !state.assignmentsReady;
+    $("group-grant-save").disabled = busy || !state.assignmentsReady || state.assignmentGroups.length === 0;
+    $("group-grant-save").textContent = busy ? "Salvataggio…" : state.editingGroupGrant ? "Salva abilitazione gruppo" : "Abilita gruppo";
     $("assignment-save").textContent = busy ? "Salvataggio…" : state.editingAssignment ? "Salva abilitazione" : "Abilita utente";
     $("assignment-revoke-save").textContent = busy ? "Revoca in corso…" : "Conferma revoca";
   }
@@ -674,12 +707,13 @@
       return option;
     });
     $("assignment-user").replaceChildren(first, ...options);
+    fillRoleSelect("assignment-role", state.assignmentRoles, assignment?.role_id || 2);
     if (assignment) {
       $("assignment-user").value = assignment.user_id;
       $("assignment-start").value = assignment.starts_on || "";
       $("assignment-end").value = assignment.ends_on || "";
     }
-    $("assignment-form-title").textContent = assignment ? "Modifica periodo di abilitazione" : "Abilita un utente";
+    $("assignment-form-title").textContent = assignment ? "Modifica abilitazione utente" : "Abilita un utente";
     $("assignment-reset").hidden = !assignment;
     setAssignmentBusy(busyDialogs.has("assignment-dialog"));
   }
@@ -695,7 +729,7 @@
       identity.append(node("strong", "", assignment.name), node("span", "assignment-email", assignment.email));
       const [label, status] = assignmentStatus(assignment);
       const meta = node("div", "assignment-meta");
-      meta.append(node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(assignment)));
+      meta.append(node("span", "job-access-role", assignment.role_name || "Collaboratore"), node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(assignment)));
       if (assignment.role === "manager") meta.append(node("span", "field-help", "Gestore · ha già accesso a tutte le commesse"));
       identity.append(meta);
       const controls = node("div", "row-actions");
@@ -712,7 +746,9 @@
       controls.append(editButton, action("Revoca", "Revoca abilitazione di " + assignment.name, () => {
         if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
         state.revokeAssignment = assignment;
-        $("assignment-revoke-description").textContent = `Revocare l’abilitazione di ${assignment.name}? ${assignment.role === "manager" ? "Come gestore manterrà l’accesso alla commessa." : "Non potrà aggiungere altro lavoro su questa commessa. Le ore già registrate saranno conservate."}`;
+        state.revokeGroupGrant = null;
+        $("group-grant-revoke").hidden = true;
+        $("assignment-revoke-description").textContent = `Revocare l’abilitazione di ${assignment.name}? ${assignment.role === "manager" ? "Come gestore manterrà l’accesso alla commessa." : "L’accesso diretto sarà revocato; eventuali abilitazioni ricevute tramite gruppi resteranno valide. Le ore già registrate saranno conservate."}`;
         $("assignment-revoke").hidden = false;
         $("assignment-revoke-cancel").focus();
       }, true));
@@ -734,13 +770,18 @@
     $("assignment-retry-wrap").hidden = true;
     setAssignmentBusy(busyDialogs.has("assignment-dialog"));
     try {
-      const [data, users] = await Promise.all([api(`/api/jobs/${encodeURIComponent(jobId)}/assignments`), api("/api/users")]);
+      const [data, users, groups, jobRoles, grants] = await Promise.all([api(`/api/jobs/${encodeURIComponent(jobId)}/assignments`), api("/api/users"), api("/api/groups"), api("/api/job-roles"), api(`/api/jobs/${encodeURIComponent(jobId)}/group-grants`)]);
       if (request !== state.assignmentRequest || !state.assignmentJob || !can("manage_assignments")) return;
       state.assignments = data.assignments;
       state.assignmentUsers = users.users;
+      state.assignmentGroups = groups.groups;
+      state.assignmentRoles = jobRoles.roles;
+      state.groupGrants = grants.grants;
       state.assignmentsReady = true;
       renderAssignments();
+      renderGroupGrants();
       resetAssignmentForm();
+      resetGroupGrantForm();
     } catch (error) {
       if (request !== state.assignmentRequest) return;
       $("assignment-loading").hidden = true;
@@ -754,6 +795,9 @@
     state.assignmentJob = job;
     state.assignments = [];
     state.assignmentUsers = [];
+    state.assignmentGroups = [];
+    state.assignmentRoles = [];
+    state.groupGrants = [];
     state.assignmentsReady = false;
     state.revokeAssignment = null;
     $("assignment-dialog-title").textContent = "Abilitazioni · " + job.code;
@@ -761,9 +805,304 @@
     $("assignment-list").replaceChildren();
     $("assignment-empty").hidden = true;
     $("assignment-revoke").hidden = true;
+    $("group-grants-list").replaceChildren();
+    $("group-grants-empty").hidden = true;
+    $("group-grant-revoke").hidden = true;
+    state.revokeGroupGrant = null;
     resetAssignmentForm();
+    resetGroupGrantForm();
     $("assignment-dialog").showModal();
     loadAssignments();
+  }
+
+  function fillRoleSelect(id, catalogue, selected = 2) {
+    const options = catalogue.map((role) => {
+      const option = node("option", "", `${role.name} · ${role.can_log_time ? "consulta e registra ore" : "sola consultazione"}`);
+      option.value = role.id;
+      return option;
+    });
+    $(id).replaceChildren(...options);
+    $(id).value = String(selected);
+  }
+
+  function groupPath(group, groups = state.organizationGroups) {
+    const parts = [];
+    const seen = new Set();
+    let current = group;
+    while (current && !seen.has(Number(current.id)) && parts.length < 16) {
+      seen.add(Number(current.id));
+      parts.unshift(current.name);
+      current = groups.find((item) => Number(item.id) === Number(current.parent_id));
+    }
+    return parts.join(" / ");
+  }
+
+  function orderedGroups(groups = state.organizationGroups) {
+    return [...groups].sort((left, right) => groupPath(left, groups).localeCompare(groupPath(right, groups), "it-IT"));
+  }
+
+  function groupDescendsFrom(group, ancestorId) {
+    const seen = new Set();
+    let current = group;
+    while (current && !seen.has(Number(current.id))) {
+      if (Number(current.id) === Number(ancestorId)) return true;
+      seen.add(Number(current.id));
+      current = state.organizationGroups.find((item) => Number(item.id) === Number(current.parent_id));
+    }
+    return false;
+  }
+
+  function setOrganizationBusy(busy) {
+    state.organizationBusy = busy;
+    $("panel-organization").setAttribute("aria-busy", String(busy));
+    $("panel-organization").querySelectorAll("button, input, select").forEach((element) => { element.disabled = busy; });
+    $("group-member-user").disabled = busy || !state.groupMembersReady;
+    $("group-member-save").disabled = busy || !state.groupMembersReady || !$("group-member-user").options.length || $("group-member-user").options.length === 1;
+  }
+
+  function renderOrganization() {
+    if (!state.organizationReady || !can("manage_groups")) return;
+    $("organization-content").hidden = false;
+    $("groups-count").textContent = state.organizationGroups.length;
+    $("groups-empty").hidden = state.organizationGroups.length > 0;
+    const seen = new Set();
+    const appendBranch = (parentId, parentList) => {
+      const children = state.organizationGroups.filter((group) => (group.parent_id === null || group.parent_id === "" ? null : Number(group.parent_id)) === parentId).sort((a, b) => a.name.localeCompare(b.name, "it-IT"));
+      for (const group of children) {
+        if (seen.has(Number(group.id))) continue;
+        seen.add(Number(group.id));
+        const item = node("li");
+        const button = node("button", "group-tree-button");
+        button.type = "button";
+        button.setAttribute("aria-pressed", String(Number(state.selectedGroup?.id) === Number(group.id)));
+        button.append(node("span", "group-tree-name", group.name), node("span", "group-tree-count", String(Number(group.members_count) || 0)));
+        button.setAttribute("aria-label", `${group.name}, ${Number(group.members_count) || 0} membri diretti`);
+        button.addEventListener("click", () => {
+          if (state.organizationBusy) return;
+          state.selectedGroup = group;
+          state.organizationConfirm = null;
+          $("organization-confirm").hidden = true;
+          renderOrganization();
+          loadGroupMembers();
+        });
+        item.append(button);
+        if (state.organizationGroups.some((child) => Number(child.parent_id) === Number(group.id))) {
+          const subtree = node("ul");
+          appendBranch(Number(group.id), subtree);
+          item.append(subtree);
+        }
+        parentList.append(item);
+      }
+    };
+    $("groups-tree").replaceChildren();
+    appendBranch(null, $("groups-tree"));
+    const group = state.selectedGroup;
+    $("group-detail-actions").hidden = !group;
+    $("group-members-content").hidden = !group;
+    $("group-detail-title").textContent = group ? group.name : "Seleziona un gruppo";
+    $("group-detail-path").textContent = group ? groupPath(group) : "Seleziona un gruppo nell’albero per gestire i suoi membri diretti.";
+    $("job-roles-list").replaceChildren();
+    for (const role of state.organizationRoles) {
+      const item = node("li", "job-role-card");
+      const identity = node("div");
+      identity.append(node("strong", "", role.name), node("span", "assignment-email", role.code), node("p", "field-help", role.can_log_time ? "Consulta e registra le proprie ore" : "Sola consultazione"));
+      item.append(identity);
+      if (role.builtin) item.append(node("span", "job-access-role", "Predefinito"));
+      else if (can("manage_job_roles")) item.append(action("Modifica", "Modifica il ruolo " + role.name, () => openJobRole(role)));
+      $("job-roles-list").append(item);
+    }
+    $("new-job-role").hidden = !can("manage_job_roles");
+    setOrganizationBusy(state.organizationBusy);
+  }
+
+  async function refreshOrganization(selectedId = state.selectedGroup?.id) {
+    if (!can("manage_groups")) return;
+    const request = ++state.organizationRequest;
+    state.groupMembersRequest++;
+    state.organizationLoading = true;
+    state.organizationConfirm = null;
+    $("organization-confirm").hidden = true;
+    state.organizationReady = false;
+    state.groupMembersReady = false;
+    $("organization-loading").hidden = false;
+    $("organization-content").hidden = true;
+    $("organization-error").hidden = true;
+    try {
+      const [groups, catalogue, users] = await Promise.all([api("/api/groups"), api("/api/job-roles"), api("/api/users")]);
+      if (request !== state.organizationRequest || !can("manage_groups")) return;
+      state.organizationGroups = groups.groups;
+      state.organizationRoles = catalogue.roles;
+      state.organizationUsers = users.users;
+      state.organizationReady = true;
+      state.selectedGroup = state.organizationGroups.find((group) => Number(group.id) === Number(selectedId)) || null;
+      renderOrganization();
+      if (state.selectedGroup) await loadGroupMembers();
+    } catch (error) {
+      if (request !== state.organizationRequest) return;
+      $("organization-error-text").textContent = error.message;
+      $("organization-error").hidden = false;
+    } finally {
+      if (request === state.organizationRequest) {
+        state.organizationLoading = false;
+        $("organization-loading").hidden = true;
+      }
+    }
+  }
+
+  function renderGroupMembers() {
+    if (!state.groupMembersReady || !state.selectedGroup || !can("manage_groups")) return;
+    $("group-members").replaceChildren();
+    for (const member of state.groupMembers) {
+      const item = node("li", "organization-member");
+      const identity = node("div", "assignment-identity");
+      identity.append(node("strong", "", member.name), node("span", "assignment-email", member.email), node("span", "field-help", `${roles[member.role] || "Operatore"}${member.active ? "" : " · Disattivato"}`));
+      item.append(identity, action("Rimuovi", "Rimuovi " + member.name + " dal gruppo", () => {
+        const group = state.selectedGroup;
+        confirmOrganization(`Rimuovere ${member.name} da ${group.name}? Le abilitazioni ricevute da questo gruppo e dai suoi gruppi padre non saranno più applicate tramite questa appartenenza. Altre appartenenze e abilitazioni dirette restano valide.`, async () => {
+          await api(`/api/groups/${encodeURIComponent(group.id)}/members/${encodeURIComponent(member.user_id)}`, { method: "DELETE" });
+          showNotice("Utente rimosso dal gruppo. Le ore già registrate sono conservate.");
+          await refreshOrganization(group.id);
+        });
+      }, true));
+      $("group-members").append(item);
+    }
+    $("group-members-empty").hidden = state.groupMembers.length !== 0;
+    const first = node("option", "", "Seleziona un utente attivo");
+    first.value = "";
+    const options = state.organizationUsers.filter((user) => user.active && !state.groupMembers.some((member) => Number(member.user_id) === Number(user.id))).map((user) => {
+      const option = node("option", "", `${user.name} · ${user.email}`);
+      option.value = user.id;
+      return option;
+    });
+    $("group-member-user").replaceChildren(first, ...options);
+    setOrganizationBusy(state.organizationBusy);
+  }
+
+  async function loadGroupMembers() {
+    if (!state.selectedGroup || !can("manage_groups")) return;
+    const groupId = state.selectedGroup.id;
+    const request = ++state.groupMembersRequest;
+    state.groupMembersReady = false;
+    $("group-members-loading").hidden = false;
+    $("group-members-error").hidden = true;
+    $("group-members-empty").hidden = true;
+    $("group-members").replaceChildren();
+    setOrganizationBusy(state.organizationBusy);
+    try {
+      const data = await api(`/api/groups/${encodeURIComponent(groupId)}/members`);
+      if (request !== state.groupMembersRequest || Number(state.selectedGroup?.id) !== Number(groupId) || !can("manage_groups")) return;
+      state.groupMembers = data.members;
+      state.groupMembersReady = true;
+      renderGroupMembers();
+    } catch (error) {
+      if (request === state.groupMembersRequest) dialogError("group-members-error", error);
+    } finally {
+      if (request === state.groupMembersRequest) {
+        $("group-members-loading").hidden = true;
+        setOrganizationBusy(state.organizationBusy);
+      }
+    }
+  }
+
+  function openGroup(group = null) {
+    if (!requirePermission("manage_groups") || state.organizationBusy || !state.organizationReady || busyDialogs.has("group-dialog")) return;
+    $("group-form").reset();
+    $("group-error").hidden = true;
+    $("group-id").value = group?.id || "";
+    $("group-name").value = group?.name || "";
+    const first = node("option", "", "Primo livello");
+    first.value = "";
+    const options = orderedGroups().filter((candidate) => !group || !groupDescendsFrom(candidate, group.id)).map((candidate) => {
+      const option = node("option", "", groupPath(candidate));
+      option.value = candidate.id;
+      return option;
+    });
+    $("group-parent").replaceChildren(first, ...options);
+    $("group-parent").value = group ? group.parent_id || "" : state.selectedGroup?.id || "";
+    $("group-dialog-title").textContent = group ? "Modifica gruppo" : "Nuovo gruppo";
+    $("group-save").textContent = group ? "Salva modifiche" : "Crea gruppo";
+    $("group-dialog").showModal();
+    $("group-name").focus();
+  }
+
+  function openJobRole(role = null) {
+    if (!requirePermission("manage_job_roles") || state.organizationBusy || role?.builtin || busyDialogs.has("job-role-dialog")) return;
+    $("job-role-form").reset();
+    $("job-role-error").hidden = true;
+    $("job-role-id").value = role?.id || "";
+    $("job-role-code").value = role?.code || "";
+    $("job-role-name").value = role?.name || "";
+    $("job-role-log-time").value = role?.can_log_time ? "1" : "0";
+    $("job-role-dialog-title").textContent = role ? "Modifica ruolo commessa" : "Nuovo ruolo commessa";
+    $("job-role-save").textContent = role ? "Salva modifiche" : "Crea ruolo";
+    $("job-role-dialog").showModal();
+    $("job-role-code").focus();
+  }
+
+  function confirmOrganization(message, operation) {
+    if (!requirePermission("manage_groups") || state.organizationBusy) return;
+    state.organizationConfirm = operation;
+    $("organization-confirm-text").textContent = message;
+    $("organization-confirm").hidden = false;
+    $("organization-confirm-cancel").focus();
+  }
+
+  function resetGroupGrantForm(grant = null) {
+    state.editingGroupGrant = grant;
+    $("group-grant-form").reset();
+    $("group-grant-end").setCustomValidity("");
+    const first = node("option", "", "Seleziona un gruppo");
+    first.value = "";
+    const options = orderedGroups(state.assignmentGroups).map((group) => {
+      const option = node("option", "", groupPath(group, state.assignmentGroups));
+      option.value = group.id;
+      return option;
+    });
+    $("group-grant-group").replaceChildren(first, ...options);
+    fillRoleSelect("group-grant-role", state.assignmentRoles, grant?.role_id || 2);
+    if (grant) {
+      $("group-grant-group").value = grant.group_id;
+      $("group-grant-start").value = grant.starts_on || "";
+      $("group-grant-end").value = grant.ends_on || "";
+    }
+    $("group-grant-form-title").textContent = grant ? "Modifica abilitazione gruppo" : "Abilita un gruppo";
+    $("group-grant-reset").hidden = !grant;
+    setAssignmentBusy(busyDialogs.has("assignment-dialog"));
+  }
+
+  function renderGroupGrants() {
+    if (!state.assignmentsReady || !state.assignmentJob || !can("manage_assignments")) return;
+    $("group-grants-list").replaceChildren();
+    for (const grant of state.groupGrants) {
+      const item = node("li", "assignment-item");
+      const identity = node("div", "assignment-identity");
+      const group = state.assignmentGroups.find((candidate) => Number(candidate.id) === Number(grant.group_id));
+      identity.append(node("strong", "", group ? groupPath(group, state.assignmentGroups) : grant.group_name));
+      const [label, status] = assignmentStatus({ ...grant, active: true });
+      const meta = node("div", "assignment-meta");
+      meta.append(node("span", "job-access-role", grant.role_name), node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(grant)));
+      identity.append(meta);
+      const controls = node("div", "row-actions");
+      controls.append(action("Modifica", "Modifica abilitazione del gruppo " + grant.group_name, () => {
+        if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
+        state.revokeGroupGrant = null;
+        $("group-grant-revoke").hidden = true;
+        resetGroupGrantForm(grant);
+        $("group-grant-role").focus();
+      }), action("Revoca", "Revoca abilitazione del gruppo " + grant.group_name, () => {
+        if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
+        state.revokeGroupGrant = grant;
+        state.revokeAssignment = null;
+        $("assignment-revoke").hidden = true;
+        $("group-grant-revoke-text").textContent = `Revocare l’abilitazione di ${grant.group_name} e dei suoi sottogruppi? Eventuali abilitazioni dirette o ricevute da altri gruppi restano valide. Le ore già registrate sono conservate.`;
+        $("group-grant-revoke").hidden = false;
+        $("group-grant-revoke-cancel").focus();
+      }, true));
+      item.append(identity, controls);
+      $("group-grants-list").append(item);
+    }
+    $("group-grants-empty").hidden = state.groupGrants.length > 0;
+    setAssignmentBusy(busyDialogs.has("assignment-dialog"));
   }
 
   const auditActions = {
@@ -772,11 +1111,15 @@
     "assignments.create": "Utente abilitato", "assignments.update": "Abilitazione aggiornata", "assignments.delete": "Abilitazione revocata",
     "suppliers.create": "Fornitore creato", "suppliers.update": "Fornitore aggiornato",
     "contracts.create": "Contratto creato", "contracts.update": "Contratto aggiornato", "contract_documents.create": "PDF contrattuale archiviato",
+    "groups.create": "Gruppo creato", "groups.update": "Gruppo aggiornato", "groups.delete": "Gruppo eliminato",
+    "group_members.create": "Utente aggiunto al gruppo", "group_members.delete": "Utente rimosso dal gruppo",
+    "job_roles.create": "Ruolo commessa creato", "job_roles.update": "Ruolo commessa aggiornato",
+    "group_grants.create": "Gruppo abilitato", "group_grants.update": "Abilitazione gruppo aggiornata", "group_grants.delete": "Abilitazione gruppo revocata",
     "users.create": "Utente creato", "users.update": "Utente aggiornato", "system.migration": "Database aggiornato"
   };
-  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", system: "Sistema" };
+  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", group: "Gruppo", group_member: "Membro gruppo", job_role: "Ruolo commessa", group_grant: "Abilitazione gruppo", system: "Sistema" };
   const auditLabels = {
-    id: "ID", user_id: "ID utente", job_id: "ID commessa", owner_id: "ID autore", owner: "Account", email: "Email", name: "Nome", role: "Ruolo", active: "Accesso attivo",
+    parent_id: "ID gruppo padre", group_id: "ID gruppo", group_name: "Gruppo", role_id: "ID ruolo commessa", role_code: "Codice ruolo", role_name: "Ruolo commessa", can_log_time: "Può registrare ore", builtin: "Ruolo predefinito", id: "ID", user_id: "ID utente", job_id: "ID commessa", owner_id: "ID autore", owner: "Account", email: "Email", name: "Nome", role: "Ruolo", active: "Accesso attivo",
     title: "Titolo", supplier_id: "ID fornitore", supplier_name: "Fornitore", contract_id: "ID contratto", contract_code: "Codice contratto", contract_title: "Contratto", vat_number: "Partita IVA", phone: "Telefono", address: "Indirizzo", notes: "Note", value_cents: "Valore", currency: "Valuta", file_name: "Nome documento", byte_size: "Dimensione",
     code: "Codice", status: "Stato", description: "Descrizione", client: "Cliente", date: "Giornata", minutes: "Ore lavorate", starts_on: "Abilitato dal", ends_on: "Abilitato fino al",
     user_name: "Utente", user_email: "Email utente", job_name: "Commessa", job_code: "Codice commessa", note: "Attività / nota", version: "Versione", schema_version: "Versione database", migrated_entries: "Registrazioni migrate", migrated_users: "Utenti migrati", mapped_entries: "Registrazioni collegate agli utenti", archived_entries: "Registrazioni storiche conservate"
@@ -950,6 +1293,7 @@
     if (can("manage_users")) tasks.push(refreshUsers());
     if (can("manage_suppliers")) tasks.push(refreshRegistry("suppliers"));
     if (can("manage_contracts")) tasks.push(refreshRegistry("contracts"));
+    if (can("manage_groups") && state.activeTab === "organization") tasks.push(refreshOrganization());
     if (can("view_audit") && state.activeTab === "audit") tasks.push(refreshAudit());
     if (state.selectedDate !== localDate(new Date())) {
       tasks.push(api("/api/time-entries?date=" + localDate(new Date())).then((data) => {
@@ -997,8 +1341,9 @@
     if (entry && !requirePermission("edit_time_entries")) return;
     if (busyDialogs.has("entry-dialog")) return;
     if (!state.jobsReady) { showNotice("Attendi il caricamento delle commesse, poi riprova.", true); return; }
-    if (state.jobs.length === 0) {
-      if (!can("manage_jobs")) { showNotice("Nessuna commessa abilitata. Chiedi a un gestore di abilitarti alla commessa su cui devi registrare il lavoro.", true); return; }
+    const writableJobs = state.jobs.filter(canLogTime);
+    if (writableJobs.length === 0) {
+      if (!can("manage_jobs")) { showNotice("Nessuna commessa abilitata alla registrazione delle ore. Chiedi a un gestore il ruolo adatto alla commessa su cui devi lavorare.", true); return; }
       state.openEntryAfterJob = true;
       openJob();
       $("job-dialog-description").textContent = "Crea prima una commessa: subito dopo potrai registrare le tue ore.";
@@ -1013,7 +1358,7 @@
     $("entry-save").textContent = entry ? "Salva modifiche" : "Salva ore";
     const options = [node("option", "", "Seleziona una commessa")];
     options[0].value = "";
-    for (const job of state.jobs) {
+    for (const job of writableJobs) {
       const option = node("option", "", `${job.code} · ${job.name}`);
       option.value = job.id;
       options.push(option);
@@ -1211,7 +1556,7 @@
     if (startsOn && endsOn && startsOn > endsOn) $("assignment-end").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
     if (!$("assignment-form").reportValidity()) return;
     const jobId = state.assignmentJob.id;
-    const fields = { user_id: $("assignment-user").value, starts_on: startsOn, ends_on: endsOn };
+    const fields = { user_id: $("assignment-user").value, role_id: $("assignment-role").value, starts_on: startsOn, ends_on: endsOn };
     $("assignment-error").hidden = true;
     setAssignmentBusy(true);
     try {
@@ -1219,7 +1564,7 @@
       state.auditReady = false;
       state.revokeAssignment = null;
       $("assignment-revoke").hidden = true;
-      showNotice("Abilitazione salvata. Il periodo di accesso alla commessa è aggiornato.");
+      showNotice("Abilitazione salvata. Ruolo e periodo di accesso alla commessa sono aggiornati.");
       await loadAssignments();
       await refreshAll();
     } catch (error) {
@@ -1261,8 +1606,148 @@
     state.assignmentsReady = false;
     state.editingAssignment = null;
     state.revokeAssignment = null;
+    state.assignmentGroups = [];
+    state.assignmentRoles = [];
+    state.groupGrants = [];
+    state.editingGroupGrant = null;
+    state.revokeGroupGrant = null;
     $("assignment-form").reset();
+    $("group-grant-form").reset();
   });
+  $("organization-refresh").addEventListener("click", () => refreshOrganization());
+  $("organization-retry").addEventListener("click", () => refreshOrganization());
+  $("new-group").addEventListener("click", () => openGroup());
+  $("edit-group").addEventListener("click", () => { if (state.selectedGroup) openGroup(state.selectedGroup); });
+  $("new-job-role").addEventListener("click", () => openJobRole());
+  $("delete-group").addEventListener("click", () => {
+    if (!state.selectedGroup) return;
+    const group = state.selectedGroup;
+    confirmOrganization(`Eliminare il gruppo ${group.name}? È possibile eliminare solo gruppi senza membri, sottogruppi o abilitazioni alle commesse.`, async () => {
+      await api(`/api/groups/${encodeURIComponent(group.id)}`, { method: "DELETE" });
+      showNotice("Gruppo eliminato.");
+      await refreshOrganization(null);
+    });
+  });
+  $("organization-confirm-cancel").addEventListener("click", () => {
+    if (state.organizationBusy) return;
+    state.organizationConfirm = null;
+    $("organization-confirm").hidden = true;
+  });
+  $("organization-confirm-save").addEventListener("click", async () => {
+    if (!requirePermission("manage_groups") || state.organizationBusy || !state.organizationConfirm) return;
+    const operation = state.organizationConfirm;
+    $("organization-error").hidden = true;
+    setOrganizationBusy(true);
+    try {
+      await operation();
+      state.auditReady = false;
+      state.organizationConfirm = null;
+      $("organization-confirm").hidden = true;
+      await refreshAll();
+    } catch (error) {
+      $("organization-error-text").textContent = error.message;
+      $("organization-error").hidden = false;
+    } finally { setOrganizationBusy(false); }
+  });
+  $("group-member-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_groups") || state.organizationBusy || !state.selectedGroup || !state.groupMembersReady || !$("group-member-form").reportValidity()) return;
+    const groupId = state.selectedGroup.id;
+    const userId = $("group-member-user").value;
+    $("group-members-error").hidden = true;
+    setOrganizationBusy(true);
+    try {
+      await post(`/api/groups/${encodeURIComponent(groupId)}/members`, { user_id: userId });
+      state.auditReady = false;
+      showNotice("Utente aggiunto al gruppo. Riceve anche le abilitazioni dei gruppi padre.");
+      await refreshOrganization(groupId);
+      await refreshAll();
+    } catch (error) { dialogError("group-members-error", error); }
+    finally { setOrganizationBusy(false); }
+  });
+  $("group-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_groups") || busyDialogs.has("group-dialog")) return;
+    $("group-name").value = $("group-name").value.trim();
+    if (!$("group-form").reportValidity()) return;
+    const id = $("group-id").value;
+    const fields = { name: $("group-name").value, parent_id: $("group-parent").value };
+    $("group-error").hidden = true;
+    dialogBusy("group-dialog", true, "group-save", id ? "Salva modifiche" : "Crea gruppo");
+    try {
+      const data = await post("/api/groups" + (id ? "/" + encodeURIComponent(id) : ""), fields);
+      state.auditReady = false;
+      $("group-dialog").close();
+      showNotice(id ? "Gruppo aggiornato. Le abilitazioni ereditate seguono la nuova struttura." : "Gruppo creato. Puoi aggiungere i membri.");
+      await refreshOrganization(id || data.id);
+      await refreshAll();
+    } catch (error) { dialogError("group-error", error); }
+    finally { dialogBusy("group-dialog", false, "group-save", id ? "Salva modifiche" : "Crea gruppo"); }
+  });
+  $("job-role-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_job_roles") || busyDialogs.has("job-role-dialog")) return;
+    ["job-role-code", "job-role-name"].forEach((id) => { $(id).value = $(id).value.trim(); });
+    if (!$("job-role-form").reportValidity()) return;
+    const id = $("job-role-id").value;
+    const fields = { code: $("job-role-code").value, name: $("job-role-name").value, can_log_time: $("job-role-log-time").value };
+    $("job-role-error").hidden = true;
+    dialogBusy("job-role-dialog", true, "job-role-save", id ? "Salva modifiche" : "Crea ruolo");
+    try {
+      await post("/api/job-roles" + (id ? "/" + encodeURIComponent(id) : ""), fields);
+      state.auditReady = false;
+      $("job-role-dialog").close();
+      showNotice(id ? "Ruolo aggiornato. Le abilitazioni che lo utilizzano sono aggiornate." : "Ruolo creato. Puoi assegnarlo agli utenti o ai gruppi nelle commesse.");
+      await refreshOrganization();
+      await refreshAll();
+    } catch (error) { dialogError("job-role-error", error); }
+    finally { dialogBusy("job-role-dialog", false, "job-role-save", id ? "Salva modifiche" : "Crea ruolo"); }
+  });
+  $("group-grant-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog") || !state.assignmentJob || !state.assignmentsReady) return;
+    $("group-grant-end").setCustomValidity("");
+    const startsOn = $("group-grant-start").value;
+    const endsOn = $("group-grant-end").value;
+    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("assignment-error", new Error("Scegli date valide per il periodo di abilitazione del gruppo.")); return; }
+    if (startsOn && endsOn && startsOn > endsOn) $("group-grant-end").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (!$("group-grant-form").reportValidity()) return;
+    const jobId = state.assignmentJob.id;
+    const fields = { group_id: $("group-grant-group").value, role_id: $("group-grant-role").value, starts_on: startsOn, ends_on: endsOn };
+    $("assignment-error").hidden = true;
+    setAssignmentBusy(true);
+    try {
+      await post(`/api/jobs/${encodeURIComponent(jobId)}/group-grants`, fields);
+      state.auditReady = false;
+      state.revokeGroupGrant = null;
+      $("group-grant-revoke").hidden = true;
+      showNotice("Gruppo abilitato. L’accesso vale anche per i membri dei suoi sottogruppi.");
+      await loadAssignments();
+      await refreshAll();
+    } catch (error) { dialogError("assignment-error", error); }
+    finally { setAssignmentBusy(false); }
+  });
+  $("group-grant-revoke-save").addEventListener("click", async () => {
+    if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog") || !state.assignmentJob || !state.revokeGroupGrant) return;
+    const jobId = state.assignmentJob.id;
+    const groupId = state.revokeGroupGrant.group_id;
+    $("assignment-error").hidden = true;
+    setAssignmentBusy(true);
+    try {
+      await api(`/api/jobs/${encodeURIComponent(jobId)}/group-grants/${encodeURIComponent(groupId)}`, { method: "DELETE" });
+      state.auditReady = false;
+      state.revokeGroupGrant = null;
+      $("group-grant-revoke").hidden = true;
+      showNotice("Abilitazione del gruppo revocata. Le ore già registrate sono conservate.");
+      await loadAssignments();
+      await refreshAll();
+    } catch (error) { dialogError("assignment-error", error); }
+    finally { setAssignmentBusy(false); }
+  });
+  $("group-grant-revoke-cancel").addEventListener("click", () => { state.revokeGroupGrant = null; $("group-grant-revoke").hidden = true; $("group-grant-group").focus(); });
+  $("group-grant-reset").addEventListener("click", () => { resetGroupGrantForm(); $("group-grant-group").focus(); });
+  ["group-grant-start", "group-grant-end"].forEach((id) => $(id).addEventListener("input", () => $("group-grant-end").setCustomValidity("")));
+
   $("audit-filter").addEventListener("change", () => refreshAudit());
   $("audit-refresh").addEventListener("click", () => refreshAudit());
   $("audit-more").addEventListener("click", () => refreshAudit(true));

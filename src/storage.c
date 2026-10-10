@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 2
+#define SCHEMA_VERSION 3
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -258,6 +258,51 @@ static bool migrate(void) {
             !storage_audit(database,0,"system.migration","system",2,NULL,"{\"schema_version\":2}") ||
             db_exec(database,"PRAGMA user_version=2",NULL,NULL,NULL) != DB_OK) goto failure;
     }
+    if (version <= 2) {
+        if (db_exec(database,
+            "CREATE TABLE IF NOT EXISTS job_roles ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "code TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK(length(code) BETWEEN 1 AND 40),"
+            "name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),"
+            "can_log_time INTEGER NOT NULL CHECK(can_log_time IN (0,1)),"
+            "builtin INTEGER NOT NULL DEFAULT 0 CHECK(builtin IN (0,1))"
+            ");"
+            "INSERT OR IGNORE INTO job_roles(id,code,name,can_log_time,builtin) VALUES(1,'reader','Lettore',0,1);"
+            "INSERT OR IGNORE INTO job_roles(id,code,name,can_log_time,builtin) VALUES(2,'contributor','Collaboratore',1,1);"
+            "CREATE TABLE IF NOT EXISTS organization_groups ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),"
+            "parent_id INTEGER REFERENCES organization_groups(id),CHECK(parent_id IS NULL OR parent_id<>id)"
+            ");"
+            "CREATE INDEX IF NOT EXISTS organization_groups_parent ON organization_groups(parent_id,id);"
+            "CREATE TABLE IF NOT EXISTS group_members ("
+            "group_id INTEGER NOT NULL REFERENCES organization_groups(id),"
+            "user_id INTEGER NOT NULL REFERENCES users(id),PRIMARY KEY(group_id,user_id)"
+            ");"
+            "CREATE INDEX IF NOT EXISTS group_members_user ON group_members(user_id,group_id);"
+            "CREATE TABLE IF NOT EXISTS job_group_grants ("
+            "job_id INTEGER NOT NULL REFERENCES jobs(id),"
+            "group_id INTEGER NOT NULL REFERENCES organization_groups(id),"
+            "role_id INTEGER NOT NULL REFERENCES job_roles(id),starts_on TEXT,ends_on TEXT,"
+            "PRIMARY KEY(job_id,group_id),"
+            "CHECK(starts_on IS NULL OR length(starts_on)=10),"
+            "CHECK(ends_on IS NULL OR length(ends_on)=10),"
+            "CHECK(starts_on IS NULL OR ends_on IS NULL OR starts_on<=ends_on)"
+            ");"
+            "CREATE INDEX IF NOT EXISTS job_group_grants_group ON job_group_grants(group_id,job_id);",
+            NULL,NULL,NULL) != DB_OK) goto failure;
+        bool has_role_id = false;
+        if (!prepare(database,&statement,"PRAGMA table_info(job_assignments)")) goto failure;
+        int result;
+        while ((result = db_step(statement)) == DB_ROW)
+            if (strcmp(column(statement,1),"role_id") == 0) has_role_id = true;
+        db_finalize(statement); statement = NULL;
+        if (result != DB_DONE || (!has_role_id && db_exec(database,
+            "ALTER TABLE job_assignments ADD COLUMN role_id INTEGER REFERENCES job_roles(id)",NULL,NULL,NULL) != DB_OK) ||
+            db_exec(database,"UPDATE job_assignments SET role_id=2 WHERE role_id IS NULL",NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",3,NULL,"{\"schema_version\":3}") ||
+            db_exec(database,"PRAGMA user_version=3",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -282,6 +327,13 @@ static bool migrate(void) {
     if (version <= 1 &&
         (!storage_audit(database,0,"system.migration","system",2,NULL,"{\"schema_version\":2}") ||
          db_exec(database,"UPDATE schema_metadata SET version=2 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 2 &&
+        (db_exec(database,"INSERT IGNORE INTO job_roles(id,code,name,can_log_time,builtin) "
+                          "VALUES(1,'reader','Lettore',0,1),(2,'contributor','Collaboratore',1,1)",
+                 NULL,NULL,NULL) != DB_OK ||
+         db_exec(database,"UPDATE job_assignments SET role_id=2 WHERE role_id IS NULL",NULL,NULL,NULL) != DB_OK ||
+         !storage_audit(database,0,"system.migration","system",3,NULL,"{\"schema_version\":3}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=3 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -375,7 +427,9 @@ static bool query_fields(const char *query, DbInt *limit,
             if (got_type || (*value && strcmp(value, "job") != 0 && strcmp(value, "time_entry") != 0 &&
                 strcmp(value, "assignment") != 0 && strcmp(value, "user") != 0 &&
                 strcmp(value, "system") != 0 && strcmp(value, "supplier") != 0 &&
-                strcmp(value, "contract") != 0 && strcmp(value, "contract_document") != 0)) return false;
+                strcmp(value, "contract") != 0 && strcmp(value, "contract_document") != 0 &&
+                strcmp(value, "group") != 0 && strcmp(value, "group_member") != 0 &&
+                strcmp(value, "job_role") != 0 && strcmp(value, "group_grant") != 0)) return false;
             strcpy(type, value); got_type = true;
         } else return false;
         if (!*end) break;
