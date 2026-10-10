@@ -3113,3 +3113,42 @@
 @media(max-width:380px) {
   .work-app .app-navigation .nav-item svg { display:none; }
 }
+
+
+/* Fornitori, contratti e documenti originali. */
+.work-app .suppliers-table { min-width:780px; }
+.work-app .contracts-table { min-width:900px; }
+.work-app .suppliers-table th:first-child { width:28%; }
+.work-app .suppliers-table th:nth-child(3) { width:25%; }
+.work-app .contracts-table th:first-child { width:32%; }
+.work-app .contracts-table th:nth-child(2) { width:22%; }
+.work-app .contracts-table th:last-child { width:20%; }
+.registry-contact span { display:block; overflow-wrap:anywhere; line-height:1.7; }
+.registry-contact span+span { color:#839077; font-size:11px; }
+.contract-period { line-height:1.7; color:#6c7f61; }
+.contract-value { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.work-app .job-identity .contract-supplier-label { color:#5d7253; margin-top:3px; }
+.work-app .job-identity .job-contract-label { max-width:280px; color:#75866b; margin-top:5px; line-height:1.5; }
+.work-app #panel-suppliers .search-field input,.work-app #panel-contracts .search-field input { padding-left:15px; }
+.documents-dialog { max-width:680px; }
+.documents-list { list-style:none; margin:18px 0; padding:0; }
+.document-item { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:16px 0; border-bottom:1px solid #e7eadd; }
+.document-item:first-child { border-top:1px solid #e7eadd; }
+.document-identity { min-width:0; }
+.document-identity strong { display:block; color:#415c3c; font-size:13px; overflow-wrap:anywhere; line-height:1.6; }
+.document-identity>span { display:block; margin-top:5px; color:#7b896e; font-size:11px; line-height:1.7; }
+.document-download { flex-shrink:0; text-decoration:none; display:inline-flex; align-items:center; }
+.document-download:focus-visible { outline:2px solid #e96850; outline-offset:4px; border-radius:3px; }
+.document-upload { margin-top:24px; border-top:1px solid #e7eadd; padding-top:23px; }
+.work-app .work-field input[type=file] { height:auto; padding:10px; font-size:12px!important; }
+.work-app input[type=file]::file-selector-button { border:1px solid #d9e0cf; background:#f2f5e9; border-radius:4px; padding:7px 9px; color:#526c48; margin-right:10px; cursor:pointer; font:inherit; }
+@media(max-width:760px) {
+  .work-app .app-navigation { overflow-x:auto; justify-content:flex-start; padding-bottom:7px; scrollbar-width:thin; }
+  .work-app .app-navigation .nav-item { flex:0 0 auto; min-width:100px; }
+}
+@media(max-width:480px) {
+  .work-app .app-navigation .nav-item { min-width:100px; padding:10px 9px; }
+  .document-item { flex-direction:column; align-items:flex-start; gap:8px; }
+  #supplier-dialog .form-grid,#contract-dialog .form-grid { grid-template-columns:1fr; gap:0; }
+  .work-app .job-identity .job-contract-label { max-width:200px; }
+}

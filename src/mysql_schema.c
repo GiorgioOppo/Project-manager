@@ -6,7 +6,7 @@
 
 #include <stddef.h>
 
-#define MYSQL_SCHEMA_VERSION 1
+#define MYSQL_SCHEMA_VERSION 2
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -61,6 +61,22 @@ static bool ensure_trigger(Db *database, const char *name, const char *ddl) {
     return okay && (exists || db_exec(database, ddl, NULL, NULL, NULL) == DB_OK);
 }
 
+static bool ensure_job_contract(Db *database) {
+    DbStmt *statement = NULL;
+    bool okay = db_prepare_v2(database,
+        "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='jobs' AND COLUMN_NAME='contract_id'",-1,&statement,NULL) == DB_OK &&
+        db_step(statement) == DB_ROW;
+    bool exists = okay && db_column_int64(statement,0) == 1;
+    db_finalize(statement); statement = NULL;
+    if (!okay) return false;
+    if (!exists && db_exec(database,
+        "ALTER TABLE jobs ADD COLUMN contract_id BIGINT NULL,"
+        "ADD CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
+        "ADD KEY jobs_contract(contract_id,id)",NULL,NULL,NULL) != DB_OK) return false;
+    return true;
+}
+
 bool mysql_schema_prepare(void) {
     static const char *const tables[] = {
         "CREATE TABLE IF NOT EXISTS schema_metadata ("
@@ -85,13 +101,53 @@ bool mysql_schema_prepare(void) {
         "CHECK(role IN ('manager','worker')),CHECK(active IN (0,1))"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
+        "CREATE TABLE IF NOT EXISTS suppliers ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "code VARCHAR(40) COLLATE utf8mb4_general_ci NOT NULL,"
+        "name VARCHAR(120) NOT NULL,vat_number VARCHAR(32) NOT NULL DEFAULT '',"
+        "email VARCHAR(254) NOT NULL DEFAULT '',phone VARCHAR(40) NOT NULL DEFAULT '',"
+        "address VARCHAR(240) NOT NULL DEFAULT '',notes VARCHAR(1000) NOT NULL DEFAULT '',"
+        "active TINYINT NOT NULL DEFAULT 1,UNIQUE KEY suppliers_code(code),"
+        "CHECK(CHAR_LENGTH(code)>=1),CHECK(CHAR_LENGTH(name)>=1),CHECK(active IN (0,1))"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS contracts ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "code VARCHAR(40) COLLATE utf8mb4_general_ci NOT NULL,title VARCHAR(120) NOT NULL,"
+        "supplier_id BIGINT NOT NULL,status VARCHAR(16) NOT NULL DEFAULT 'draft',"
+        "starts_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "ends_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "value_cents BIGINT NULL,currency CHAR(3) NOT NULL DEFAULT 'EUR',notes VARCHAR(1000) NOT NULL DEFAULT '',"
+        "UNIQUE KEY contracts_code(code),KEY contracts_supplier(supplier_id,id),"
+        "CONSTRAINT contracts_supplier_fk FOREIGN KEY(supplier_id) REFERENCES suppliers(id),"
+        "CHECK(CHAR_LENGTH(code)>=1),CHECK(CHAR_LENGTH(title)>=1),"
+        "CHECK(status IN ('draft','active','expired','closed','cancelled')),"
+        "CHECK(starts_on IS NULL OR CHAR_LENGTH(starts_on)=10),"
+        "CHECK(ends_on IS NULL OR CHAR_LENGTH(ends_on)=10),"
+        "CHECK(starts_on IS NULL OR ends_on IS NULL OR starts_on<=ends_on),"
+        "CHECK(value_cents IS NULL OR value_cents BETWEEN 0 AND 999999999999),CHECK(currency='EUR')"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS contract_documents ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,contract_id BIGINT NOT NULL,"
+        "storage_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "file_name VARCHAR(180) NOT NULL,byte_size INT NOT NULL,"
+        "sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,uploaded_by BIGINT NOT NULL,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "UNIQUE KEY contract_documents_storage_key(storage_key),KEY contract_documents_contract(contract_id,id),"
+        "CONSTRAINT contract_documents_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
+        "CONSTRAINT contract_documents_user_fk FOREIGN KEY(uploaded_by) REFERENCES users(id),"
+        "CHECK(CHAR_LENGTH(file_name)>=1),CHECK(byte_size BETWEEN 5 AND 10485760)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
         "CREATE TABLE IF NOT EXISTS jobs ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "code VARCHAR(40) COLLATE utf8mb4_general_ci NOT NULL,"
         "name VARCHAR(120) NOT NULL,client VARCHAR(120) NOT NULL DEFAULT '',"
         "description VARCHAR(1000) NOT NULL DEFAULT '',"
-        "status VARCHAR(16) NOT NULL,"
-        "UNIQUE KEY jobs_code(code),"
+        "status VARCHAR(16) NOT NULL,contract_id BIGINT NULL,"
+        "UNIQUE KEY jobs_code(code),KEY jobs_contract(contract_id,id),"
+        "CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
         "CHECK(status IN ('planned','active','paused','completed','cancelled'))"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
@@ -145,6 +201,12 @@ bool mysql_schema_prepare(void) {
          "FOR EACH ROW BEGIN IF OLD.user_id IS NOT NULL AND "
          "(NEW.user_id IS NULL OR NEW.user_id<>OLD.user_id) THEN "
          "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='user_id is immutable'; END IF; END"},
+        {"contract_documents_no_update",
+         "CREATE TRIGGER contract_documents_no_update BEFORE UPDATE ON contract_documents "
+         "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='contract documents are immutable'"},
+        {"contract_documents_no_delete",
+         "CREATE TRIGGER contract_documents_no_delete BEFORE DELETE ON contract_documents "
+         "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='contract documents are immutable'"},
         {"audit_events_no_update",
          "CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events "
          "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='audit events are immutable'"},
@@ -158,6 +220,7 @@ bool mysql_schema_prepare(void) {
         metadata_supported(database);
     for (size_t i = 0; okay && i < sizeof(tables) / sizeof(tables[0]); i++)
         okay = db_exec(database, tables[i], NULL, NULL, NULL) == DB_OK;
+    if (okay) okay = ensure_job_contract(database);
     if (okay) okay = db_exec(database,
         "INSERT IGNORE INTO schema_metadata(id,version) VALUES(1,0)",
         NULL, NULL, NULL) == DB_OK;

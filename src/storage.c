@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 1
+#define SCHEMA_VERSION 2
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -203,6 +203,61 @@ static bool migrate(void) {
             db_exec(database, "PRAGMA user_version=1", NULL, NULL, NULL) != DB_OK)
             goto failure;
     }
+    if (version <= 1) {
+        if (db_exec(database,
+            "CREATE TABLE IF NOT EXISTS suppliers ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "code TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK(length(code) BETWEEN 1 AND 40),"
+            "name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),"
+            "vat_number TEXT NOT NULL DEFAULT '' CHECK(length(vat_number)<=32),"
+            "email TEXT NOT NULL DEFAULT '' CHECK(length(email)<=254),"
+            "phone TEXT NOT NULL DEFAULT '' CHECK(length(phone)<=40),"
+            "address TEXT NOT NULL DEFAULT '' CHECK(length(address)<=240),"
+            "notes TEXT NOT NULL DEFAULT '' CHECK(length(notes)<=1000),"
+            "active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))"
+            ");"
+            "CREATE TABLE IF NOT EXISTS contracts ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "code TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK(length(code) BETWEEN 1 AND 40),"
+            "title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 120),"
+            "supplier_id INTEGER NOT NULL REFERENCES suppliers(id),"
+            "status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','active','expired','closed','cancelled')),"
+            "starts_on TEXT,ends_on TEXT,"
+            "value_cents INTEGER CHECK(value_cents IS NULL OR value_cents BETWEEN 0 AND 999999999999),"
+            "currency TEXT NOT NULL DEFAULT 'EUR' CHECK(currency='EUR'),"
+            "notes TEXT NOT NULL DEFAULT '' CHECK(length(notes)<=1000),"
+            "CHECK(starts_on IS NULL OR length(starts_on)=10),"
+            "CHECK(ends_on IS NULL OR length(ends_on)=10),"
+            "CHECK(starts_on IS NULL OR ends_on IS NULL OR starts_on<=ends_on)"
+            ");"
+            "CREATE INDEX IF NOT EXISTS contracts_supplier ON contracts(supplier_id,id);"
+            "CREATE TABLE IF NOT EXISTS contract_documents ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,contract_id INTEGER NOT NULL REFERENCES contracts(id),"
+            "storage_key TEXT NOT NULL UNIQUE CHECK(length(storage_key)=64),"
+            "file_name TEXT NOT NULL CHECK(length(file_name) BETWEEN 1 AND 180),"
+            "byte_size INTEGER NOT NULL CHECK(byte_size BETWEEN 5 AND 10485760),"
+            "sha256 TEXT NOT NULL CHECK(length(sha256)=64),"
+            "uploaded_by INTEGER NOT NULL REFERENCES users(id),"
+            "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+            ");"
+            "CREATE INDEX IF NOT EXISTS contract_documents_contract ON contract_documents(contract_id,id);"
+            "CREATE TRIGGER IF NOT EXISTS contract_documents_no_update BEFORE UPDATE ON contract_documents "
+            "BEGIN SELECT RAISE(ABORT,'contract documents are immutable'); END;"
+            "CREATE TRIGGER IF NOT EXISTS contract_documents_no_delete BEFORE DELETE ON contract_documents "
+            "BEGIN SELECT RAISE(ABORT,'contract documents are immutable'); END;",
+            NULL,NULL,NULL) != DB_OK) goto failure;
+        bool has_contract_id = false;
+        if (!prepare(database,&statement,"PRAGMA table_info(jobs)")) goto failure;
+        int result;
+        while ((result = db_step(statement)) == DB_ROW)
+            if (strcmp(column(statement,1),"contract_id") == 0) has_contract_id = true;
+        db_finalize(statement); statement = NULL;
+        if (result != DB_DONE || (!has_contract_id && db_exec(database,
+            "ALTER TABLE jobs ADD COLUMN contract_id INTEGER REFERENCES contracts(id)",NULL,NULL,NULL) != DB_OK) ||
+            db_exec(database,"CREATE INDEX IF NOT EXISTS jobs_contract ON jobs(contract_id,id)",NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",2,NULL,"{\"schema_version\":2}") ||
+            db_exec(database,"PRAGMA user_version=2",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -224,6 +279,9 @@ static bool migrate(void) {
                        "{\"schema_version\":1,\"mapped_entries\":0,\"archived_entries\":0}") ||
          db_exec(database, "UPDATE schema_metadata SET version=1 WHERE id=1", NULL, NULL, NULL) != DB_OK))
         goto failure;
+    if (version <= 1 &&
+        (!storage_audit(database,0,"system.migration","system",2,NULL,"{\"schema_version\":2}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=2 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -316,7 +374,8 @@ static bool query_fields(const char *query, DbInt *limit,
         } else if (strcmp(name, "entity_type") == 0) {
             if (got_type || (*value && strcmp(value, "job") != 0 && strcmp(value, "time_entry") != 0 &&
                 strcmp(value, "assignment") != 0 && strcmp(value, "user") != 0 &&
-                strcmp(value, "system") != 0)) return false;
+                strcmp(value, "system") != 0 && strcmp(value, "supplier") != 0 &&
+                strcmp(value, "contract") != 0 && strcmp(value, "contract_document") != 0)) return false;
             strcpy(type, value); got_type = true;
         } else return false;
         if (!*end) break;

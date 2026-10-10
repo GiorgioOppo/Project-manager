@@ -391,10 +391,20 @@ static void job_json(Json *json, DbStmt *statement) {
     append(json, ",\"status\":"); append_string(json, column_text(statement, 5));
 }
 
+static void job_contract_json(Json *json, DbStmt *statement, int index) {
+    append(json, ",\"contract_id\":");
+    if (db_column_type(statement,index) == DB_NULL) append(json,"null");
+    else append_integer(json,db_column_int64(statement,index));
+    append(json, ",\"contract_code\":"); append_string(json,column_text(statement,index+1));
+    append(json, ",\"contract_title\":"); append_string(json,column_text(statement,index+2));
+    append(json, ",\"supplier_name\":"); append_string(json,column_text(statement,index+3));
+}
+
 /* Snapshot helpers return 1 for an existing row, 0 for a missing row, -1 on error. */
 static int job_snapshot(DbInt id, Json *json) {
     DbStmt *statement = NULL;
-    if (!prepare(&statement, "SELECT id,code,name,client,description,status FROM jobs WHERE id=?") ||
+    if (!prepare(&statement, "SELECT j.id,j.code,j.name,j.client,j.description,j.status,j.contract_id,c.code,c.title,s.name "
+        "FROM jobs j LEFT JOIN contracts c ON c.id=j.contract_id LEFT JOIN suppliers s ON s.id=c.supplier_id WHERE j.id=?") ||
         !bind_id(statement, 1, id)) {
         db_finalize(statement);
         return -1;
@@ -402,6 +412,7 @@ static int job_snapshot(DbInt id, Json *json) {
     int result = db_step(statement);
     if (result == DB_ROW) {
         job_json(json, statement);
+        job_contract_json(json,statement,6);
         append(json, "}");
     }
     db_finalize(statement);
@@ -478,8 +489,10 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
     if (!prepare(&statement,
         "SELECT j.id,j.code,j.name,j.client,j.description,j.status,"
         "COALESCE((SELECT SUM(t.minutes) FROM time_entries t WHERE t.job_id=j.id AND t.user_id=?),0),"
-        "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_assignments c WHERE c.job_id=j.id) ELSE 0 END "
-        "FROM jobs j WHERE ? OR EXISTS(SELECT 1 FROM job_assignments a "
+        "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_assignments a_count WHERE a_count.job_id=j.id) ELSE 0 END, "
+        "j.contract_id,c.code,c.title,s.name "
+        "FROM jobs j LEFT JOIN contracts c ON c.id=j.contract_id LEFT JOIN suppliers s ON s.id=c.supplier_id "
+        "WHERE ? OR EXISTS(SELECT 1 FROM job_assignments a "
         "WHERE a.job_id=j.id AND a.user_id=? AND (a.starts_on IS NULL OR a.starts_on<=?) "
         "AND (a.ends_on IS NULL OR a.ends_on>=?)) ORDER BY j.id DESC LIMIT 1001") ||
         !bind_id(statement, 1, actor_id) || !bind_id(statement, 2, manager) ||
@@ -496,6 +509,7 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
         if (++count > RESULT_LIMIT) break;
         if (count > 1) append(&json, ",");
         job_json(&json, statement);
+        job_contract_json(&json,statement,8);
         append(&json, ",\"total_minutes\":"); append_integer(&json, db_column_int64(statement, 6));
         append(&json, ",\"assigned_users\":"); append_integer(&json, db_column_int64(statement, 7));
         append(&json, "}");
@@ -515,14 +529,16 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
 static void write_job(const char *body, DbInt actor_id, DbInt id,
                       WorkspaceResponse *response) {
     Field fields[] = {{"code", NULL}, {"name", NULL}, {"client", NULL},
-                      {"description", NULL}, {"status", NULL}};
+                      {"description", NULL}, {"status", NULL}, {"contract_id", NULL}};
     const size_t count = sizeof(fields) / sizeof(fields[0]);
     if (!parse_fields(body, fields, count, response)) return;
     trim(fields[0].value); trim(fields[1].value); trim(fields[2].value);
     const char *code = field_value(&fields[0]), *name = field_value(&fields[1]);
     const char *client = field_value(&fields[2]), *description = field_value(&fields[3]);
     const char *status = field_value(&fields[4]);
-    if (!valid_text(code, 40, true, false) || !valid_text(name, 120, true, false) ||
+    DbInt contract_id = 0, old_contract_id = 0;
+    if ((fields[5].value && *fields[5].value && !parse_positive(fields[5].value,&contract_id)) ||
+        !valid_text(code, 40, true, false) || !valid_text(name, 120, true, false) ||
         !valid_text(client, 120, false, false) || !valid_text(description, 1000, false, true) ||
         !valid_status(status)) {
         error(response, 400, "Inserisci codice (max 40 caratteri), nome (max 120), cliente (max 120), descrizione (max 1000) e uno stato valido.");
@@ -539,6 +555,11 @@ static void write_job(const char *body, DbInt actor_id, DbInt id,
             rollback(); error(response, 404, "Commessa non trovata.");
             free_fields(fields, count); return;
         }
+        if (!prepare(&statement,"SELECT contract_id FROM jobs WHERE id=?") ||
+            !bind_id(statement,1,id) || db_step(statement) != DB_ROW) goto database_failure;
+        old_contract_id = db_column_int64(statement,0);
+        db_finalize(statement); statement = NULL;
+        if (!fields[5].value) contract_id = old_contract_id;
     } else {
         if (!prepare(&statement, "SELECT COUNT(*) FROM jobs") ||
             db_step(statement) != DB_ROW) goto database_failure;
@@ -549,12 +570,26 @@ static void write_job(const char *body, DbInt actor_id, DbInt id,
             free_fields(fields, count); return;
         }
     }
+    if (contract_id && contract_id != old_contract_id) {
+        if (!prepare(&statement,"SELECT status FROM contracts WHERE id=?") || !bind_id(statement,1,contract_id)) goto database_failure;
+        int found = db_step(statement);
+        bool attachable = found == DB_ROW && strcmp(column_text(statement,0),"closed") != 0 &&
+            strcmp(column_text(statement,0),"cancelled") != 0;
+        db_finalize(statement); statement = NULL;
+        if (found != DB_ROW && found != DB_DONE) goto database_failure;
+        if (!attachable) {
+            rollback(); error(response,400,"Seleziona un contratto esistente che non sia chiuso o annullato.");
+            free(before.data); free_fields(fields,count); return;
+        }
+    }
     if (!prepare(&statement, id ?
-        "UPDATE jobs SET code=?,name=?,client=?,description=?,status=? WHERE id=?" :
-        "INSERT INTO jobs(code,name,client,description,status) VALUES(?,?,?,?,?)") ||
+        "UPDATE jobs SET code=?,name=?,client=?,description=?,status=?,contract_id=? WHERE id=?" :
+        "INSERT INTO jobs(code,name,client,description,status,contract_id) VALUES(?,?,?,?,?,?)") ||
         !bind_text(statement, 1, code) || !bind_text(statement, 2, name) ||
         !bind_text(statement, 3, client) || !bind_text(statement, 4, description) ||
-        !bind_text(statement, 5, status) || (id && !bind_id(statement, 6, id)))
+        !bind_text(statement, 5, status) ||
+        (contract_id ? !bind_id(statement,6,contract_id) : db_bind_null(statement,6) != DB_OK) ||
+        (id && !bind_id(statement, 7, id)))
         goto database_failure;
     int result = db_step(statement);
     db_finalize(statement); statement = NULL;

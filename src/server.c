@@ -18,6 +18,8 @@
 #include "workspace.h"
 #include "accounts.h"
 #include "storage.h"
+#include "procurement.h"
+#include "documents.h"
 
 #ifdef __APPLE__
 #include <Security/SecRandom.h>
@@ -28,7 +30,6 @@
 #define HEADER_LIMIT 16384
 #define BODY_LIMIT 32768
 #define LOGIN_BODY_LIMIT 8192
-#define REQUEST_LIMIT (HEADER_LIMIT + BODY_LIMIT)
 #define SESSION_LIMIT 64
 #define TOKEN_BYTES 32
 #define TOKEN_LENGTH (TOKEN_BYTES * 2)
@@ -296,18 +297,30 @@ static bool secure_request(const Request *request) {
 }
 
 /* Bounded HTTP/1.1 parser. One request per connection; no chunked uploads. */
-static int read_request(int fd, char *buffer, Request *request) {
+static bool pdf_upload_target(const char *target) {
+    const char prefix[] = "/api/contracts/";
+    if (strncmp(target, prefix, sizeof(prefix) - 1) != 0) return false;
+    const char *p = target + sizeof(prefix) - 1;
+    if (*p < '0' || *p > '9') return false;
+    while (*p >= '0' && *p <= '9') p++;
+    const char suffix[] = "/documents";
+    return strncmp(p, suffix, sizeof(suffix) - 1) == 0 &&
+        (p[sizeof(suffix) - 1] == '\0' || p[sizeof(suffix) - 1] == '?');
+}
+
+static int read_request(int fd, char **allocation, size_t *capacity, Request *request) {
+    char *buffer = *allocation;
     size_t used = 0, header_size = 0;
     while (!header_size) {
-        if (used == REQUEST_LIMIT) return 431;
-        ssize_t received = recv(fd, buffer + used, REQUEST_LIMIT - used, 0);
+        if (used == HEADER_LIMIT) return 431;
+        ssize_t received = recv(fd, buffer + used, HEADER_LIMIT - used, 0);
         if (received < 0 && errno == EINTR) continue;
         if (received <= 0) return received < 0 ? 408 : 400;
-        if (memchr(buffer + used, '\0', (size_t)received)) return 400;
         used += (size_t)received;
         buffer[used] = '\0';
         char *end = strstr(buffer, "\r\n\r\n");
         if (end) header_size = (size_t)(end - buffer) + 4;
+        if (memchr(buffer, '\0', header_size ? header_size : used)) return 400;
         if (header_size > HEADER_LIMIT || (!header_size && used >= HEADER_LIMIT)) return 431;
     }
 
@@ -368,7 +381,9 @@ static int read_request(int fd, char *buffer, Request *request) {
             char *number_end;
             unsigned long long number = strtoull(value, &number_end, 10);
             size_t body_limit = strncmp(request->target, "/api/login", 10) == 0
-                ? LOGIN_BODY_LIMIT : BODY_LIMIT;
+                ? LOGIN_BODY_LIMIT :
+                (strcmp(request->method, "POST") == 0 && pdf_upload_target(request->target)
+                    ? DOCUMENTS_MAX_BYTES : BODY_LIMIT);
             if (errno || *number_end || number > body_limit) return 413;
             request->content_length = (size_t)number;
             request->has_content_length = true;
@@ -378,19 +393,30 @@ static int read_request(int fd, char *buffer, Request *request) {
         line = end + 2;
     }
     if (!seen_host || !request->host[0] || request->transfer_encoding) return 400;
-    if (!allowed_host(request->host)) return 403;
-    if (header_size + request->content_length > REQUEST_LIMIT) return 413;
+    bool host_allowed = allowed_host(request->host);
     size_t total = header_size + request->content_length;
+    if (used > total) return 400;
+    if (total + 1 > *capacity) {
+        char *larger = realloc(buffer, total + 1);
+        if (!larger) return 500;
+        buffer = larger;
+        *allocation = buffer;
+        *capacity = total + 1;
+    }
     while (used < total) {
         ssize_t received = recv(fd, buffer + used, total - used, 0);
         if (received < 0 && errno == EINTR) continue;
         if (received <= 0) return received < 0 ? 408 : 400;
-        if (memchr(buffer + used, '\0', (size_t)received)) return 400;
         used += (size_t)received;
     }
     if (used != total) return 400;
     buffer[used] = '\0';
     request->body = buffer + header_size;
+    /* Consume the bounded declared body before rejecting Host. Closing with
+       unread TCP bytes can reset the connection and discard the HTTP error. */
+    if (!host_allowed) return 403;
+    if (!(strcmp(request->method, "POST") == 0 && pdf_upload_target(request->target)) &&
+        memchr(request->body, '\0', request->content_length)) return 400;
     return 0;
 }
 
@@ -603,12 +629,13 @@ static void session_response(int fd, const Session *session) {
     escape_json(name, account.name);
     bool manager = strcmp(account.role, "manager") == 0;
     const char *allowed = manager ? "true" : "false";
-    char body[sizeof(email) + sizeof(name) + 512];
+    char body[sizeof(email) + sizeof(name) + 640];
     snprintf(body, sizeof(body),
         "{\"authenticated\":true,\"email\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
         "\"permissions\":{\"manage_jobs\":%s,\"manage_users\":%s,\"edit_time_entries\":%s,"
-        "\"manage_assignments\":%s,\"view_audit\":%s}}",
-        email, name, account.role, allowed, allowed, allowed, allowed, allowed);
+        "\"manage_assignments\":%s,\"view_audit\":%s,"
+        "\"manage_suppliers\":%s,\"manage_contracts\":%s}}",
+        email, name, account.role, allowed, allowed, allowed, allowed, allowed, allowed, allowed);
     json(fd, 200, body, NULL);
 }
 
@@ -617,6 +644,9 @@ static bool workspace_route(int fd, Request *request, const char *query) {
     if (strcmp(target, "/api/jobs") != 0 && strncmp(target, "/api/jobs/", 10) != 0 &&
         strcmp(target, "/api/time-entries") != 0 && strncmp(target, "/api/time-entries/", 18) != 0 &&
         strcmp(target, "/api/users") != 0 && strncmp(target, "/api/users/", 11) != 0 &&
+        strcmp(target, "/api/suppliers") != 0 && strncmp(target, "/api/suppliers/", 15) != 0 &&
+        strcmp(target, "/api/contracts") != 0 && strncmp(target, "/api/contracts/", 15) != 0 &&
+        strncmp(target, "/api/contract-documents/", 24) != 0 &&
         strcmp(target, "/api/audit") != 0)
         return false;
     bool head = strcmp(request->method, "HEAD") == 0;
@@ -634,16 +664,64 @@ static bool workspace_route(int fd, Request *request, const char *query) {
     if (mutation && !same_origin(request)) {
         error_response_head(fd, 403, head); return true;
     }
+    bool upload = strcmp(request->method, "POST") == 0 && pdf_upload_target(target);
     if (strcmp(request->method, "POST") == 0) {
-        const char type[] = "application/x-www-form-urlencoded";
-        size_t length = sizeof(type) - 1;
+        const char *type = upload ? "application/pdf" : "application/x-www-form-urlencoded";
+        size_t length = strlen(type);
         if (strncmp(request->content_type, type, length) != 0 ||
             (request->content_type[length] && request->content_type[length] != ';')) {
             error_response(fd, 415); return true;
         }
     }
     WorkspaceResponse response = {0};
-    bool handled = accounts_handle(request->method, target, query, request->body,
+    bool handled = false;
+    if (upload) {
+        const char *number = target + strlen("/api/contracts/");
+        errno = 0;
+        char *end;
+        long long id = strtoll(number, &end, 10);
+        char filename[181] = {0};
+        if (errno || id <= 0 || strcmp(end, "/documents") != 0 ||
+            strncmp(query, "filename=", 9) != 0 || strchr(query, '&') ||
+            !decode_form(filename, sizeof(filename), query + 9)) {
+            error_response(fd, 400); return true;
+        }
+        procurement_upload((DbInt)id, filename, (const unsigned char *)request->body,
+                           request->content_length, account.id, account.role, &response);
+        handled = true;
+    } else if (strncmp(target, "/api/contract-documents/", 24) == 0) {
+        const char *number = target + 24;
+        errno = 0;
+        char *end;
+        long long id = strtoll(number, &end, 10);
+        if (errno || !isdigit((unsigned char)*number) || id <= 0 || strcmp(end, "/download") != 0 || *query) {
+            error_response_head(fd, 404, head); return true;
+        }
+        if (strcmp(request->method, "GET") != 0 && !head) {
+            error_response(fd, 405); return true;
+        }
+        unsigned char *data = NULL;
+        size_t size = 0;
+        char filename[181] = {0};
+        int status = procurement_download((DbInt)id, account.role, &data, &size, filename);
+        if (status != 200) error_response_head(fd, status, head);
+        else {
+            char extra[1024];
+            size_t used = (size_t)snprintf(extra, sizeof(extra),
+                "Content-Disposition: attachment; filename=\"contratto.pdf\"; filename*=UTF-8''");
+            const char digits[] = "0123456789ABCDEF";
+            for (const unsigned char *p = (const unsigned char *)filename; *p && used + 5 < sizeof(extra); p++) {
+                extra[used++] = '%'; extra[used++] = digits[*p >> 4]; extra[used++] = digits[*p & 15];
+            }
+            memcpy(extra + used, "\r\n", 3);
+            respond(fd, 200, "application/pdf", (const char *)data, size, extra, head);
+        }
+        if (data) { erase(data, size); free(data); }
+        return true;
+    }
+    if (!handled) handled = procurement_handle(request->method, target, query, request->body,
+                                              account.id, account.role, &response);
+    if (!handled) handled = accounts_handle(request->method, target, query, request->body,
                                    &account, &response);
     if (handled && response.status == 200 && strcmp(request->method, "POST") == 0 &&
         strncmp(target, "/api/users/", 11) == 0) {
@@ -817,6 +895,10 @@ int main(void) {
         fprintf(stderr, "Impossibile aggiornare il database. I dati restano conservati; controlla la versione e i permessi.\n");
         accounts_close(); workspace_close(); return 1;
     }
+    if (!procurement_open(database_path) || !documents_open(database_path)) {
+        fprintf(stderr, "Impossibile configurare contratti e archivio documentale. Controlla database e impostazioni documenti.\n");
+        documents_close(); procurement_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+    }
     snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
     snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
     snprintf(public_authority, sizeof(public_authority), "127.0.0.1:%ld", public_port);
@@ -828,7 +910,7 @@ int main(void) {
     (void)sigaction(SIGINT, &stop_action, NULL);
     (void)sigaction(SIGTERM, &stop_action, NULL);
     int server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server < 0) { perror("socket"); storage_close(); accounts_close(); workspace_close(); return 1; }
+    if (server < 0) { perror("socket"); documents_close(); procurement_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
     int reuse = 1;
     (void)setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     struct sockaddr_in address = {0};
@@ -836,7 +918,7 @@ int main(void) {
     address.sin_port = htons((uint16_t)port);
     address.sin_addr = bind_address;
     if (bind(server, (struct sockaddr *)&address, sizeof(address)) < 0 || listen(server, 16) < 0) {
-        perror("Avvio server"); close(server); storage_close(); accounts_close(); workspace_close(); return 1;
+        perror("Avvio server"); close(server); documents_close(); procurement_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     printf("\n  punto · Project management\n  http://127.0.0.1:%ld\n  Utenti e dati: %s\n\n", public_port, database_path);
     fflush(stdout);
@@ -849,15 +931,20 @@ int main(void) {
         struct timeval timeout = {.tv_sec = 5, .tv_usec = 0};
         (void)setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         (void)setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-        char buffer[REQUEST_LIMIT + 1];
+        size_t capacity = HEADER_LIMIT + 1;
+        char *buffer = malloc(capacity);
+        if (!buffer) { error_response(client, 500); close(client); continue; }
         Request request = {0};
-        int status = read_request(client, buffer, &request);
+        int status = read_request(client, &buffer, &capacity, &request);
         if (status) error_response(client, status);
         else route(client, &request);
-        erase(buffer, sizeof(buffer));
+        erase(buffer, capacity);
+        free(buffer);
         close(client);
     }
     close(server);
+    documents_close();
+    procurement_close();
     storage_close();
     accounts_close();
     workspace_close();

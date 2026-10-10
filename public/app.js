@@ -4,8 +4,10 @@
   const $ = (id) => document.getElementById(id);
   const states = { planned: "Da avviare", active: "In corso", paused: "In pausa", completed: "Completata", cancelled: "Annullata" };
   const roles = { manager: "Gestore", worker: "Operatore" };
-  const tabs = ["jobs", "hours", "users", "audit"];
+  const contractStates = { draft: "Bozza", active: "Attivo", expired: "Scaduto", closed: "Chiuso", cancelled: "Annullato" };
+  const tabs = ["jobs", "hours", "suppliers", "contracts", "users", "audit"];
   const state = { session: null, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
+  Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
   const busyDialogs = new Set();
   let noticeTimer;
 
@@ -62,9 +64,10 @@
 
   async function api(path, options = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const { timeoutMs = 15000, ...fetchOptions } = options;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options, signal: controller.signal });
+      const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...fetchOptions, signal: controller.signal });
       if (response.status === 401) {
         window.location.replace("/");
         throw new Error("La sessione è scaduta. Accedi di nuovo.");
@@ -117,7 +120,8 @@
   }
 
   function availableTabs() {
-    return tabs.filter((tab) => tab !== "users" && tab !== "audit" || tab === "users" && can("manage_users") || tab === "audit" && can("view_audit"));
+    const permissions = { users: "manage_users", audit: "view_audit", suppliers: "manage_suppliers", contracts: "manage_contracts" };
+    return tabs.filter((tab) => !permissions[tab] || can(permissions[tab]));
   }
 
   function applySession(session) {
@@ -131,13 +135,15 @@
     $("session-role").hidden = false;
     $("user-avatar").textContent = (session.name || session.email || "P").charAt(0).toUpperCase();
     $("new-job").hidden = !can("manage_jobs");
+    $("tab-suppliers").hidden = !can("manage_suppliers");
+    $("tab-contracts").hidden = !can("manage_contracts");
     $("tab-users").hidden = !can("manage_users");
     $("tab-audit").hidden = !can("view_audit");
     $("new-user").hidden = !can("manage_users");
     document.querySelector(".jobs-table").classList.toggle("jobs-with-assignments", can("manage_assignments"));
     $("entries-actions-heading").hidden = !can("edit_time_entries");
     document.querySelector(".entries-table").classList.toggle("entries-readonly", !can("edit_time_entries"));
-    $("permission-hint").textContent = can("manage_jobs") ? "Gestore · Gestisci commesse, abilitazioni e utenti. Ogni modifica ha la sua traccia." : "Operatore · Registra il lavoro sulle commesse abilitate per te. Le ore inserite restano nel tuo registro.";
+    $("permission-hint").textContent = can("manage_jobs") ? "Gestore · Gestisci commesse, contratti, fornitori e persone. Ogni modifica ha la sua traccia." : "Operatore · Registra il lavoro sulle commesse abilitate per te. Le ore inserite restano nel tuo registro.";
     $("jobs-panel-description").textContent = can("manage_jobs") ? "Dal primo passo all’ultimo dettaglio, tutto sotto controllo." : "Le commesse abilitate per te, pronte per registrare il lavoro svolto.";
     if (!can("manage_jobs")) {
       state.openEntryAfterJob = false;
@@ -167,6 +173,30 @@
       state.auditLoading = false;
       $("audit-list").replaceChildren();
     }
+    for (const [kind, permission] of [["suppliers", "manage_suppliers"], ["contracts", "manage_contracts"]]) {
+      if (!can(permission)) {
+        state[kind + "Request"]++;
+        state[kind] = [];
+        state[kind + "Ready"] = false;
+        state[kind + "Loading"] = false;
+        $(kind + "-body").replaceChildren();
+        $(kind + "-count").textContent = "0";
+        $(kind + "-visible-count").textContent = "";
+        $(kind + "-error-text").textContent = "";
+        if ($(kind === "suppliers" ? "supplier-dialog" : "contract-dialog").open) $(kind === "suppliers" ? "supplier-dialog" : "contract-dialog").close();
+      }
+    }
+    if (!can("manage_contracts")) {
+      state.documentsRequest++;
+      state.documentsContract = null;
+      state.documents = [];
+      state.documentsReady = false;
+      state.editingContract = null;
+      $("documents-list").replaceChildren();
+      $("job-contract").replaceChildren();
+      if ($("documents-dialog").open) $("documents-dialog").close();
+    }
+    $("job-contract-field").hidden = !can("manage_contracts");
     selectTab(availableTabs().includes(state.activeTab) ? state.activeTab : "jobs");
     renderJobs();
     renderEntries();
@@ -190,6 +220,7 @@
     if (moveFocus) $("tab-" + name).focus();
     if (name === "users" && !state.usersReady) refreshUsers();
     if (name === "audit" && !state.auditReady && !state.auditLoading) refreshAudit();
+    if (["suppliers", "contracts"].includes(name) && !state[name + "Ready"] && !state[name + "Loading"]) refreshRegistry(name);
   }
 
   function renderStats() {
@@ -232,12 +263,13 @@
     $("jobs-loading").hidden = true;
     const search = $("job-search").value.trim().toLocaleLowerCase("it-IT");
     const filter = $("job-filter").value;
-    const jobs = state.jobs.filter((job) => (!filter || job.status === filter) && [job.code, job.name, job.client].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
+    const jobs = state.jobs.filter((job) => (!filter || job.status === filter) && [job.code, job.name, job.client, ...(can("manage_contracts") ? [job.contract_code, job.contract_title, job.supplier_name] : [])].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
     $("jobs-body").replaceChildren();
     for (const job of jobs) {
       const row = node("tr");
       const nameCell = node("td");
       nameCell.append(jobIdentity(job.code, job.name));
+      if (can("manage_contracts") && job.contract_id) nameCell.querySelector(".job-identity").append(node("span", "job-contract-label", `Contratto ${job.contract_code || job.contract_id}${job.supplier_name ? " · " + job.supplier_name : ""}`));
       const clientCell = node("td", job.client ? "" : "no-value", job.client || "—");
       const statusCell = node("td");
       statusCell.append(node("span", "status-badge status-" + (Object.hasOwn(states, job.status) ? job.status : "planned"), states[job.status] || "Da avviare"));
@@ -320,6 +352,288 @@
     $("users-count").textContent = state.users.length;
     const active = state.users.filter((user) => user.active).length;
     $("users-active-count").textContent = `${active} ${active === 1 ? "utente attivo" : "utenti attivi"}`;
+  }
+
+  function euroLabel(cents) {
+    if (cents === null || cents === undefined || cents === "") return "—";
+    return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents) / 100);
+  }
+
+  function valueToCents(value) {
+    const normalized = value.trim().replace(",", ".");
+    if (!normalized) return "";
+    if (!/^\d{1,10}(?:\.\d{1,2})?$/.test(normalized)) throw new Error("Inserisci un importo positivo, senza separatori delle migliaia e con al massimo due decimali.");
+    const [whole, fraction = ""] = normalized.split(".");
+    const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+    if (cents > 999999999999n) throw new Error("Il valore massimo è 9.999.999.999,99 €.");
+    return String(cents);
+  }
+
+  function activeSupplier(supplier) {
+    return supplier.active === true || supplier.active === 1 || supplier.active === "1";
+  }
+
+  function renderSuppliers() {
+    if (!can("manage_suppliers") || !state.suppliersReady) return;
+    const search = $("supplier-search").value.trim().toLocaleLowerCase("it-IT");
+    const filter = $("supplier-filter").value;
+    const suppliers = state.suppliers.filter((supplier) => (!filter || String(Number(activeSupplier(supplier))) === filter) && [supplier.code, supplier.name, supplier.vat_number].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
+    $("suppliers-body").replaceChildren();
+    for (const supplier of suppliers) {
+      const row = node("tr");
+      const identity = node("td");
+      identity.append(jobIdentity(supplier.code, supplier.name));
+      const contact = node("td", "registry-contact");
+      contact.append(node("span", "", supplier.email || "—"));
+      if (supplier.phone) contact.append(node("span", "", supplier.phone));
+      const status = node("td");
+      status.append(node("span", "status-badge " + (activeSupplier(supplier) ? "status-active" : "status-cancelled"), activeSupplier(supplier) ? "Attivo" : "Disattivato"));
+      const actions = node("td");
+      actions.append(action("Modifica", "Modifica il fornitore " + supplier.name, () => openSupplier(supplier)));
+      row.append(identity, node("td", supplier.vat_number ? "" : "no-value", supplier.vat_number || "—"), contact, status, actions);
+      $("suppliers-body").append(row);
+    }
+    $("suppliers-count").textContent = state.suppliers.length;
+    $("suppliers-table-wrap").hidden = suppliers.length === 0;
+    $("suppliers-empty").hidden = suppliers.length !== 0;
+    $("suppliers-empty-title").textContent = state.suppliers.length ? "Nessun fornitore corrisponde alla ricerca." : "Il primo partner parte da qui.";
+    $("suppliers-empty-text").textContent = state.suppliers.length ? "Cambia la ricerca o il filtro di stato." : "Censisci un fornitore per associarlo ai tuoi contratti.";
+    $("suppliers-visible-count").textContent = `${suppliers.length} di ${state.suppliers.length} fornitori`;
+  }
+
+  function contractPeriod(contract) {
+    if (contract.starts_on && contract.ends_on) return `${dateLabel(contract.starts_on)} – ${dateLabel(contract.ends_on)}`;
+    if (contract.starts_on) return `Dal ${dateLabel(contract.starts_on)}`;
+    if (contract.ends_on) return `Fino al ${dateLabel(contract.ends_on)}`;
+    return "Non specificata";
+  }
+
+  function renderContracts() {
+    if (!can("manage_contracts") || !state.contractsReady) return;
+    const search = $("contract-search").value.trim().toLocaleLowerCase("it-IT");
+    const filter = $("contract-filter").value;
+    const contracts = state.contracts.filter((contract) => (!filter || contract.status === filter) && [contract.code, contract.title, contract.supplier_name].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
+    $("contracts-body").replaceChildren();
+    for (const contract of contracts) {
+      const row = node("tr");
+      const identity = node("td");
+      const info = jobIdentity(contract.code, contract.title);
+      info.querySelector(".job-identity").append(node("span", "contract-supplier-label", contract.supplier_name || "Fornitore non disponibile"));
+      identity.append(info);
+      const status = node("td");
+      const statusClass = { draft: "planned", active: "active", expired: "paused", closed: "completed", cancelled: "cancelled" }[contract.status] || "planned";
+      status.append(node("span", "status-badge status-" + statusClass, contractStates[contract.status] || contract.status));
+      const actionsCell = node("td");
+      const actions = node("div", "row-actions");
+      actions.append(action("Modifica", "Modifica il contratto " + contract.title, () => openContract(contract)), node("span", "row-divider"), action(`PDF · ${Number(contract.documents_count) || 0}`, "Apri i documenti del contratto " + contract.title, () => openDocuments(contract)));
+      actionsCell.append(actions);
+      row.append(identity, node("td", "contract-period", contractPeriod(contract)), node("td", "contract-value", euroLabel(contract.value_cents)), status, actionsCell);
+      $("contracts-body").append(row);
+    }
+    $("contracts-count").textContent = state.contracts.length;
+    $("contracts-table-wrap").hidden = contracts.length === 0;
+    $("contracts-empty").hidden = contracts.length !== 0;
+    $("contracts-empty-title").textContent = state.contracts.length ? "Nessun contratto corrisponde alla ricerca." : "Ogni commessa ha un punto di partenza.";
+    $("contracts-empty-text").textContent = state.contracts.length ? "Cambia la ricerca o il filtro di stato." : "Crea un contratto e raccogli i documenti del tuo accordo.";
+    $("contracts-visible-count").textContent = `${contracts.length} di ${state.contracts.length} contratti`;
+  }
+
+  async function refreshRegistry(kind) {
+    const permission = kind === "suppliers" ? "manage_suppliers" : "manage_contracts";
+    if (!can(permission)) return false;
+    const request = ++state[kind + "Request"];
+    state[kind + "Loading"] = true;
+    $(kind + "-loading").hidden = false;
+    $(kind + "-error").hidden = true;
+    $(kind + "-retry").disabled = true;
+    $(kind + "-empty").hidden = true;
+    if (!state[kind + "Ready"]) $(kind + "-table-wrap").hidden = true;
+    try {
+      const data = await api("/api/" + kind);
+      if (request !== state[kind + "Request"] || !can(permission)) return false;
+      if (!Array.isArray(data[kind])) throw new Error("Il server ha restituito un elenco non valido. Riprova.");
+      state[kind] = data[kind];
+      state[kind + "Ready"] = true;
+      if (kind === "suppliers") {
+        renderSuppliers();
+        if ($("contract-dialog").open) renderContractSuppliers();
+      } else {
+        renderContracts();
+        if ($("job-dialog").open) renderJobContracts();
+      }
+      return true;
+    } catch (error) {
+      if (request === state[kind + "Request"]) {
+        $(kind + "-error-text").textContent = error.message;
+        $(kind + "-error").hidden = false;
+      }
+      return false;
+    } finally {
+      if (request === state[kind + "Request"]) {
+        state[kind + "Loading"] = false;
+        $(kind + "-loading").hidden = true;
+        $(kind + "-retry").disabled = false;
+      }
+    }
+  }
+
+  function renderJobContracts(initial = false) {
+    const current = initial ? state.editingJob?.contract_id || "" : $("job-contract").value;
+    const first = node("option", "", "Nessun contratto");
+    first.value = "";
+    const options = state.contracts.filter((contract) => !["closed", "cancelled"].includes(contract.status) || String(contract.id) === String(current)).map((contract) => {
+      const option = node("option", "", `${contract.code} · ${contract.title} · ${contractStates[contract.status] || contract.status}`);
+      option.value = contract.id;
+      return option;
+    });
+    if (current && !options.some((option) => String(option.value) === String(current))) {
+      const fallback = node("option", "", `${state.editingJob?.contract_code || "Contratto"} · ${state.editingJob?.contract_title || "Collegamento esistente"}`);
+      fallback.value = current;
+      options.push(fallback);
+    }
+    $("job-contract").replaceChildren(first, ...options);
+    $("job-contract").value = current;
+    $("job-contract").disabled = !state.contractsReady || busyDialogs.has("job-dialog");
+    $("job-contract-help").textContent = state.contractsReady ? "Collega la commessa a un contratto censito. I contratti chiusi o annullati conservano i collegamenti esistenti." : "Caricamento dell’elenco dei contratti necessario per salvare la commessa.";
+    $("job-contract-retry").hidden = state.contractsReady;
+    $("job-save").disabled = !state.contractsReady || busyDialogs.has("job-dialog");
+  }
+
+  async function loadJobContracts() {
+    $("job-contract-retry").disabled = true;
+    const loaded = await refreshRegistry("contracts");
+    if (!$("job-dialog").open || !can("manage_jobs")) return;
+    renderJobContracts();
+    $("job-contract-retry").disabled = false;
+    if (!loaded && !state.contractsReady) $("job-contract-help").textContent = "L’elenco dei contratti non è disponibile. Ricaricalo prima di salvare.";
+  }
+
+  function openSupplier(supplier = null) {
+    if (!requirePermission("manage_suppliers") || busyDialogs.has("supplier-dialog")) return;
+    $("supplier-form").reset();
+    $("supplier-error").hidden = true;
+    $("supplier-id").value = supplier?.id || "";
+    $("supplier-dialog-title").textContent = supplier ? "Modifica fornitore" : "Nuovo fornitore";
+    $("supplier-save").textContent = supplier ? "Salva modifiche" : "Crea fornitore";
+    if (supplier) {
+      ["code", "name", "vat_number", "email", "phone", "address", "notes"].forEach((key) => { $("supplier-" + key).value = supplier[key] || ""; });
+      $("supplier-active").value = activeSupplier(supplier) ? "1" : "0";
+    }
+    $("supplier-dialog").showModal();
+    $("supplier-code").focus();
+  }
+
+  function renderContractSuppliers(initial = false) {
+    const current = initial ? state.editingContract?.supplier_id || "" : $("contract-supplier").value;
+    const first = node("option", "", "Seleziona un fornitore attivo");
+    first.value = "";
+    const options = state.suppliers.filter((supplier) => activeSupplier(supplier) || String(supplier.id) === String(state.editingContract?.supplier_id)).map((supplier) => {
+      const option = node("option", "", `${supplier.code} · ${supplier.name}${activeSupplier(supplier) ? "" : " (disattivato)"}`);
+      option.value = supplier.id;
+      return option;
+    });
+    if (current && !options.some((option) => String(option.value) === String(current))) {
+      const fallback = node("option", "", state.editingContract?.supplier_name || "Fornitore del contratto");
+      fallback.value = current;
+      options.push(fallback);
+    }
+    $("contract-supplier").replaceChildren(first, ...options);
+    $("contract-supplier").value = current;
+    $("contract-supplier").disabled = !state.suppliersReady || busyDialogs.has("contract-dialog");
+    $("contract-save").disabled = !state.suppliersReady || busyDialogs.has("contract-dialog");
+    $("contract-supplier-retry").hidden = state.suppliersReady;
+    $("contract-supplier-help").textContent = !state.suppliersReady ? "Caricamento dell’elenco dei fornitori necessario per salvare il contratto." : options.length ? "Puoi scegliere un fornitore attivo. Il fornitore già collegato resta disponibile in modifica." : "Crea prima un fornitore attivo nella sezione Fornitori.";
+  }
+
+  async function loadContractSuppliers() {
+    $("contract-supplier-retry").disabled = true;
+    const loaded = await refreshRegistry("suppliers");
+    if (!$("contract-dialog").open || !can("manage_contracts")) return;
+    renderContractSuppliers();
+    $("contract-supplier-retry").disabled = false;
+    if (!loaded && !state.suppliersReady) $("contract-supplier-help").textContent = "L’elenco dei fornitori non è disponibile. Ricaricalo prima di salvare.";
+  }
+
+  function openContract(contract = null) {
+    if (!requirePermission("manage_contracts") || busyDialogs.has("contract-dialog")) return;
+    state.editingContract = contract;
+    $("contract-form").reset();
+    $("contract-value").setCustomValidity("");
+    $("contract-ends_on").setCustomValidity("");
+    $("contract-error").hidden = true;
+    $("contract-id").value = contract?.id || "";
+    $("contract-dialog-title").textContent = contract ? "Modifica contratto" : "Nuovo contratto";
+    $("contract-save").textContent = contract ? "Salva modifiche" : "Crea contratto";
+    if (contract) {
+      ["code", "title", "status", "starts_on", "ends_on", "notes"].forEach((key) => { $("contract-" + key).value = contract[key] || ""; });
+      if (contract.value_cents !== null && contract.value_cents !== undefined && contract.value_cents !== "") {
+        const cents = BigInt(contract.value_cents);
+        $("contract-value").value = `${cents / 100n},${String(cents % 100n).padStart(2, "0")}`;
+      }
+    }
+    renderContractSuppliers(true);
+    $("contract-dialog").showModal();
+    $("contract-code").focus();
+    if (!state.suppliersReady) loadContractSuppliers();
+  }
+
+  function fileSize(bytes) {
+    return Number(bytes) < 1024 * 1024 ? `${(Number(bytes) / 1024).toLocaleString("it-IT", { maximumFractionDigits: 1 })} KiB` : `${(Number(bytes) / (1024 * 1024)).toLocaleString("it-IT", { maximumFractionDigits: 2 })} MiB`;
+  }
+
+  function renderDocuments() {
+    if (!state.documentsReady || !state.documentsContract || !can("manage_contracts")) return;
+    $("documents-list").replaceChildren();
+    for (const document of state.documents) {
+      const item = node("li", "document-item");
+      const info = node("div", "document-identity");
+      info.append(node("strong", "", document.file_name), node("span", "", `${fileSize(document.byte_size)} · ${auditTime(document.created_at)}`));
+      const link = node("a", "row-button document-download", "Scarica PDF");
+      link.href = `/api/contract-documents/${encodeURIComponent(document.id)}/download`;
+      link.setAttribute("aria-label", "Scarica il documento " + document.file_name);
+      item.append(info, link);
+      $("documents-list").append(item);
+    }
+    $("documents-empty").hidden = state.documents.length !== 0;
+  }
+
+  async function loadDocuments() {
+    if (!state.documentsContract || !can("manage_contracts")) return;
+    const request = ++state.documentsRequest;
+    const id = state.documentsContract.id;
+    state.documentsReady = false;
+    $("documents-loading").hidden = false;
+    $("documents-error").hidden = true;
+    $("documents-retry").hidden = true;
+    $("documents-empty").hidden = true;
+    $("documents-list").replaceChildren();
+    try {
+      const data = await api(`/api/contracts/${encodeURIComponent(id)}/documents`);
+      if (request !== state.documentsRequest || !can("manage_contracts")) return;
+      if (!Array.isArray(data.documents)) throw new Error("Il server ha restituito un elenco non valido. Riprova.");
+      state.documents = data.documents;
+      state.documentsReady = true;
+      renderDocuments();
+    } catch (error) {
+      if (request !== state.documentsRequest) return;
+      dialogError("documents-error", error);
+      $("documents-retry").hidden = false;
+    } finally {
+      if (request === state.documentsRequest) $("documents-loading").hidden = true;
+    }
+  }
+
+  function openDocuments(contract) {
+    if (!requirePermission("manage_contracts") || busyDialogs.has("documents-dialog")) return;
+    state.documentsContract = contract;
+    state.documents = [];
+    state.documentsReady = false;
+    $("document-form").reset();
+    $("document-file").setCustomValidity("");
+    $("documents-dialog-title").textContent = "PDF · " + contract.code;
+    $("documents-dialog-description").textContent = contract.title + ". Scarica i documenti originali o aggiungi un PDF all’archivio.";
+    $("documents-dialog").showModal();
+    loadDocuments();
   }
 
   function assignmentPeriod(assignment) {
@@ -456,11 +770,14 @@
     "jobs.create": "Commessa creata", "jobs.update": "Commessa aggiornata",
     "time_entries.create": "Ore registrate", "time_entries.update": "Ore aggiornate", "time_entries.delete": "Ore eliminate",
     "assignments.create": "Utente abilitato", "assignments.update": "Abilitazione aggiornata", "assignments.delete": "Abilitazione revocata",
+    "suppliers.create": "Fornitore creato", "suppliers.update": "Fornitore aggiornato",
+    "contracts.create": "Contratto creato", "contracts.update": "Contratto aggiornato", "contract_documents.create": "PDF contrattuale archiviato",
     "users.create": "Utente creato", "users.update": "Utente aggiornato", "system.migration": "Database aggiornato"
   };
-  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", system: "Sistema" };
+  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", system: "Sistema" };
   const auditLabels = {
     id: "ID", user_id: "ID utente", job_id: "ID commessa", owner_id: "ID autore", owner: "Account", email: "Email", name: "Nome", role: "Ruolo", active: "Accesso attivo",
+    title: "Titolo", supplier_id: "ID fornitore", supplier_name: "Fornitore", contract_id: "ID contratto", contract_code: "Codice contratto", contract_title: "Contratto", vat_number: "Partita IVA", phone: "Telefono", address: "Indirizzo", notes: "Note", value_cents: "Valore", currency: "Valuta", file_name: "Nome documento", byte_size: "Dimensione",
     code: "Codice", status: "Stato", description: "Descrizione", client: "Cliente", date: "Giornata", minutes: "Ore lavorate", starts_on: "Abilitato dal", ends_on: "Abilitato fino al",
     user_name: "Utente", user_email: "Email utente", job_name: "Commessa", job_code: "Codice commessa", note: "Attività / nota", version: "Versione", schema_version: "Versione database", migrated_entries: "Registrazioni migrate", migrated_users: "Utenti migrati", mapped_entries: "Registrazioni collegate agli utenti", archived_entries: "Registrazioni storiche conservate"
   };
@@ -473,8 +790,10 @@
   function auditValue(key, value) {
     if (value === null || value === undefined || value === "") return "—";
     if (key === "minutes") return minutesLabel(value);
+    if (key === "value_cents") return euroLabel(value);
+    if (key === "byte_size") return fileSize(value);
     if (key === "role") return roles[value] || String(value);
-    if (key === "status") return states[value] || String(value);
+    if (key === "status") return states[value] || contractStates[value] || String(value);
     if (key === "active") return value === true || value === 1 || value === "1" ? "Attivo" : "Disattivato";
     if (["date", "starts_on", "ends_on"].includes(key) && validDate(String(value))) return dateLabel(value);
     if (typeof value === "boolean") return value ? "Sì" : "No";
@@ -629,6 +948,8 @@
     });
     const tasks = [jobsTask, refreshEntries()];
     if (can("manage_users")) tasks.push(refreshUsers());
+    if (can("manage_suppliers")) tasks.push(refreshRegistry("suppliers"));
+    if (can("manage_contracts")) tasks.push(refreshRegistry("contracts"));
     if (can("view_audit") && state.activeTab === "audit") tasks.push(refreshAudit());
     if (state.selectedDate !== localDate(new Date())) {
       tasks.push(api("/api/time-entries?date=" + localDate(new Date())).then((data) => {
@@ -657,6 +978,7 @@
   function openJob(job = null) {
     if (!requirePermission("manage_jobs")) return;
     if (busyDialogs.has("job-dialog")) return;
+    state.editingJob = job;
     $("job-form").reset();
     $("job-error").hidden = true;
     $("job-id").value = job ? job.id : "";
@@ -665,8 +987,10 @@
     if (job) {
       ["code", "name", "client", "description", "status"].forEach((field) => { $("job-" + field).value = job[field] || ""; });
     }
+    if (can("manage_contracts")) renderJobContracts(true);
     $("job-dialog").showModal();
     $("job-code").focus();
+    if (can("manage_contracts") && !state.contractsReady) loadJobContracts();
   }
 
   function openEntry(entry = null, jobId = "") {
@@ -761,10 +1085,12 @@
     if (!requirePermission("manage_jobs")) return;
     if (busyDialogs.has("job-dialog")) return;
     ["code", "name", "client", "description"].forEach((field) => { $("job-" + field).value = $("job-" + field).value.trim(); });
+    if (can("manage_contracts") && !state.contractsReady) { dialogError("job-error", new Error("Ricarica l’elenco dei contratti prima di salvare.")); return; }
     if (!$("job-form").reportValidity()) return;
     $("job-error").hidden = true;
     const id = $("job-id").value;
     const fields = Object.fromEntries(["code", "name", "client", "description", "status"].map((field) => [field, $("job-" + field).value]));
+    if (can("manage_contracts")) fields.contract_id = $("job-contract").value;
     const followWithEntry = state.openEntryAfterJob && !id;
     dialogBusy("job-dialog", true, "job-save", id ? "Salva modifiche" : "Crea commessa");
     try {
@@ -942,6 +1268,117 @@
   $("audit-more").addEventListener("click", () => refreshAudit(true));
   $("audit-retry").addEventListener("click", () => refreshAudit(state.auditRetryMore));
 
+  $("supplier-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_suppliers") || busyDialogs.has("supplier-dialog")) return;
+    const keys = ["code", "name", "vat_number", "email", "phone", "address", "notes"];
+    keys.forEach((key) => { $("supplier-" + key).value = $("supplier-" + key).value.trim(); });
+    if (!$("supplier-form").reportValidity()) return;
+    const id = $("supplier-id").value;
+    const fields = Object.fromEntries(keys.map((key) => [key, $("supplier-" + key).value]));
+    fields.active = $("supplier-active").value;
+    $("supplier-error").hidden = true;
+    dialogBusy("supplier-dialog", true, "supplier-save", id ? "Salva modifiche" : "Crea fornitore");
+    try {
+      await post("/api/suppliers" + (id ? "/" + encodeURIComponent(id) : ""), fields);
+      state.auditReady = false;
+      $("supplier-dialog").close();
+      showNotice(id ? "Fornitore aggiornato." : "Fornitore censito. Puoi associarlo a un contratto.");
+      await refreshRegistry("suppliers");
+      if (can("manage_contracts") && state.contractsReady) await refreshRegistry("contracts");
+    } catch (error) {
+      dialogError("supplier-error", error);
+    } finally {
+      dialogBusy("supplier-dialog", false, "supplier-save", id ? "Salva modifiche" : "Crea fornitore");
+    }
+  });
+
+  $("contract-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_contracts") || busyDialogs.has("contract-dialog")) return;
+    if (!state.suppliersReady) { dialogError("contract-error", new Error("Ricarica l’elenco dei fornitori prima di salvare.")); return; }
+    ["code", "title", "notes"].forEach((key) => { $("contract-" + key).value = $("contract-" + key).value.trim(); });
+    $("contract-value").setCustomValidity("");
+    $("contract-ends_on").setCustomValidity("");
+    let cents;
+    try { cents = valueToCents($("contract-value").value); } catch (error) { $("contract-value").setCustomValidity(error.message); }
+    const startsOn = $("contract-starts_on").value;
+    const endsOn = $("contract-ends_on").value;
+    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("contract-error", new Error("Scegli date valide per il contratto.")); return; }
+    if (startsOn && endsOn && startsOn > endsOn) $("contract-ends_on").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (!$("contract-form").reportValidity()) return;
+    const id = $("contract-id").value;
+    const fields = { code: $("contract-code").value, title: $("contract-title").value, supplier_id: $("contract-supplier").value, status: $("contract-status").value, starts_on: startsOn, ends_on: endsOn, value_cents: cents, currency: "EUR", notes: $("contract-notes").value };
+    $("contract-error").hidden = true;
+    dialogBusy("contract-dialog", true, "contract-save", id ? "Salva modifiche" : "Crea contratto");
+    try {
+      await post("/api/contracts" + (id ? "/" + encodeURIComponent(id) : ""), fields);
+      state.auditReady = false;
+      $("contract-dialog").close();
+      showNotice(id ? "Contratto aggiornato." : "Contratto censito. Usa il pulsante PDF per archiviare i documenti originali.");
+      await refreshRegistry("contracts");
+      await refreshAll();
+    } catch (error) {
+      dialogError("contract-error", error);
+    } finally {
+      dialogBusy("contract-dialog", false, "contract-save", id ? "Salva modifiche" : "Crea contratto");
+    }
+  });
+
+  $("document-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_contracts") || busyDialogs.has("documents-dialog") || !state.documentsContract) return;
+    $("document-file").setCustomValidity("");
+    const file = $("document-file").files[0];
+    if (file && !/\.pdf$/i.test(file.name)) $("document-file").setCustomValidity("Seleziona un documento con estensione .pdf.");
+    if (file && (file.size === 0 || file.size > 10 * 1024 * 1024)) $("document-file").setCustomValidity("Il documento deve avere una dimensione da 1 byte a 10 MiB.");
+    if (!$("document-form").reportValidity() || !file) return;
+    const id = state.documentsContract.id;
+    $("documents-error").hidden = true;
+    dialogBusy("documents-dialog", true, "document-save", "Carica PDF");
+    $("document-save").textContent = "Caricamento…";
+    try {
+      await api(`/api/contracts/${encodeURIComponent(id)}/documents?filename=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "Content-Type": "application/pdf" }, body: file, timeoutMs: 60000 });
+      if (!can("manage_contracts") || !state.documentsContract || String(state.documentsContract.id) !== String(id)) return;
+      state.auditReady = false;
+      $("document-form").reset();
+      showNotice("PDF archiviato. Il documento originale è disponibile per il download.");
+      await loadDocuments();
+      await refreshRegistry("contracts");
+    } catch (error) {
+      if (state.documentsContract && String(state.documentsContract.id) === String(id)) dialogError("documents-error", error);
+    } finally {
+      dialogBusy("documents-dialog", false, "document-save", "Carica PDF");
+    }
+  });
+
+  $("new-supplier").addEventListener("click", () => openSupplier());
+  $("new-contract").addEventListener("click", () => openContract());
+  $("supplier-search").addEventListener("input", renderSuppliers);
+  $("supplier-filter").addEventListener("change", renderSuppliers);
+  $("contract-search").addEventListener("input", renderContracts);
+  $("contract-filter").addEventListener("change", renderContracts);
+  $("suppliers-retry").addEventListener("click", () => refreshRegistry("suppliers"));
+  $("contracts-retry").addEventListener("click", () => refreshRegistry("contracts"));
+  $("job-contract-retry").addEventListener("click", loadJobContracts);
+  $("contract-supplier-retry").addEventListener("click", loadContractSuppliers);
+  $("contract-value").addEventListener("input", () => $("contract-value").setCustomValidity(""));
+  ["contract-starts_on", "contract-ends_on"].forEach((id) => $(id).addEventListener("input", () => $("contract-ends_on").setCustomValidity("")));
+  $("document-file").addEventListener("change", () => $("document-file").setCustomValidity(""));
+  $("documents-retry").addEventListener("click", loadDocuments);
+  $("supplier-dialog").addEventListener("close", () => { $("supplier-form").reset(); $("supplier-id").value = ""; });
+  $("contract-dialog").addEventListener("close", () => { state.editingContract = null; $("contract-form").reset(); $("contract-id").value = ""; $("contract-supplier").replaceChildren(); });
+  $("documents-dialog").addEventListener("close", () => {
+    state.documentsRequest++;
+    state.documentsContract = null;
+    state.documents = [];
+    state.documentsReady = false;
+    $("documents-list").replaceChildren();
+    $("documents-dialog-description").textContent = "";
+    $("documents-dialog-title").textContent = "Documenti del contratto";
+    $("document-form").reset();
+  });
+
   document.querySelectorAll("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => { const id = button.dataset.closeDialog; if (!busyDialogs.has(id)) $(id).close(); });
   });
@@ -955,6 +1392,7 @@
   });
   $("job-dialog").addEventListener("close", () => {
     if (!busyDialogs.has("job-dialog")) state.openEntryAfterJob = false;
+    state.editingJob = null;
     $("job-dialog-description").textContent = "Definisci i dettagli della commessa. Potrai aggiornarli in ogni momento.";
   });
   $("user-dialog").addEventListener("close", () => { $("user-form").reset(); $("user-password").value = ""; $("user-password").setCustomValidity(""); });

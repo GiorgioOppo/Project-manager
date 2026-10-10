@@ -17,10 +17,18 @@ services:
       DB_PASSWORD: "${MYSQL_PASSWORD:?Imposta MYSQL_PASSWORD nel file .env.docker}"
       DB_TLS_MODE: verify_identity
       DB_SSL_CA: /etc/punto/tls/ca.crt
+      DOC_DB_HOST: documents
+      DOC_DB_PORT: "27017"
+      DOC_DB_NAME: "${DOC_DB_NAME:-punto_documents}"
+      DOC_DB_USER: "${DOC_DB_USER:-punto_documents}"
+      DOC_DB_PASSWORD: "${DOC_DB_PASSWORD:?Esegui manage_cluster.py init o configura le credenziali documentali}"
+      DOC_DB_SSL_CA: /etc/punto/tls/ca.crt
       PUNTO_EMAIL: "${PUNTO_EMAIL:?Imposta PUNTO_EMAIL nel file .env.docker}"
       PUNTO_PASSWORD: "${PUNTO_PASSWORD:?Imposta PUNTO_PASSWORD nel file .env.docker}"
     depends_on:
       db-proxy:
+        condition: service_healthy
+      documents:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 10s
@@ -196,6 +204,55 @@ services:
         ipv4_address: 172.30.30.23
         interface_name: backend_app
 
+  documents:
+    image: mongo:8.0
+    hostname: documents
+    command:
+      - mongod
+      - --bind_ip
+      - 127.0.0.1,172.30.30.30
+      - --auth
+      - --tlsMode
+      - requireTLS
+      - --tlsCertificateKeyFile
+      - /etc/mongo/tls/server.pem
+      - --tlsCAFile
+      - /etc/mongo/tls/ca.crt
+      - --tlsAllowConnectionsWithoutCertificates
+      - --tlsDisabledProtocols
+      - TLS1_0,TLS1_1
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: punto_admin
+      MONGO_INITDB_ROOT_PASSWORD: "${DOC_DB_ROOT_PASSWORD:?Configura DOC_DB_ROOT_PASSWORD o esegui init}"
+      MONGO_INITDB_DATABASE: "${DOC_DB_NAME:-punto_documents}"
+      DOC_DB_NAME: "${DOC_DB_NAME:-punto_documents}"
+      DOC_DB_USER: "${DOC_DB_USER:-punto_documents}"
+      DOC_DB_PASSWORD: "${DOC_DB_PASSWORD:?Configura DOC_DB_PASSWORD o esegui init}"
+    volumes:
+      - documents_data:/data/db
+      - documents_config:/data/configdb
+      - ./data/network-tls/ca.crt:/etc/mongo/tls/ca.crt:ro
+      - ./data/network-tls/documents.pem:/etc/mongo/tls/server.pem:ro
+      - ./docker/mongodb/init.js:/docker-entrypoint-initdb.d/10-app-user.js:ro
+      - ./docker/mongodb/health.js:/etc/mongo/health.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--host", "localhost", "--tls", "--tlsCAFile", "/etc/mongo/tls/ca.crt", "--file", "/etc/mongo/health.js"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_drop: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    networks:
+      backend_app:
+        ipv4_address: 172.30.30.30
+        interface_name: backend_app
+
   db-proxy:
     build:
       context: ./docker/db-proxy
@@ -236,6 +293,8 @@ volumes:
   mysql_data:
   mysql_data_2:
   mysql_data_3:
+  documents_data:
+  documents_config:
 
 networks:
   public:

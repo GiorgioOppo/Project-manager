@@ -54,7 +54,8 @@ def load_state():
 def ensure_secrets(env_file):
     values = read_env(env_file)
     updates = {key: secrets.token_urlsafe(24) for key in
-               ("CLUSTER_REPLICATION_PASSWORD", "CLUSTER_MONITOR_PASSWORD")
+               ("CLUSTER_REPLICATION_PASSWORD", "CLUSTER_MONITOR_PASSWORD",
+                "DOC_DB_ROOT_PASSWORD", "DOC_DB_PASSWORD")
                if not values.get(key)}
     if updates:
         lines = env_file.read_text(encoding="utf-8").splitlines()

@@ -5,6 +5,7 @@ RUN apt-get update \
         build-essential \
         pkg-config \
         libmariadb-dev \
+        libmongoc-dev \
         libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -18,6 +19,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         libmariadb3 \
+        libmongoc-1.0-0 \
         libssl3 \
         ca-certificates \
         curl \
@@ -40,6 +42,6 @@ EXPOSE 8080
 STOPSIGNAL SIGTERM
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/healthz" || exit 1
+    CMD curl --fail --silent --show-error --max-time 3 --header "Host: localhost:${PORT}" "http://${BIND_HOST:-127.0.0.1}:${PORT}/healthz" || exit 1
 
 CMD ["./punto"]

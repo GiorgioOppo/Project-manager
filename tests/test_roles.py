@@ -175,7 +175,8 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertEqual(session.get("role"), "manager")
         self.assertEqual(session.get("permissions"), {
             "manage_jobs": True, "manage_users": True, "edit_time_entries": True,
-            "manage_assignments": True, "view_audit": True})
+            "manage_assignments": True, "view_audit": True,
+            "manage_suppliers": True, "manage_contracts": True})
         users = self.users()
         self.assertEqual(len(users), 1)
         self.assertEqual(users[0]["email"], MANAGER_EMAIL)
@@ -196,7 +197,8 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertEqual(worker["role"], "worker")
         self.assertEqual(worker.get("permissions"), {
             "manage_jobs": False, "manage_users": False, "edit_time_entries": False,
-            "manage_assignments": False, "view_audit": False})
+            "manage_assignments": False, "view_audit": False,
+            "manage_suppliers": False, "manage_contracts": False})
         self.assertEqual(self.session(self.manager_cookie)["role"], "manager")
 
     def test_worker_sees_jobs_and_records_only_own_daily_work(self):
