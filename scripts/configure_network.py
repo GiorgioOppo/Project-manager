@@ -258,19 +258,23 @@ def apply(env_file, context, *, keycloak=False, tickets=False, keycloak_groups=F
         raise ClusterError("Cluster non inizializzato: esegui prepare e poi manage_cluster.py init.")
     cluster = Cluster(env_file, context, keycloak=keycloak, tickets=tickets, keycloak_groups=keycloak_groups,
                       keycloak_env_file=keycloak_env_file, tickets_env_file=tickets_env_file)
-    cluster.require_service_migration_complete()
-    prepare()
-    check_engine(cluster)
-    online = [node for node in NODES if cluster.local_state(node) == "ONLINE"]
-    if not online:
-        raise ClusterError("Prima della migrazione ripristina il cluster e verifica il suo stato ONLINE.")
-    print("Migrazione delle reti: arresto app, proxy e Nginx, preservando volumi e configurazione.", flush=True)
-    cluster.run(("stop", "proxy-web", "app", "proxy-db"))
-    cluster.backup(online[0])
-    print("Ricreazione dei tre membri sulla rete backend isolata…", flush=True)
-    cluster.run(("up", "-d", "--no-deps", "--force-recreate", *(NODE_SERVICES[node] for node in NODES)))
-    cluster.recover()
-    print("Reti applicate. Esegui la suite network per verificare i flussi consentiti e vietati.", flush=True)
+    try:
+        cluster.acquire_maintenance_lock()
+        cluster.require_service_migration_complete()
+        prepare()
+        check_engine(cluster)
+        online = [node for node in NODES if cluster.local_state(node) == "ONLINE"]
+        if not online:
+            raise ClusterError("Prima della migrazione ripristina il cluster e verifica il suo stato ONLINE.")
+        print("Migrazione delle reti: arresto app, proxy e Nginx, preservando volumi e configurazione.", flush=True)
+        cluster.run(("stop", "proxy-web", "app", "proxy-db"))
+        cluster.backup(online[0])
+        print("Ricreazione dei tre membri sulla rete backend isolata…", flush=True)
+        cluster.run(("up", "-d", "--no-deps", "--force-recreate", *(NODE_SERVICES[node] for node in NODES)))
+        cluster.recover()
+        print("Reti applicate. Esegui la suite network per verificare i flussi consentiti e vietati.", flush=True)
+    finally:
+        cluster.release_maintenance_lock()
 
 
 def main():
@@ -293,7 +297,10 @@ def main():
         if args.tickets_env_file and not args.tickets:
             raise ClusterError("--tickets-env-file richiede la selezione esplicita --tickets.")
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        lock = (STATE_PATH.parent / "cluster-controller.lock").open("a")
+        lock_path = STATE_PATH.parent / "cluster-host.lock"
+        if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
+            raise ClusterError("File lock host del cluster non regolare.")
+        lock = lock_path.open("a")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

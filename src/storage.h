@@ -7,6 +7,7 @@
 
 /* Apply versioned migrations before accepting requests, preserving legacy data. */
 bool storage_preflight(const char *db_path);
+const char *storage_preflight_error(void);
 bool storage_open(const char *db_path);
 void storage_close(void);
 bool storage_health(void);

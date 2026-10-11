@@ -35,7 +35,7 @@ The documents describe code present in the workspace on 11 October 2026; future 
 
 ## Startup with Docker and a MySQL cluster
 
-**Docker Engine 28 or later**, **Docker Compose 2.36.0 or later**, Python 3 and OpenSSL are required. The daemon version must support the `isolated` bridge gateway; Compose must support `gw_priority` and `interface_name`. On macOS, Docker Desktop's Linux daemon provides these features. The local configuration uses **three MySQL 8.4 instances with multi-primary Group Replication**, an HAProxy 3.2 TCP proxy, MongoDB 8.0, Nginx Proxy Manager, Squid for filtered egress, the C app and three C addons for email, Google Calendar and asset inventory. From the project directory:
+**Docker Engine 28 or later**, **Docker Compose 2.36.0 or later**, Python 3 and OpenSSL are required. The daemon version must support the `isolated` bridge gateway; Compose must support `gw_priority` and `interface_name`. On macOS, Docker Desktop's Linux daemon provides these features. The local configuration uses **three MySQL 8.4 instances with multi-primary Group Replication**, an HAProxy 3.2 TCP proxy, MongoDB 8.0, Nginx Proxy Manager, Squid for filtered egress, the C app, three C addons for email, Google Calendar and asset inventory, and a Python controller for safe cluster recovery. From the project directory:
 
 ```sh
 cp .env.docker.example .env.docker
@@ -83,7 +83,7 @@ The flow uses Authorization Code with PKCE, single-use state and nonce, and cryp
 
 ### Services, data and availability
 
-The stack includes **11 services**, or **12** with the optional Ticket overlay. Project-built images use `punto/<servizio>:${PUNTO_IMAGE_TAG:-local}`; MySQL and MongoDB retain official images. The [Docker naming guide](docs/en/tehnical/nomi-servizi-e-immagini.md) contains the complete table, internal aliases and the transition procedure for an existing installation. Renaming Compose files alone does not migrate previously created containers.
+The stack includes **12 services**, or **13** with the optional Ticket overlay. Project-built images use `punto/<servizio>:${PUNTO_IMAGE_TAG:-local}`; MySQL and MongoDB retain official images. The [Docker naming guide](docs/en/tehnical/nomi-servizi-e-immagini.md) contains the complete table, internal aliases and the transition procedure for an existing installation. Renaming Compose files alone does not migrate previously created containers.
 
 | Service | Function | Persistence |
 | --- | --- | --- |
@@ -91,6 +91,7 @@ The stack includes **11 services**, or **12** with the optional Ticket overlay. 
 | `mysql-2` | Second MySQL member, writable | `mysql_data_2` volume |
 | `mysql-3` | Third MySQL member, writable | `mysql_data_3` volume |
 | `proxy-db` | HAProxy: TCP connections distributed across available members, internal port `3306` | Project configuration |
+| `cluster-recovery` | Checks MySQL membership and coordinates safe recovery after restarts | `cluster_recovery_data` volume; local identity configuration and file-backed secret |
 | `mongodb` | MongoDB 8.0: original PDFs in GridFS, internal port `27017` | `documents_data` and `documents_config` volumes |
 | `app` | C server, with `DB_HOST=db-proxy` and `DOC_DB_HOST=documents` | Structured data in the cluster; PDFs in MongoDB |
 | `proxy-web` | HTTP/HTTPS reverse proxy and administration panel | Local NPM directories |
@@ -107,7 +108,7 @@ This configuration protects against failure of a single MySQL instance. The thre
 
 The cluster uses `READ COMMITTED` isolation and `BEFORE_AND_AFTER` consistency. The internal `cluster_write_guard` table is updated in the same transaction as application changes: it creates a detectable conflict between concurrent writes and protects checks such as the daily hours limit and the last active manager. This choice reduces write concurrency; certification conflicts, including MySQL error `3101`, roll back the transaction and are treated as temporary errors. The driver reestablishes connections outside transactions and **does not repeat a commit with an uncertain outcome**.
 
-MySQL enforces `require_secure_transport=ON`: TCP connections must use TLS, while local administration can use the Unix socket. The app uses `DB_TLS_MODE=verify_identity` and `DB_SSL_CA=/etc/punto/tls/ca.crt`; the monitor also verifies the server certificate against the local private CA and destination name. HAProxy forwards the MySQL protocol without terminating TLS; certificate SANs include `db-proxy`, the respective node's name (`db`, `db2` or `db3`) and only its static IP. XCom uses `VERIFY_IDENTITY`; recovery uses TLS with verification of the donor's certificate. Internal accounts `punto_recovery` and `punto_monitor` require SSL. Database TLS is separate from the HTTPS certificate managed by NPM. [MySQL TLS](https://dev.mysql.com/doc/refman/8.4/en/using-encrypted-connections.html), [Group Replication TLS](https://dev.mysql.com/doc/refman/8.4/en/group-replication-secure-socket-layer-support-ssl.html), [recovery TLS](https://dev.mysql.com/doc/refman/8.4/en/group-replication-configuring-ssl-for-recovery.html)
+MySQL enforces `require_secure_transport=ON`: TCP connections must use TLS, while local administration can use the Unix socket. The app uses `DB_TLS_MODE=verify_identity` and `DB_SSL_CA=/etc/punto/tls/ca.crt`; the monitor also verifies the server certificate against the local private CA and destination name. HAProxy forwards the MySQL protocol without terminating TLS; certificate SANs include `db-proxy`, the respective node's name (`db`, `db2` or `db3`) and only its static IP. XCom uses `VERIFY_IDENTITY`; recovery uses TLS with verification of the donor's certificate. Internal accounts `punto_recovery`, `punto_monitor` and `punto_autorecovery` require SSL. Database TLS is separate from the HTTPS certificate managed by NPM. [MySQL TLS](https://dev.mysql.com/doc/refman/8.4/en/using-encrypted-connections.html), [Group Replication TLS](https://dev.mysql.com/doc/refman/8.4/en/group-replication-secure-socket-layer-support-ssl.html), [recovery TLS](https://dev.mysql.com/doc/refman/8.4/en/group-replication-configuring-ssl-for-recovery.html)
 
 ### Network segmentation and security
 
@@ -117,6 +118,7 @@ flowchart LR
   NPM -->|"private_app · HTTP 8080"| App["C app"]
   App -->|"backend_app · MySQL TLS"| Proxy["HAProxy"]
   Proxy --> DB["mysql-1 / mysql-2 / mysql-3"]
+  Recovery["cluster-recovery"] -->|"backend_app · MySQL TLS"| DB
   App -->|"backend_app · MongoDB TLS"| Docs["mongodb · GridFS"]
   DB -->|"XCom and recovery TLS"| DB
   App -->|"app_egress · proxy 3128"| Squid["Squid"]
@@ -133,7 +135,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `public` | `172.30.10.0/24` | Only `proxy-web` | Normal bridge; HTTP/HTTPS host ports and local panel |
 | `private_app` | `172.30.20.0/24` | `proxy-web`, `app` | `internal: true`, `isolated` bridge gateway |
-| `backend_app` | `172.30.30.0/24` | `app`, `proxy-db`, `mysql-1`, `mysql-2`, `mysql-3`, `mongodb` | `internal: true`, `isolated` bridge gateway |
+| `backend_app` | `172.30.30.0/24` | `app`, `proxy-db`, `cluster-recovery`, `mysql-1`, `mysql-2`, `mysql-3`, `mongodb` | `internal: true`, `isolated` bridge gateway |
 | `app_egress` | `172.30.40.0/24` | `app`, `mail`, `calendar`, `proxy-egress` | `internal: true`, `isolated` bridge gateway |
 | `proxy_wan` | `172.30.50.0/24` | Only `proxy-egress` | Normal bridge for proxy egress; no host port |
 | `mail_api` | `172.30.60.0/24` | `app`, `mail` | `internal: true`, `isolated` bridge gateway |
@@ -142,7 +144,7 @@ flowchart LR
 
 NPM has the external connectivity needed to receive requests and manage HTTPS certificates. Squid has its own separate egress network, `proxy_wan`; `public` remains exclusive to NPM. The app, addons and database components connect only to internal networks: they have no normal direct Internet egress. The app reaches authorized destinations through Squid on `app_egress` and calls addons on the dedicated `mail_api`, `calendar_api` and `inventory_api` interfaces, for a total of six interfaces. `isolated` mode also removes the bridge gateway address; `internal: true` alone does not remove that address. [Compose networks](https://docs.docker.com/reference/compose-file/networks/#internal), [Docker gateways](https://docs.docker.com/engine/network/port-publishing/#gateway-modes)
 
-The app listens on **`172.30.20.10:8080`**, only on the `private_app` address; its internal healthcheck uses the same address. Its `backend_app` address, **`172.30.30.10`**, exposes no HTTP. NPM uses **`172.30.10.2`** on `public` and **`172.30.20.2`** on `private_app`; HAProxy uses **`172.30.30.20`**. MongoDB listens only on its own loopback and on **`172.30.30.30:27017`**, with no ports published on the host. MySQL members use **`172.30.30.21`**, **`.22`** and **`.23`**; the XCom allowlist accepts only these three peers. X Protocol is disabled, so MySQL port `33060` is not opened. IPv4 interfaces inside containers have the names of their respective networks. Subnets defined in Compose must be free and must not overlap the environment's networks; address changes require coordinated updates to binds, allowlists and certificate SANs.
+The app listens on **`172.30.20.10:8080`**, only on the `private_app` address; its internal healthcheck uses the same address. Its `backend_app` address, **`172.30.30.10`**, exposes no HTTP. NPM uses **`172.30.10.2`** on `public` and **`172.30.20.2`** on `private_app`; HAProxy uses **`172.30.30.20`**. MongoDB listens only on its own loopback and on **`172.30.30.30:27017`**, with no ports published on the host. The recovery controller uses **`172.30.30.24`**, only on `backend_app`, with no published ports or Internet network. MySQL members use **`172.30.30.21`**, **`.22`** and **`.23`**; the XCom allowlist accepts only these three peers. X Protocol is disabled, so MySQL port `33060` is not opened. IPv4 interfaces inside containers have the names of their respective networks. Subnets defined in Compose must be free and must not overlap the environment's networks; address changes require coordinated updates to binds, allowlists and certificate SANs.
 
 MongoDB enforces `requireTLS`, disables TLS 1.0/1.1 and requires authentication. The app verifies the CA and `documents` name without allowing invalid certificates or hostnames, and uses a `SCRAM-SHA-256` account with the `readWrite` role restricted to `DOC_DB_NAME`; it does not receive MongoDB root credentials. NPM is not connected to the document network. As with MySQL, members of the shared backend network can reach the TCP port: TLS and authorization remain necessary.
 
@@ -219,25 +221,46 @@ python3 scripts/manage_cluster.py --env-file .env.docker status
 python3 scripts/manage_cluster.py --env-file .env.docker backup
 docker compose --env-file .env.docker ps
 curl --fail http://localhost/healthz
-docker compose --env-file .env.docker logs --tail=100 app proxy-db mysql-1 mysql-2 mysql-3
+docker compose --env-file .env.docker logs --tail=100 cluster-recovery app proxy-db mysql-1 mysql-2 mysql-3
 ```
 
 `status` checks group membership. `backup` creates a data copy without emptying the database and saves it in `backups/` with `0600` permissions; the directory is excluded from version control. `data/cluster-state.json` is also local and excluded from version control: retain it with the volumes to manage the existing cluster. `/healthz` is accessible without sign-in, checks the SQL connection to the backend and is also used by the app's healthcheck: it returns HTTP 200 with `{"ok":true,"database":"mysql"}` when the check succeeds, or HTTP 503 when it fails. The healthcheck of an individual MySQL process does not replace the monitor's group-membership check. `/healthz` does not certify PDF store availability: MongoDB has a separate healthcheck with TLS and the application account.
 
-When the group is still active, a restarted member can rejoin and recover missing transactions. To start or recreate containers of an already initialized cluster:
+`init` provisions and starts `cluster-recovery` automatically. For an **existing healthy deployment**, enable the controller once after updating the code:
 
 ```sh
-docker compose --env-file .env.docker up --build -d
+python3 scripts/manage_cluster.py --env-file .env.docker enable-autorecovery
+python3 scripts/manage_cluster.py --env-file .env.docker status
 ```
 
-If **all three members stop**, for example after `docker compose down` or a computer restart, the group must be reconstituted:
+This command first creates an SQL backup, then creates the dedicated recovery account and local files, persists `group_replication_start_on_boot=OFF` on each member, and starts only the new service. Before reporting success, it runs a read-only probe inside the controller to verify the actual account credentials, TLS and group identities from its backend address while retaining the maintenance lock. It does not stop the running replication group, rebuild the app, recreate other containers, reseed nodes or delete volumes. Preserve the deployment's overlay options on controller commands: add `--tickets`, `--keycloak` and, when enabled, `--keycloak-groups`; retain any `--tickets-env-file`, `--keycloak-env-file` and `--docker-context` selections. For example, a deployment using all three overlays runs:
+
+```sh
+python3 scripts/manage_cluster.py --env-file .env.docker --tickets --keycloak --keycloak-groups enable-autorecovery
+```
+
+The controller polls every five seconds; this is a check interval, **not a recovery deadline**. With Docker running, `restart: unless-stopped` brings existing containers back after a Docker or host restart, except services explicitly stopped by the operator. Docker Desktop must itself be running. `docker compose down` removes containers, so starting Docker alone cannot recreate them: use `manage_cluster.py ... start`, with the same overlay options, to start an initialized deployment. HAProxy admits writable members only when quorum is restored, and the app's healthcheck continues to report database unavailability during recovery.
+
+The background service connects directly to the three MySQL members over verified TLS as `punto_autorecovery`, restricted to `172.30.30.24` with only the privileges needed to inspect and manage Group Replication. It has no Docker socket or MySQL root password. Provisioning uses administrator credentials through the host script; these credentials are not passed to the service. Its generated password is stored in `data/cluster-recovery/password` and mounted as a file-backed secret; expected group and node identities are stored in the read-only `data/cluster-recovery/cluster.json`. Do not put that password in `.env.docker` or edit the expected UUIDs to bypass a recovery refusal. Keep these local files protected alongside `data/cluster-state.json` and the `cluster_recovery_data` volume. **Do not delete the journal volume**: it also retains markers of an interrupted bootstrap, needed to prevent an inconsistent second initialization.
+
+For a complete outage, automatic bootstrap waits until **all three expected server UUIDs** are reachable and their configuration, executed GTIDs and certified transactions can be checked. It requires stable observations and a candidate containing every member's transaction set. It bootstraps one candidate, switches bootstrap mode off, and rejoins the remaining nodes. The journal records recovery progress. The host `flock` on `data/cluster-host.lock` serializes host commands. The separate `data/cluster-controller.lock` coordinates the controller and maintenance helper inside Docker’s Linux environment; separate files also avoid the host blocking its own helper on Linux. To exclude the automatic controller inside Docker’s Linux environment, when a controller container exists, maintenance commands also start a temporary helper that holds the Linux `flock` on the controller’s actual lock mount until maintenance ends, including controller recreation. The helper runs as UID `10001` with `network=none`, mounts only the lock, and receives no credentials or Docker socket. Bootstrap mode is never persisted as enabled. The transaction comparison follows the [Oracle MySQL 8.4 restart procedure](https://dev.mysql.com/doc/refman/8.4/en/group-replication-restarting-group.html).
+
+An isolated node, an unreachable expected member, a still-running group without quorum, mismatched identities or divergent transaction sets **blocks automatic bootstrap**. The controller does not force membership, discard transactions or reset the database. Inspect `cluster-recovery` logs and `status`; restore missing members or resolve the underlying configuration/data issue. The manual recovery command remains available and performs its own safety checks:
 
 ```sh
 python3 scripts/manage_cluster.py --env-file .env.docker recover
 python3 scripts/manage_cluster.py --env-file .env.docker status
 ```
 
-`recover` starts the three SQL servers and waits until they are reachable. If a group with `ONLINE` members already exists, it rejoins offline members without creating a new group. Only when no member is `ONLINE` does it bootstrap: it compares executed and certified transactions, then chooses as founder a member containing every other member's set. It does not always choose `db` and does not force quorum on an isolated member. If it finds no safe candidate, it stops without creating a second group. Selection follows the [Oracle procedure for a full restart](https://dev.mysql.com/doc/refman/8.4/en/group-replication-restarting-group.html).
+`recover` starts the SQL servers, rejoins offline members when a healthy group exists, or selects a safe founder after checking all transaction sets. It does not always choose `db` and does not force quorum on an isolated member. Use the same overlay options as the deployment. If another controller holds the lock, wait for it to finish and inspect its logs before retrying; do not remove the lock file to bypass it.
+
+For planned maintenance using **direct SQL** to stop Group Replication on every member, first stop the automatic controller so it does not interpret the maintenance as an outage:
+
+```sh
+docker compose --env-file .env.docker stop cluster-recovery
+```
+
+After maintenance, start it again with `docker compose --env-file .env.docker start cluster-recovery` and check the group status and controller logs. Keep the deployment's Compose files, env files and Docker context when issuing these commands. The `manage_cluster.py` maintenance commands and `configure_network.py apply` already acquire both maintenance locks, so they do not require this separate stop. Do not remove the lock or recovery journal to make a competing operation proceed.
 
 To stop and remove containers while retaining data:
 
@@ -322,7 +345,7 @@ NPM stores its configuration in a separate SQLite database, `nginx-proxy-manager
 | `NPM_TZ` | NPM time zone, default `Australia/Brisbane` as in the requested template; you can set `Europe/Rome` |
 | `NPM_ADMIN_EMAIL`, `NPM_ADMIN_PASSWORD` | Credentials read by the configuration script, not by the app |
 
-To move a published port, change its value in `.env.docker` and recreate the service. Changing `NPM_HTTP_PORT` or `NPM_HTTPS_PORT` does not automatically change the authorized origins or DNS. `docker compose down` preserves the MySQL/MongoDB volumes and NPM's persistent directories; on the next full startup, use the `recover` command to reconstitute the group.
+To move a published port, change its value in `.env.docker` and recreate the service. Changing `NPM_HTTP_PORT` or `NPM_HTTPS_PORT` does not automatically change the authorized origins or DNS. `docker compose down` preserves the MySQL/MongoDB volumes and NPM's persistent directories; recreate the containers with `manage_cluster.py ... start` and the existing overlay options. Once provisioned, `cluster-recovery` coordinates safe group recovery; `recover` remains the manual alternative.
 
 ## Native startup with SQLite
 
@@ -759,7 +782,7 @@ The test reads `.env.docker`, stops, pauses and restarts members to check behavi
 
 For a manual check, first ensure that `status` shows three `ONLINE` and `PRIMARY` members. Then check that a write on each member appears on the others, with distinct identifiers and consistent history.
 
-After stopping a single member with `docker compose --env-file .env.docker stop mysql-2`, the app must continue reading and writing on the two remaining members. After `docker compose --env-file .env.docker start mysql-2`, wait for the node to rejoin and recheck status. If two members are stopped, the proxy must exclude the remaining member, and writes must fail without partial changes. Restore both and check convergence. After a complete shutdown, use `recover`, then repeat the history and data checks.
+After stopping a single member with `docker compose --env-file .env.docker stop mysql-2`, the app must continue reading and writing on the two remaining members. After `docker compose --env-file .env.docker start mysql-2`, wait for the node to rejoin and recheck status. If two members are stopped, the proxy must exclude the remaining member, and writes must fail without partial changes. Restore both and check convergence. After a complete shutdown, check automatic recovery and group convergence, then repeat the history and data checks; use `recover` for manual intervention when required.
 
 These are operational verification criteria; `make test` alone does not simulate container failures or recovery of an entire cluster.
 
@@ -856,7 +879,7 @@ docs/prod/             User and manager guides, rules and development plans
 .env.docker.example    Docker settings template
 scripts/configure_proxy.py  Initial reverse proxy configuration
 scripts/configure_network.py  TLS preparation and network segmentation application
-scripts/manage_cluster.py   Cluster initialization, status, backup and recovery
+scripts/manage_cluster.py   Cluster initialization, status, backup and recovery provisioning
 scripts/backup_documents.py Protected backup of the MongoDB document database
 tests/                 HTTP and migration tests
 tests/test_work_board.py Tasks, blockers, permissions, revisions and migration 7→8
@@ -875,6 +898,9 @@ docker/squid/          Egress proxy, separate Google/SMTP allowlists, IP blocks 
 data/punto.db          Native SQLite database, excluded from version control
 data/documents/        Native-mode PDFs, excluded from version control
 data/cluster-state.json  Local initialization and seed markers, excluded from version control
+data/cluster-recovery/   Expected cluster identities and recovery secret, excluded from Git
+data/cluster-host.lock  Mutex shared by host maintenance commands
+data/cluster-controller.lock  Linux lock shared by controller and maintenance helper
 data/network-tls/      Local private CA and certificates, excluded from version control
 data/addon-secrets/    API tokens, Calendar key and provider credentials, excluded from Git
 backups/               MySQL dumps and MongoDB archives with 0600 permissions, excluded from Git

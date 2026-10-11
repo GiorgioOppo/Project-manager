@@ -25,8 +25,8 @@ loose-group_replication_enforce_update_everywhere_checks=ON
 loose-group_replication_auto_increment_increment=3
 loose-group_replication_consistency=BEFORE_AND_AFTER
 
-# The controller enables start_on_boot only after provisioning recovery accounts.
-# Bootstrap is always explicit and is never persisted.
+# The recovery controller starts the verified group after Docker restarts.
+# Node auto-start and persistent bootstrap remain disabled.
 loose-group_replication_start_on_boot=OFF
 loose-group_replication_bootstrap_group=OFF
 loose-group_replication_exit_state_action=READ_ONLY

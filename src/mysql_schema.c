@@ -12,20 +12,55 @@
 
 #define MYSQL_SCHEMA_VERSION 14
 
+typedef enum {
+    SCHEMA_ERROR_NONE,
+    SCHEMA_ERROR_CONNECTION,
+    SCHEMA_ERROR_READ,
+    SCHEMA_ERROR_UNSUPPORTED,
+    SCHEMA_ERROR_PREPARE
+} SchemaError;
+
+static SchemaError schema_error;
+
+const char *mysql_schema_error(void) {
+    switch (schema_error) {
+    case SCHEMA_ERROR_CONNECTION:
+        return "Connessione MySQL non disponibile. Controlla il cluster, il proxy database e la configurazione TLS.";
+    case SCHEMA_ERROR_READ:
+        return "Impossibile leggere la versione del database MySQL. Controlla disponibilità e permessi dell'account.";
+    case SCHEMA_ERROR_UNSUPPORTED:
+        return "Database non leggibile o creato da una versione più recente. Nessun aggiornamento eseguito.";
+    case SCHEMA_ERROR_PREPARE:
+        return "Impossibile preparare lo schema MySQL. Controlla disponibilità e permessi; alcune modifiche preliminari potrebbero essere già applicate.";
+    case SCHEMA_ERROR_NONE:
+        return "";
+    }
+    return "Impossibile verificare il database MySQL.";
+}
+
 static bool open_database(Db **database, int flags) {
-    return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
+    bool okay = db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
+    schema_error = okay ? SCHEMA_ERROR_NONE : SCHEMA_ERROR_CONNECTION;
+    return okay;
 }
 
 static bool metadata_supported(Db *database) {
+    schema_error = SCHEMA_ERROR_READ;
     DbStmt *statement = NULL;
     bool okay = db_prepare_v2(database,
         "SELECT COUNT(*) FROM information_schema.TABLES "
         "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='schema_metadata'", -1,
         &statement, NULL) == DB_OK && db_step(statement) == DB_ROW;
     bool exists = okay && db_column_int64(statement, 0) == 1;
-    if (okay && db_column_int64(statement, 0) > 1) okay = false;
+    if (okay && db_column_int64(statement, 0) > 1) {
+        okay = false;
+        schema_error = SCHEMA_ERROR_UNSUPPORTED;
+    }
     db_finalize(statement);
-    if (!okay || !exists) return okay;
+    if (!okay || !exists) {
+        if (okay) schema_error = SCHEMA_ERROR_NONE;
+        return okay;
+    }
 
     statement = NULL;
     okay = db_prepare_v2(database, "SELECT id,version FROM schema_metadata", -1,
@@ -37,11 +72,17 @@ static bool metadata_supported(Db *database) {
             DbInt version = db_column_int64(statement, 1);
             okay = db_column_int64(statement, 0) == 1 &&
                 db_column_type(statement, 1) != DB_NULL &&
-                version >= 0 && version <= MYSQL_SCHEMA_VERSION &&
-                db_step(statement) == DB_DONE;
+                version >= 0 && version <= MYSQL_SCHEMA_VERSION;
+            if (!okay) schema_error = SCHEMA_ERROR_UNSUPPORTED;
+            else {
+                result = db_step(statement);
+                okay = result == DB_DONE;
+                if (result == DB_ROW) schema_error = SCHEMA_ERROR_UNSUPPORTED;
+            }
         } else okay = result == DB_DONE;
     }
     db_finalize(statement);
+    if (okay) schema_error = SCHEMA_ERROR_NONE;
     return okay;
 }
 
@@ -649,6 +690,7 @@ bool mysql_schema_prepare(void) {
     Db *database = NULL;
     bool okay = open_database(&database, DB_OPEN_READWRITE | DB_OPEN_CREATE) &&
         metadata_supported(database);
+    if (okay) schema_error = SCHEMA_ERROR_PREPARE;
     for (size_t i = 0; okay && i < sizeof(tables) / sizeof(tables[0]); i++)
         okay = db_exec(database, tables[i], NULL, NULL, NULL) == DB_OK;
     if (okay) okay = ensure_job_contract(database);
@@ -667,6 +709,7 @@ bool mysql_schema_prepare(void) {
     for (size_t i = 0; okay && i < sizeof(triggers) / sizeof(triggers[0]); i++)
         okay = ensure_trigger(database, triggers[i].name, triggers[i].ddl);
     if (database) (void)db_close(database);
+    if (okay) schema_error = SCHEMA_ERROR_NONE;
     return okay;
 }
 

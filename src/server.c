@@ -1816,7 +1816,7 @@ int main(void) {
         inventory_client_close(); return 1;
     }
     if (!storage_preflight(database_path)) {
-        fprintf(stderr, "Database non leggibile o creato da una versione più recente. Nessun aggiornamento eseguito.\n");
+        fprintf(stderr, "%s\n", storage_preflight_error());
         return 1;
     }
     if (!workspace_open(database_path)) {

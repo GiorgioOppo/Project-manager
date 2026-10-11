@@ -6,5 +6,7 @@
 /* Both functions use the MySQL connection configured through DB_* variables. */
 bool mysql_schema_preflight(void);
 bool mysql_schema_prepare(void);
+/* Diagnostic for the most recent failed check/preparation, without server data. */
+const char *mysql_schema_error(void);
 
 #endif

@@ -19,6 +19,14 @@
 static Db *database;
 
 /* Refuse newer databases before any schema creation or bootstrap account write. */
+const char *storage_preflight_error(void) {
+#ifdef PUNTO_MYSQL
+    return mysql_schema_error();
+#else
+    return "Database non leggibile o creato da una versione più recente. Nessun aggiornamento eseguito.";
+#endif
+}
+
 bool storage_preflight(const char *db_path) {
 #ifdef PUNTO_MYSQL
     (void)db_path;

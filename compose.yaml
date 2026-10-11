@@ -556,6 +556,8 @@ services:
     volumes:
       - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
     depends_on:
+      cluster-recovery:
+        condition: service_started
       mysql-1:
         condition: service_healthy
       mysql-2:
@@ -585,7 +587,61 @@ services:
         aliases:
           - db-proxy
 
+  # Independent of Compose startup ordering: also runs after a Docker restart.
+  cluster-recovery:
+    image: "punto/cluster-recovery:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
+    build:
+      context: ./docker/cluster-recovery
+    environment:
+      CLUSTER_USER: punto_autorecovery
+      CLUSTER_STATE_FILE: /etc/punto/cluster-state.json
+      CLUSTER_PASSWORD_FILE: /run/secrets/cluster-password
+      CLUSTER_CA_FILE: /certs/ca.pem
+      CLUSTER_LOCK_FILE: /run/punto-cluster.lock
+      CLUSTER_JOURNAL_FILE: /var/lib/punto-cluster/recovery.json
+      CLUSTER_STATUS_FILE: /tmp/punto-cluster-status.json
+      CLUSTER_POLL_SECONDS: "5"
+    volumes:
+      - type: bind
+        source: ./data/cluster-recovery/cluster.json
+        target: /etc/punto/cluster-state.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./data/cluster-controller.lock
+        target: /run/punto-cluster.lock
+        bind:
+          create_host_path: false
+      - ./data/network-tls/ca.crt:/certs/ca.pem:ro
+      - cluster_recovery_data:/var/lib/punto-cluster
+    secrets:
+      - source: cluster_recovery_password
+        target: cluster-password
+    restart: unless-stopped
+    stop_grace_period: 100s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python3", "/app/recovery.py", "healthz"]
+      interval: 5s
+      timeout: 5s
+      start_period: 120s
+      retries: 12
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    networks:
+      backend_app:
+        ipv4_address: 172.30.30.24
+        interface_name: backend_app
+
 volumes:
+  cluster_recovery_data:
   mail_addon_data:
   calendar_addon_data:
   inventory_addon_data:
@@ -597,6 +653,8 @@ volumes:
   documents_config:
 
 secrets:
+  cluster_recovery_password:
+    file: ./data/cluster-recovery/password
   mail_api_token:
     file: ./data/addon-secrets/mail-api-token
   mail_smtp_password:

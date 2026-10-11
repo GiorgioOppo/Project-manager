@@ -28,6 +28,13 @@ finally:
 
 UUID_A = "11111111-1111-1111-1111-111111111111"
 UUID_B = "22222222-2222-2222-2222-222222222222"
+UUID_C = "33333333-3333-3333-3333-333333333333"
+IDENTITIES = dict(zip(manager.NODES, (UUID_A, UUID_B, UUID_C)))
+
+
+def initialized_state():
+    return {"group_id": manager.GROUP_ID, "initialized": True,
+            "source_uuid": UUID_A, "seeded": {"db2": UUID_B, "db3": UUID_C}}
 
 
 def fixture_gtids(value):
@@ -52,6 +59,7 @@ class FakeCluster(manager.Cluster):
         self.states = {node: "OFFLINE" for node in manager.NODES}
         self.states.update(states or {})
         self.stop_refuses = set(stop_refuses)
+        self.identities = dict(IDENTITIES)
         self.events = []
 
     def run(self, arguments, **kwargs):
@@ -71,6 +79,9 @@ class FakeCluster(manager.Cluster):
         return self.states[node]
 
     def sql(self, node, query, **kwargs):
+        if query == "SELECT @@server_uuid;":
+            self.events.append(("identity", node))
+            return self.identities[node]
         if query == "STOP GROUP_REPLICATION;":
             self.events.append(("stop_requested", node))
             if node in self.stop_refuses:
@@ -107,11 +118,14 @@ class FakeCluster(manager.Cluster):
     def start_services(self):
         self.events.append(("start_services",))
 
+    def configure_autorecovery(self):
+        # Account/file provisioning is covered independently from GR decisions.
+        self.events.append(("configure_autorecovery",))
+
 
 class ClusterRecoveryTests(unittest.TestCase):
     def recover(self, cluster):
-        with mock.patch.object(manager, "load_state", return_value={
-                "group_id": manager.GROUP_ID, "initialized": True}), contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(manager, "load_state", return_value=initialized_state()), contextlib.redirect_stdout(io.StringIO()):
             cluster.recover()
 
     def test_bootstrap_uses_superset_node_instead_of_first_node(self):
@@ -174,6 +188,57 @@ class ClusterRecoveryTests(unittest.TestCase):
                              for event in cluster.events))
         self.assertNotIn(("start_services",), cluster.events)
 
+    def test_changed_member_uuid_blocks_offline_and_online_manual_recovery(self):
+        with tempfile.TemporaryDirectory(prefix="punto-cluster-identity-") as temporary:
+            project = Path(temporary)
+            config = project / "data/cluster-recovery/cluster.json"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps(initialized_state()))
+            for online in (False, True):
+                for node in manager.NODES:
+                    with self.subTest(online=online, node=node):
+                        cluster = FakeCluster(states={member: "ONLINE" if online else "OFFLINE"
+                                                       for member in manager.NODES})
+                        cluster.identities[node] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                        with mock.patch.object(manager, "PROJECT", project):
+                            with self.assertRaisesRegex(manager.ClusterError, "Identità MySQL diversa"):
+                                self.recover(cluster)
+                        self.assertFalse(any(event[0] in ("stop_requested", "executed", "certified",
+                                                          "subset", "start", "start_services")
+                                             for event in cluster.events))
+
+    def test_invalid_saved_identities_block_before_starting_containers(self):
+        for invalid in (None, {}, {"db2": UUID_B, "db3": UUID_B.upper()},
+                        {"db2": UUID_B, "db3": "-" * 36}):
+            with self.subTest(seeded=invalid):
+                state = initialized_state()
+                state["seeded"] = invalid
+                cluster = FakeCluster()
+                with mock.patch.object(manager, "load_state", return_value=state):
+                    with self.assertRaises(manager.ClusterError):
+                        cluster.recover()
+                self.assertEqual(cluster.events, [])
+
+    def test_all_member_identities_are_checked_before_group_changes(self):
+        cluster = FakeCluster()
+        self.recover(cluster)
+        first_stop = next(index for index, event in enumerate(cluster.events)
+                          if event[0] == "stop_requested")
+        for node in manager.NODES:
+            self.assertIn(("identity", node), cluster.events[:first_stop])
+
+    def test_start_and_initialized_init_use_the_same_identity_guard(self):
+        for action in ("start", "init"):
+            with self.subTest(action=action):
+                cluster = FakeCluster()
+                cluster.identities["db3"] = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+                with mock.patch.object(manager, "load_state", return_value=initialized_state()), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(manager.ClusterError, "Identità MySQL diversa"):
+                        getattr(cluster, action)()
+                self.assertFalse(any(event[0] in ("stop_requested", "start", "start_services")
+                                     for event in cluster.events))
+
 
 class ClusterServiceNamingTests(unittest.TestCase):
     def test_sql_uses_service_name_without_rewriting_query_or_node_identity(self):
@@ -203,8 +268,7 @@ class ClusterServiceNamingTests(unittest.TestCase):
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
 
     def test_recovery_keeps_persisted_seed_identities(self):
-        original = {"group_id": manager.GROUP_ID, "initialized": True,
-                    "source_uuid": UUID_A, "seeded": {"db2": UUID_B, "db3": UUID_A}}
+        original = initialized_state()
         cluster = FakeCluster(states={node: "ONLINE" for node in manager.NODES})
         with tempfile.TemporaryDirectory(prefix="punto-cluster-state-names-") as temporary:
             state_path = Path(temporary) / "cluster-state.json"
