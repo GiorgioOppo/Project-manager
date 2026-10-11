@@ -273,7 +273,7 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (5,6,7,8,9,10,12,13)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (5,6,7,8,9,10,12,13,14)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=4")
             db.commit()
@@ -286,14 +286,14 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         worker = self.login(roles.WORKER_EMAIL, roles.WORKER_PASSWORD)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (14,))
             self.assertEqual(db.execute("SELECT * FROM time_entries ORDER BY id").fetchall(), old_entries)
             self.assertEqual(db.execute("SELECT * FROM users ORDER BY id").fetchall(), old_users)
             self.assertEqual(db.execute("SELECT * FROM job_assignments ORDER BY job_id,user_id").fetchall(), old_assignments)
             self.assertEqual(db.execute("SELECT id,code,name,client,description,status,contract_id FROM jobs ORDER BY id").fetchall(), old_jobs)
             self.assertEqual(db.execute("SELECT is_common FROM jobs WHERE id=?", (job_id,)).fetchone(), (0,))
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (5,6,7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (5,6,7,8,9,10,12,13,14)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=5").fetchone(), (1,))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "

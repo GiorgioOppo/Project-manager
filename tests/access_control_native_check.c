@@ -5,6 +5,7 @@
 
 static bool groups_available = true;
 bool organization_groups_available(void) { return groups_available; }
+bool organization_groups_managed(void) { return false; }
 
 static void execute(Db *db, const char *sql) {
     assert(db_exec(db, sql, NULL, NULL, NULL) == DB_OK);
@@ -14,6 +15,7 @@ int main(void) {
     Db *db = NULL;
     assert(db_open_v2(":memory:", &db, DB_OPEN_READWRITE | DB_OPEN_CREATE, NULL) == DB_OK);
     execute(db, "CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,active INTEGER);"
+        "CREATE TABLE access_space_admins(user_id INTEGER PRIMARY KEY);"
         "CREATE TABLE access_group_members(group_code TEXT,user_id INTEGER);"
         "CREATE TABLE organization_groups(id INTEGER PRIMARY KEY,parent_id INTEGER);"
         "CREATE TABLE group_members(group_id INTEGER,user_id INTEGER);"

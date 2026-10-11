@@ -19,6 +19,7 @@ static void schedule_row_json(Json *json, DbStmt *statement, int kind) {
                 append(json, ",\""); append(json, days[i]); append(json, "\":");
                 append_integer(json, db_column_int64(statement, 4 + i));
             }
+            append(json, ",\"revision\":"); append_integer(json, db_column_int64(statement,11));
         } else {
             append(json, ",\"date\":"); append_string(json, column_text(statement, 3));
             append(json, ",\"expected_minutes\":"); append_integer(json, db_column_int64(statement, 4));
@@ -41,7 +42,7 @@ static void schedule_list(const char *query, DbInt actor, bool manager, int kind
     }
     if (kind == 2 && *query) { free_fields(fields, 1); error(response, 400, "Le festività sono comuni a tutti."); return; }
     free_fields(fields, 1);
-    const char *sql = kind == 0 ? "SELECT s.id,s.user_id,u.name,s.starts_on,s.mon,s.tue,s.wed,s.thu,s.fri,s.sat,s.sun "
+    const char *sql = kind == 0 ? "SELECT s.id,s.user_id,u.name,s.starts_on,s.mon,s.tue,s.wed,s.thu,s.fri,s.sat,s.sun,s.revision "
         "FROM user_work_schedules s JOIN users u ON u.id=s.user_id WHERE (?=0 OR s.user_id=?) ORDER BY s.user_id,s.starts_on DESC" :
         kind == 1 ? "SELECT e.id,e.user_id,u.name,e.date,e.expected_minutes,e.reason FROM user_work_exceptions e "
         "JOIN users u ON u.id=e.user_id WHERE (?=0 OR e.user_id=?) ORDER BY e.date DESC,e.user_id" :
@@ -51,6 +52,7 @@ static void schedule_list(const char *query, DbInt actor, bool manager, int kind
     append(&json, "{\"ok\":true,\""); append(&json, schedule_collection(kind)); append(&json, "\":[");
     int result, count = 0;
     while ((result = db_step(statement)) == DB_ROW) {
+        if(kind!=2){int visible=access_policy_can_view_time(database,actor,db_column_int64(statement,1),manager);if(visible<0)goto failure;if(!visible)continue;}
         if (++count > RESULT_LIMIT) { db_finalize(statement); free(json.data); error(response, 409, "Troppi risultati: seleziona un utente."); return; }
         if (count > 1) append(&json, ",");
         schedule_row_json(&json, statement, kind);
@@ -64,10 +66,11 @@ failure:
 static void schedule_write(const char *body, DbInt actor, int kind, WorkspaceResponse *response) {
     Field fields[] = {{"user_id", NULL}, {"starts_on", NULL}, {"mon", NULL}, {"tue", NULL}, {"wed", NULL},
         {"thu", NULL}, {"fri", NULL}, {"sat", NULL}, {"sun", NULL}, {"date", NULL},
-        {"expected_minutes", NULL}, {"reason", NULL}, {"name", NULL}};
-    if (!parse_fields(body, fields, 13, response)) return;
+        {"expected_minutes", NULL}, {"reason", NULL}, {"name", NULL}, {"revision", NULL}};
+    if (!parse_fields(body, fields, 14, response)) return;
     trim(fields[11].value); trim(fields[12].value);
-    DbInt user = 0, minutes[7] = {0};
+    DbInt user = 0, minutes[7] = {0}, revision=0;
+    if(fields[13].value&&(!parse_positive(field_value(&fields[13]),&revision)||revision==INT64_MAX)){free_fields(fields,14);error(response,400,"Revisione orario non valida.");return;}
     const char *date = field_value(&fields[kind == 0 ? 1 : 9]);
     bool okay = valid_date(date) && (kind == 2 || parse_positive(field_value(fields), &user));
     for (int i = 0; kind == 0 && i < 7; i++) okay = schedule_minutes(field_value(&fields[2 + i]), &minutes[i]) && okay;
@@ -75,29 +78,34 @@ static void schedule_write(const char *body, DbInt actor, int kind, WorkspaceRes
         valid_text(field_value(&fields[11]), 1000, true, true) && okay;
     if (kind == 2) okay = valid_text(field_value(&fields[12]), 160, true, false) && okay;
     /* A shared parser must not silently accept fields from another resource. */
-    for (int i = 0; i < 13; i++) {
-        bool allowed = kind == 0 ? i <= 8 : kind == 1 ? i == 0 || (i >= 9 && i <= 11) : i == 9 || i == 12;
+    for (int i = 0; i < 14; i++) {
+        bool allowed = kind == 0 ? i <= 8 || i == 13 : kind == 1 ? i == 0 || (i >= 9 && i <= 11) : i == 9 || i == 12;
         if (!allowed && fields[i].value) okay = false;
     }
-    if (!okay) { free_fields(fields, 13); error(response, 400, "Controlla utente, data e minuti attesi da 0 a 1440."); return; }
-    if (!begin_transaction(response)) { free_fields(fields, 13); return; }
-    DbStmt *statement = NULL; Json audit = {0}; DbInt id = 0;
+    if (!okay) { free_fields(fields, 14); error(response, 400, "Controlla utente, data e minuti attesi da 0 a 1440."); return; }
+    if (!begin_transaction(response)) { free_fields(fields, 14); return; }
+    DbStmt *statement = NULL; Json audit = {0}, before={0}; DbInt id = 0;
+    AccessPolicy live;
+    if(access_policy_resolve(database,actor,NULL,&live)!=1)goto failure;
+    int permitted=kind==2?(live.admin?1:0):access_policy_can_manage_user(database,actor,user);
+    if(permitted!=1){rollback();if(permitted<0)server_error(response);else error(response,403,"Questa persona non rientra nella tua delega.");goto cleanup;}
     if (kind != 2) {
         if (!prepare(&statement, "SELECT id FROM users WHERE id=?") || !bind_id(statement, 1, user)) goto failure;
         int found = db_step(statement); db_finalize(statement); statement = NULL;
         if (found == DB_DONE) { rollback(); error(response, 404, "Utente non trovato."); goto cleanup; }
         if (found != DB_ROW) goto failure;
     }
-    const char *lookup = kind == 0 ? "SELECT id FROM user_work_schedules WHERE user_id=? AND starts_on=?" :
-        kind == 1 ? "SELECT id FROM user_work_exceptions WHERE user_id=? AND date=?" : "SELECT 1 FROM business_holidays WHERE date=?";
+    const char *lookup = kind == 0 ? "SELECT s.id,s.user_id,u.name,s.starts_on,s.mon,s.tue,s.wed,s.thu,s.fri,s.sat,s.sun,s.revision FROM user_work_schedules s JOIN users u ON u.id=s.user_id WHERE s.user_id=? AND s.starts_on=?" :
+        kind == 1 ? "SELECT e.id,e.user_id,u.name,e.date,e.expected_minutes,e.reason FROM user_work_exceptions e JOIN users u ON u.id=e.user_id WHERE e.user_id=? AND e.date=?" : "SELECT date,name FROM business_holidays WHERE date=?";
     if (!prepare(&statement, lookup) || (kind != 2 && !bind_id(statement, 1, user)) ||
         !bind_text(statement, kind == 2 ? 1 : 2, date)) goto failure;
-    int found = db_step(statement);
-    if (found == DB_ROW) id = db_column_int64(statement, 0);
+    int found = db_step(statement); DbInt current=0;
+    if (found == DB_ROW) {id=kind==2?1:db_column_int64(statement,0);schedule_row_json(&before,statement,kind);if(kind==0)current=db_column_int64(statement,11);}
     db_finalize(statement); statement = NULL;
     if (found != DB_ROW && found != DB_DONE) goto failure;
+    if(kind==0&&((id&&current!=revision)||(!id&&revision))){rollback();error(response,409,"L’orario è cambiato. Ricarica la versione prima di salvarla.");goto cleanup;}
     if (kind == 0) {
-        if (!prepare(&statement, id ? "UPDATE user_work_schedules SET mon=?,tue=?,wed=?,thu=?,fri=?,sat=?,sun=? WHERE user_id=? AND starts_on=?" :
+        if (!prepare(&statement, id ? "UPDATE user_work_schedules SET mon=?,tue=?,wed=?,thu=?,fri=?,sat=?,sun=?,revision=revision+1 WHERE user_id=? AND starts_on=?" :
             "INSERT INTO user_work_schedules(mon,tue,wed,thu,fri,sat,sun,user_id,starts_on) VALUES(?,?,?,?,?,?,?,?,?)")) goto failure;
         for (int i = 0; i < 7; i++) if (!bind_id(statement, i + 1, minutes[i])) goto failure;
         if (!bind_id(statement, 8, user) || !bind_text(statement, 9, date)) goto failure;
@@ -124,15 +132,16 @@ static void schedule_write(const char *body, DbInt actor, int kind, WorkspaceRes
         append(&audit, ",\"expected_minutes\":"); append_integer(&audit, minutes[0]);
         append(&audit, ",\"reason\":"); append_string(&audit, field_value(&fields[11]));
     } else { append(&audit, ",\"name\":"); append_string(&audit, field_value(&fields[12])); }
+    if(kind==0){append(&audit,",\"revision\":");append_integer(&audit,revision+1);}
     append(&audit, "}");
     const char *action = kind == 0 ? "work_schedules.save" : kind == 1 ? "work_exceptions.save" : "business_holidays.save";
-    if (audit.failed || !storage_audit(database, actor, action, kind == 0 ? "work_schedule" : kind == 1 ? "work_exception" : "business_holiday", id, NULL, audit.data)) goto failure;
+    if (audit.failed || !storage_audit(database, actor, action, kind == 0 ? "work_schedule" : kind == 1 ? "work_exception" : "business_holiday", id, before.data, audit.data)) goto failure;
     if (commit_transaction(response)) success(response, created ? 201 : 200, id);
     goto cleanup;
 failure:
     db_finalize(statement); rollback(); server_error(response);
 cleanup:
-    free(audit.data); free_fields(fields, 13);
+    free(audit.data); free(before.data); free_fields(fields, 14);
 }
 
 static void schedule_delete(const char *path, const char *body, DbInt actor, int kind, WorkspaceResponse *response) {
@@ -148,6 +157,8 @@ static void schedule_delete(const char *path, const char *body, DbInt actor, int
     }
     if (!begin_transaction(response)) return;
     DbStmt *statement = NULL;
+    if(kind==1){if(!prepare(&statement,"SELECT user_id FROM user_work_exceptions WHERE id=?")||!bind_id(statement,1,id))goto failure;int found=db_step(statement);DbInt user=found==DB_ROW?db_column_int64(statement,0):0;db_finalize(statement);statement=NULL;if(found!=DB_ROW&&found!=DB_DONE)goto failure;int permitted=user?access_policy_can_manage_user(database,actor,user):0;if(permitted!=1){rollback();if(permitted<0)server_error(response);else error(response,404,"Voce non trovata.");return;}}
+    else {AccessPolicy p;if(access_policy_resolve(database,actor,NULL,&p)!=1||!p.admin){rollback();error(response,403,"Le festività richiedono l’amministrazione dello spazio.");return;}}
     if (!prepare(&statement, kind == 2 ? "DELETE FROM business_holidays WHERE date=?" : "DELETE FROM user_work_exceptions WHERE id=?") ||
         (kind == 2 ? !bind_text(statement, 1, identifier) : !bind_id(statement, 1, id)) || db_step(statement) != DB_DONE) goto failure;
     db_finalize(statement); statement = NULL;

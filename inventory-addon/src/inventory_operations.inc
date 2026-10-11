@@ -1,6 +1,6 @@
 /* One filtered population feeds the catalog, export and operational dashboard. */
 #define OPERATIONAL_CTE \
-    "WITH operational AS (SELECT assets.*,c.assignee_user_id,c.assignee_user_name,c.site_id," \
+    "WITH operational AS (SELECT assets.*,c.assignee_user_id,c.assignee_user_name,c.assignee_person_id,c.site_id," \
     "COALESCE(site.name,c.site_name,'') AS site_name,c.department_id,COALESCE(department.name,c.department_name,'') AS department_name," \
     "cu.id AS custody_id,cu.due_on AS custody_due_on,v.id AS verification_id,v.verified_on,v.location_matches," \
     "(assets.asset_type IN ('it_device','network_device','physical') AND assets.status NOT IN ('retired','lost')) AS actionable " \
@@ -10,7 +10,9 @@
     "LEFT JOIN asset_verifications v ON v.id=(SELECT latest.id FROM asset_verifications latest WHERE latest.asset_id=assets.id ORDER BY latest.verified_on DESC,latest.id DESC LIMIT 1)) "
 #define FILTERED_CTE \
     ",filtered AS (SELECT * FROM operational WHERE (?1=0 OR id<?1) AND (?2='' OR status=?2) AND (?5='' OR asset_type=?5) " \
-    "AND (?6='' OR assignee_user_id=CAST(?6 AS INTEGER)) AND (?7='' OR site_id=CAST(?7 AS INTEGER)) AND (?8='' OR department_id=CAST(?8 AS INTEGER)) " \
+    "AND ((?6='' AND ?14='') OR assignee_user_id=CAST(?6 AS INTEGER) OR (?14<>'' AND (assignee_person_id=CAST(?14 AS INTEGER) " \
+    "OR EXISTS(SELECT 1 FROM inventory_asset_subjects mine_subject WHERE mine_subject.asset_id=operational.id AND mine_subject.active=1 AND mine_subject.person_id=CAST(?14 AS INTEGER))))) " \
+    "AND (?7='' OR site_id=CAST(?7 AS INTEGER)) AND (?8='' OR department_id=CAST(?8 AS INTEGER)) " \
     "AND (?12='' OR EXISTS(SELECT 1 FROM inventory_asset_subjects subjects WHERE subjects.asset_id=operational.id AND subjects.active=1 AND subjects.person_id=CAST(?12 AS INTEGER))) " \
     "AND (?13='' OR EXISTS(SELECT 1 FROM inventory_asset_subjects subjects WHERE subjects.asset_id=operational.id AND subjects.active=1 AND subjects.identity_id=CAST(?13 AS INTEGER))) " \
     "AND (?3='' OR instr(lower(asset_tag),lower(?3))>0 OR instr(lower(name),lower(?3))>0 OR instr(lower(category),lower(?3))>0 " \
@@ -26,8 +28,8 @@ static int date_day_number(const char *date);
 static bool operational_filter_valid(const Form *form) {
     sqlite3_int64 id=0;
     int days=90;
-    const char *ids[]={"site_id","department_id","person_id","identity_id"};
-    for (size_t i=0;i<4;i++) if (has_field(form,ids[i]) && !integer(field(form,ids[i]),1,INT64_MAX,&id)) return false;
+    const char *ids[]={"site_id","department_id","person_id","identity_id","mapped_person_id"};
+    for (size_t i=0;i<5;i++) if (has_field(form,ids[i]) && !integer(field(form,ids[i]),1,INT64_MAX,&id)) return false;
     if (has_field(form,"verification_days") && !number(field(form,"verification_days"),1,365,&days)) return false;
     if (has_field(form,"today") && (!*field(form,"today") || !valid_date(field(form,"today")))) return false;
     if (has_field(form,"attention")) {
@@ -44,9 +46,9 @@ static bool operational_filter_bind(sqlite3_stmt *s, const Form *form, sqlite3_i
     int days=90;
     if (has_field(form,"verification_days") && !number(field(form,"verification_days"),1,365,&days)) return false;
     bool ok=sqlite3_bind_int64(s,1,after)==SQLITE_OK && sqlite3_bind_int(s,4,limit)==SQLITE_OK;
-    const char *keys[]={"status","q","asset_type","assignee_user_id","site_id","department_id","attention","person_id","identity_id"};
-    const int indexes[]={2,3,5,6,7,8,9,12,13};
-    for (size_t i=0;ok && i<9;i++) ok=sqlite3_bind_text(s,indexes[i],field(form,keys[i]),-1,SQLITE_TRANSIENT)==SQLITE_OK;
+    const char *keys[]={"status","q","asset_type","assignee_user_id","site_id","department_id","attention","person_id","identity_id","mapped_person_id"};
+    const int indexes[]={2,3,5,6,7,8,9,12,13,14};
+    for (size_t i=0;ok && i<10;i++) ok=sqlite3_bind_text(s,indexes[i],field(form,keys[i]),-1,SQLITE_TRANSIENT)==SQLITE_OK;
     return ok && sqlite3_bind_text(s,10,has_field(form,"today") ? field(form,"today") : today,-1,SQLITE_TRANSIENT)==SQLITE_OK &&
         sqlite3_bind_int(s,11,days)==SQLITE_OK;
 }
@@ -89,7 +91,7 @@ static bool dashboard_groups(json_object *o, const char *key, const char *id, co
     return true;
 }
 static json_object *operational_dashboard(const char *query, int *status) {
-    static const char *const allowed[]={"q","status","asset_type","assignee_user_id","site_id","department_id","attention","verification_days","today","person_id","identity_id"};
+    static const char *const allowed[]={"q","status","asset_type","assignee_user_id","site_id","department_id","attention","verification_days","today","person_id","identity_id","mapped_person_id"};
     Form form;
     if (!form_parse(query,&form)) return failure(status,400,"Filtri cruscotto non validi.");
     bool ok=only_fields(&form,allowed,sizeof(allowed)/sizeof(allowed[0])) && operational_filter_valid(&form);

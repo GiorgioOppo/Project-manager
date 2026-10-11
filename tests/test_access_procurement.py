@@ -20,6 +20,9 @@ class Response(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int), ("body", ctypes.c_void_p)]
 
 
+import native_application
+
+
 class AccessProcurementTests(unittest.TestCase):
     start_server = procurement.ProcurementIntegrationTests.start_server
     stop_server = roles.RoleIntegrationTests.stop_server
@@ -35,7 +38,7 @@ class AccessProcurementTests(unittest.TestCase):
         cls.addClassCleanup(cls.native_build.cleanup)
         helper = Path(cls.native_build.name) / "guards.c"
         helper.write_text('#include <stdbool.h>\n#include <stdlib.h>\n'
-                          'bool organization_groups_available(void) { return false; }\n'
+                          'bool oidc_users_managed(void) { return false; }\n'
                           'void test_free(void *value) { free(value); }\n', encoding="utf-8")
         binary = Path(cls.native_build.name) / "guards.so"
         flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "openssl", "json-c"], text=True))
@@ -43,6 +46,8 @@ class AccessProcurementTests(unittest.TestCase):
                    "-Wpedantic", "-Werror", "-I" + str(roles.ROOT / "src")]
         command += [str(roles.ROOT / "src" / name) for name in
                     ("procurement.c", "storage.c", "documents.c", "access_control.c")]
+        command += native_application.missing_sources("procurement.c", "storage.c", "documents.c", "access_control.c")
+        command += native_application.link_flags()
         command += [str(helper), "-o", str(binary), "-lsqlite3", *flags]
         if sys.platform == "darwin":
             command += ["-framework", "Security"]

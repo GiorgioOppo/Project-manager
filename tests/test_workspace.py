@@ -422,6 +422,9 @@ class WorkspaceIntegrationTests(unittest.TestCase):
             "name": "Secondo gestore", "email": "second@punto.local",
             "password": PASSWORD, "role": "manager"})
         self.assertEqual(status, 201, data)
+        status, result, _ = self.api("POST", "/api/improvements/governance/admins", {
+            "user_id": data["id"], "admin": "1", "reason": "Explicit test appointment"})
+        self.assertEqual(status, 200, result)
         self.restart_server("second@punto.local")
         self.assertEqual(self.jobs()[0]["id"], job_id)
         empty_day = self.day()

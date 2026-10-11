@@ -84,7 +84,7 @@ Il worker Calendar è invece un thread distinto, con propria connessione SQLite.
 
 ## Persistenza, consistenza e transazioni
 
-Lo schema applicativo corrente è **versione 10**, con 24 tabelle MySQL o 22 tabelle funzionali SQLite, oltre alla tabella interna `sqlite_sequence`. Lo schema 9 estende le regole alert con `inventory_due` e `days_before`; lo schema 10 aggiunge `inventory_return`, `inventory_verification` e `verification_days` (1–365, predefinito 90). Entrambi conservano ID, relazioni e storico, senza aggiungere altre tabelle applicative. Le tabelle `job_tasks` e `job_blockers`, introdotte nello schema 8, appartengono alla stessa persistenza delle commesse; non introducono un servizio o un database separato. Le migrazioni sono applicate all'avvio e un database con versione non supportata viene rifiutato. Calendar non aggiunge tabelle allo schema MySQL: conserva i propri dati nel volume dedicato.
+Lo schema applicativo corrente è **14**, condiviso logicamente fra SQLite e MySQL. Comprende gruppi e profili espliciti, rettifiche, orari, ciclo di vita, deleghe, versioni e periodi economici. Le migrazioni sono eseguite all’avvio; versioni future sconosciute impediscono l’avvio. Calendar e inventory hanno archivi indipendenti, rispettivamente agli schemi 2 e 6. I dettagli sono nel modello dati e nel catalogo API.
 
 MySQL contiene i dati gestionali, i metadati PDF e l'outbox degli alert. GridFS contiene i byte PDF. Un upload attraversa entrambi gli archivi, senza transazione distribuita: un errore può lasciare un blob non referenziato, e non è presente una riconciliazione automatica. Il backup coordinato deve preservare sia SQL sia documenti.
 

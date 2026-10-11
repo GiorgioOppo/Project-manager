@@ -6,6 +6,7 @@
 #include "db.h"
 
 typedef struct {
+    bool admin;
     bool manager;
     bool sales;
     bool finance;
@@ -32,5 +33,15 @@ bool access_policy_visible_users(Db *db, DbInt actor_id, bool manager,
 /* 1 visible, 0 denied, -1 database/graph failure. */
 int access_policy_can_view_time(Db *db, DbInt actor_id, DbInt target_id,
                                 bool manager);
+
+/* Live governance checks: 1 allowed, 0 denied, -1 invalid graph/database.
+   job/group/user == 0 asks whether any matching creation delegation exists.
+   Space administration never expands the personal/team time scope. */
+int access_policy_can_manage_job(Db *db, DbInt actor_id, DbInt job_id);
+int access_policy_can_manage_group(Db *db, DbInt actor_id, DbInt group_id);
+int access_policy_can_manage_user(Db *db, DbInt actor_id, DbInt user_id);
+/* A different requester in the current team, and an active administration or
+   correction-approval delegation covering their organizational group today. */
+int access_policy_can_approve_correction(Db *db, DbInt actor_id, DbInt requester_id);
 
 #endif

@@ -70,6 +70,9 @@ void inventory_client_call_with_lookup(InventoryOperation operation, DbInt item_
                            DbInt relation_id, DbInt actor_id, const char *input,
                            InventoryUserLookup lookup, InventoryResponse *response);
 void inventory_response_free(InventoryResponse *response);
+/* Trusted mapping resolver. Browser input cannot choose this extra recipient. */
+typedef DbInt (*InventoryPersonLookup)(DbInt user_id);
+void inventory_client_set_person_lookup(InventoryPersonLookup lookup);
 struct json_object;
 /* Fetch a complete, bounded deadline set; failures never return partial data. */
 bool inventory_client_due(const char *today, int days_before, struct json_object **items);

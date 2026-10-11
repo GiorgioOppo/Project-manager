@@ -1,5 +1,6 @@
 #include "accounts.h"
 #include "storage.h"
+#include "improvements_governance.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -408,7 +409,7 @@ bool accounts_open(const char *db_path, const char *bootstrap_email,
     }
     DbStmt *statement = NULL;
     unsigned char salt[SALT_SIZE] = {0}, hash[HASH_SIZE] = {0};
-    bool success = false;
+    bool success = false, bootstrap_created = false;
     if (db_busy_timeout(database, 5000) != DB_OK ||
         !random_bytes(dummy_salt, sizeof(dummy_salt)) ||
         db_exec(database,
@@ -451,8 +452,13 @@ bool accounts_open(const char *db_path, const char *bootstrap_email,
             db_bind_blob(statement, 3, salt, sizeof(salt), DB_TRANSIENT) != DB_OK ||
             db_step(statement) != DB_DONE) goto done;
         db_finalize(statement); statement = NULL;
+        bootstrap_created = true;
     }
     success = db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK;
+    if (success) success = improvements_governance_schema(database);
+    if (success && bootstrap_created) {
+        success = db_exec(database, "INSERT INTO access_space_admins(user_id,created_by,created_at) SELECT id,NULL,'' FROM users u WHERE u.role='manager' AND NOT EXISTS(SELECT 1 FROM access_space_admins a WHERE a.user_id=u.id)", NULL, NULL, NULL) == DB_OK;
+    }
 done:
     db_finalize(statement);
     erase(salt, sizeof(salt)); erase(hash, sizeof(hash));
@@ -550,19 +556,26 @@ int accounts_lookup_email(const char *email, Account *out) {
     return found;
 }
 
-static void list_users(WorkspaceResponse *response) {
+static void list_users(DbInt actor_id, WorkspaceResponse *response) {
     DbStmt *statement = NULL;
     if (!prepare(&statement, "SELECT u.id,u.email,u.name,u.role,u.active,"
         "EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code='sales'),"
-        "EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code='finance') "
+        "EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code='finance'), "
+        "EXISTS(SELECT 1 FROM access_space_admins a WHERE a.user_id=u.id), "
+        "COALESCE((SELECT revision FROM access_profile_revisions p WHERE p.user_id=u.id),1) "
         "FROM users u ORDER BY u.id LIMIT 201")) {
         server_error(response); return;
     }
     Json json = {0};
     append(&json, "{\"users\":[");
-    int result, count = 0;
+    int result, count = 0, scanned = 0;
     while ((result = db_step(statement)) == DB_ROW) {
-        if (++count > USER_LIMIT) break;
+        if (++scanned > USER_LIMIT) break;
+        DbInt listed = db_column_int64(statement, 0);
+        int allowed = access_policy_can_manage_user(database, actor_id, listed);
+        if (allowed < 0) { db_finalize(statement); free(json.data); server_error(response); return; }
+        if (!allowed && listed != actor_id) continue;
+        count++;
         if (count > 1) append(&json, ",");
         append(&json, "{\"id\":"); append_integer(&json, db_column_int64(statement, 0));
         append(&json, ",\"email\":"); append_string(&json, column_text(statement, 1));
@@ -570,6 +583,10 @@ static void list_users(WorkspaceResponse *response) {
         append(&json, ",\"role\":"); append_string(&json, column_text(statement, 3));
         append(&json, ",\"active\":");
         append(&json, db_column_int(statement, 4) == 1 ? "true" : "false");
+        append(&json, ",\"admin\":");
+        append(&json, db_column_int(statement,7) && db_column_int(statement,4) && !strcmp(column_text(statement,3),"manager") ? "true" : "false");
+        append(&json, ",\"can_manage\":"); append(&json, allowed ? "true" : "false");
+        append(&json, ",\"profile_revision\":"); append_integer(&json,db_column_int64(statement,8));
         append(&json, ",\"access_groups\":[");
         if (db_column_int(statement, 4) == 1) {
             append_string(&json, "operator");
@@ -581,9 +598,9 @@ static void list_users(WorkspaceResponse *response) {
         append(&json, "}");
     }
     db_finalize(statement);
-    if (count > USER_LIMIT || result != DB_DONE) {
+    if (scanned > USER_LIMIT || result != DB_DONE) {
         free(json.data);
-        if (count > USER_LIMIT) error(response, 409, "Il limite è di 200 utenti.");
+        if (scanned > USER_LIMIT) error(response, 409, "Il limite è di 200 utenti.");
         else server_error(response);
         return;
     }
@@ -723,6 +740,14 @@ int accounts_resolve_oidc(const OidcIdentity *identity, Account *out) {
         db_finalize(statement); statement = NULL;
     }
 
+    /* Provider demotion must not retain a dormant administration that could
+       return on a later role promotion without a new explicit assignment. */
+    if (previous.id && !strcmp(previous.role,"manager") && !strcmp(identity->role,"worker")) {
+        if (!prepare(&statement,"DELETE FROM access_space_admins WHERE user_id=?") ||
+            db_bind_int64(statement,1,user_id)!=DB_OK || db_step(statement)!=DB_DONE) goto done;
+        db_finalize(statement);statement=NULL;
+    }
+
     if (!linked) {
         if (!prepare(&statement, "INSERT INTO oidc_identities(issuer,subject,user_id) VALUES(?,?,?)") ||
             !bind_text(statement, 1, identity->issuer) || !bind_text(statement, 2, identity->subject) ||
@@ -773,6 +798,10 @@ static void create_user(const char *body, DbInt actor_id, WorkspaceResponse *res
     }
     DbStmt *statement = NULL;
     char *snapshot = NULL;
+    AccessPolicy creator;
+    if (accounts_access_policy(actor_id,&creator)!=1 || !creator.admin) {
+        rollback(); error(response,403,"La creazione di identità richiede l'amministratore dello spazio."); goto done;
+    }
     if (!prepare(&statement, "SELECT COUNT(*) FROM users") ||
         db_step(statement) != DB_ROW) goto database_failure;
     DbInt existing = db_column_int64(statement, 0);
@@ -839,6 +868,10 @@ static void update_user(const char *body, DbInt id, DbInt actor_id,
     if (!begin_transaction(response)) { free_fields(fields, count); return; }
     DbStmt *statement = NULL;
     char *before = NULL, *after = NULL;
+    AccessPolicy editor;
+    int editable=access_policy_can_manage_user(database,actor_id,id);
+    if (editable<0 || accounts_access_policy(actor_id,&editor)<0) goto database_failure;
+    if (editable!=1) { rollback(); error(response,403,"L'utente non appartiene alla tua area delegata."); goto done; }
     if (!prepare(&statement, "SELECT role,active FROM users WHERE id=?") ||
         db_bind_int64(statement, 1, id) != DB_OK) goto database_failure;
     int result = db_step(statement);
@@ -849,7 +882,22 @@ static void update_user(const char *body, DbInt id, DbInt actor_id,
     if (result != DB_ROW) goto database_failure;
     bool was_manager = strcmp(column_text(statement, 0), "manager") == 0 &&
         db_column_int(statement, 1) == 1;
+    bool target_manager=strcmp(column_text(statement,0),"manager")==0;
     db_finalize(statement); statement = NULL;
+    if (!editor.admin && (target_manager || strcmp(fields[1].value,"worker")!=0)) {
+        rollback(); error(response,403,"Solo l'amministratore può modificare il ruolo o l'identità di un gestore."); goto done;
+    }
+    if (was_manager && (!active || strcmp(fields[1].value,"manager")!=0)) {
+        if (!prepare(&statement,"SELECT COUNT(*) FROM access_space_admins WHERE user_id=?") ||
+            db_bind_int64(statement,1,id)!=DB_OK || db_step(statement)!=DB_ROW) goto database_failure;
+        bool was_admin=db_column_int(statement,0)>0;
+        db_finalize(statement); statement=NULL;
+        if (was_admin) {
+            if (!prepare(&statement,"SELECT COUNT(*) FROM access_space_admins a JOIN users u ON u.id=a.user_id WHERE u.active=1 AND u.role='manager'") || db_step(statement)!=DB_ROW) goto database_failure;
+            DbInt admins=db_column_int64(statement,0);db_finalize(statement);statement=NULL;
+            if (admins<=1) {rollback();error(response,409,"Deve rimanere almeno un amministratore dello spazio attivo.");goto done;}
+        }
+    }
     before = user_snapshot(id);
     if (!before) goto database_failure;
     if (was_manager && (!active || strcmp(fields[1].value, "manager") != 0)) {
@@ -868,6 +916,11 @@ static void update_user(const char *body, DbInt id, DbInt actor_id,
         db_bind_int64(statement, 4, id) != DB_OK ||
         db_step(statement) != DB_DONE) goto database_failure;
     db_finalize(statement); statement = NULL;
+    if (target_manager && strcmp(fields[1].value,"manager")!=0) {
+        if (!prepare(&statement,"DELETE FROM access_space_admins WHERE user_id=?") ||
+            db_bind_int64(statement,1,id)!=DB_OK || db_step(statement)!=DB_DONE) goto database_failure;
+        db_finalize(statement); statement=NULL;
+    }
     after = user_snapshot(id);
     if (!after || !storage_audit(database, actor_id, "users.update", "user", id, before, after))
         goto database_failure;
@@ -898,6 +951,11 @@ static int access_user_json(DbInt id, Json *json) {
     bool manager = strcmp(column_text(statement, 0), "manager") == 0;
     bool active = db_column_int(statement, 1) == 1;
     db_finalize(statement); statement = NULL;
+    DbInt revision = 1;
+    if (!prepare(&statement,"SELECT COALESCE((SELECT revision FROM access_profile_revisions WHERE user_id=?),1)") ||
+        db_bind_int64(statement,1,id)!=DB_OK || db_step(statement)!=DB_ROW) goto failure;
+    revision=db_column_int64(statement,0);
+    db_finalize(statement); statement=NULL;
     bool sales = false, finance = false;
     if (!prepare(&statement, "SELECT group_code FROM access_group_members WHERE user_id=?") ||
         db_bind_int64(statement, 1, id) != DB_OK) goto failure;
@@ -912,6 +970,7 @@ static int access_user_json(DbInt id, Json *json) {
     append(json, "{\"user_id\":"); append_integer(json, id);
     append(json, active ? ",\"active\":true" : ",\"active\":false");
     append(json, manager ? ",\"role\":\"manager\"" : ",\"role\":\"worker\"");
+    append(json, ",\"revision\":"); append_integer(json,revision);
     append(json, ",\"selected\":[");
     if (sales) append_string(json, "sales");
     if (finance) { if (sales) append(json, ","); append_string(json, "finance"); }
@@ -962,83 +1021,9 @@ static void list_access_groups(WorkspaceResponse *response) {
     finish_json(response, 200, &json);
 }
 
-static bool parse_access_groups(const char *text, bool *sales, bool *finance) {
-    *sales = false; *finance = false;
-    size_t length = text ? strlen(text) : 0;
-    if (!length || length > FORM_LIMIT) return false;
-    struct json_tokener *tokener = json_tokener_new();
-    if (!tokener) return false;
-    json_tokener_set_flags(tokener, JSON_TOKENER_STRICT);
-    struct json_object *array = json_tokener_parse_ex(tokener, text, (int)length);
-    size_t end = json_tokener_get_parse_end(tokener);
-    bool okay = json_tokener_get_error(tokener) == json_tokener_success;
-    while (end < length && isspace((unsigned char)text[end])) end++;
-    okay = okay && end == length && array && json_object_get_type(array) == json_type_array &&
-        json_object_array_length(array) <= 2;
-    for (size_t index = 0; okay && index < json_object_array_length(array); index++) {
-        struct json_object *item = json_object_array_get_idx(array, index);
-        if (!item || json_object_get_type(item) != json_type_string) { okay = false; break; }
-        const char *code = json_object_get_string(item);
-        if (!code || strlen(code) != (size_t)json_object_get_string_len(item)) { okay = false; break; }
-        if (strcmp(code, "sales") == 0 && !*sales) *sales = true;
-        else if (strcmp(code, "finance") == 0 && !*finance) *finance = true;
-        else okay = false;
-    }
-    json_object_put(array);
-    json_tokener_free(tokener);
-    return okay;
-}
-
 static void write_access_groups(const char *body, DbInt id, DbInt actor_id,
                                  WorkspaceResponse *response) {
-    Field fields[] = {{"groups", NULL}};
-    if (!parse_fields(body, fields, 1, response)) return;
-    bool sales, finance;
-    if (!parse_access_groups(fields[0].value, &sales, &finance)) {
-        free_fields(fields, 1);
-        error(response, 400, "Scegli soltanto Commerciali e Finance, senza duplicati.");
-        return;
-    }
-    free_fields(fields, 1);
-    if (!begin_transaction(response)) return;
-    DbStmt *statement = NULL;
-    Json before = {0}, after = {0};
-    AccessPolicy actor;
-    int resolved = accounts_access_policy(actor_id, &actor);
-    if (resolved < 0) goto failure;
-    if (!resolved || !actor.manager) {
-        rollback(); error(response, 403, "Solo i gestori possono amministrare i profili funzionali.");
-        goto done;
-    }
-    int found = access_user_json(id, &before);
-    if (found < 0) goto failure;
-    if (!found) { rollback(); error(response, 404, "Utente non trovato."); goto done; }
-    if (!prepare(&statement, "DELETE FROM access_group_members WHERE user_id=?") ||
-        db_bind_int64(statement, 1, id) != DB_OK || db_step(statement) != DB_DONE) goto failure;
-    db_finalize(statement); statement = NULL;
-    const char *codes[] = {"sales", "finance"};
-    bool selected[] = {sales, finance};
-    for (size_t index = 0; index < 2; index++) {
-        if (!selected[index]) continue;
-        if (!prepare(&statement, "INSERT INTO access_group_members(group_code,user_id) VALUES(?,?)") ||
-            !bind_text(statement, 1, codes[index]) || db_bind_int64(statement, 2, id) != DB_OK ||
-            db_step(statement) != DB_DONE) goto failure;
-        db_finalize(statement); statement = NULL;
-    }
-    if (access_user_json(id, &after) != 1 ||
-        !storage_audit(database, actor_id, "users.access_groups.update", "user", id,
-                       before.data, after.data)) goto failure;
-    if (commit_transaction(response)) {
-        Json json = {0}; append(&json, "{\"ok\":true,");
-        append_bytes(&json, after.data + 1, after.length - 1);
-        finish_json(response, 200, &json);
-    }
-    goto done;
-failure:
-    db_finalize(statement); statement = NULL;
-    rollback(); server_error(response);
-done:
-    free(before.data); free(after.data);
+    improvements_governance_profiles(database, actor_id, id, body, response);
 }
 
 static bool access_groups_handle(const char *method, const char *target, const char *query,
@@ -1053,8 +1038,8 @@ static bool access_groups_handle(const char *method, const char *target, const c
     AccessPolicy policy;
     int resolved = accounts_access_policy(actor->id, &policy);
     if (resolved < 0) { server_error(response); return true; }
-    if (!resolved || !policy.manager) {
-        error(response, 403, "Solo i gestori possono amministrare i profili funzionali."); return true;
+    if (!resolved || !policy.admin) {
+        error(response, 403, "Solo gli amministratori dello spazio possono amministrare i profili funzionali."); return true;
     }
     if (query && *query) { error(response, 400, "Parametri della richiesta non validi."); return true; }
     if (catalogue) {
@@ -1094,8 +1079,14 @@ bool accounts_handle(const char *method, const char *target, const char *query,
     response->body = NULL;
     response->status = 0;
     if (!actor) { error(response, 401, "Accedi per continuare."); return true; }
-    if (strcmp(actor->role, "manager") != 0) {
-        error(response, 403, "Solo i gestori possono amministrare gli utenti."); return true;
+    AccessPolicy actor_policy;
+    int live = accounts_access_policy(actor->id, &actor_policy);
+    if (live < 0) { server_error(response); return true; }
+    if (live != 1 || !actor_policy.manager) {
+        error(response, 403, "Solo amministratori e gestori delegati possono amministrare gli utenti."); return true;
+    }
+    if (collection && strcmp(method,"POST")==0 && !actor_policy.admin) {
+        error(response,403,"La creazione di identità richiede l'amministratore dello spazio."); return true;
     }
     if (oidc_users_managed() && strcmp(method, "POST") == 0) {
         error(response, 403, "Gli utenti sono gestiti in Keycloak."); return true;
@@ -1104,7 +1095,7 @@ bool accounts_handle(const char *method, const char *target, const char *query,
     if (query && *query) {
         error(response, 400, "Parametri della richiesta non validi."); return true;
     }
-    if (collection && strcmp(method, "GET") == 0) list_users(response);
+    if (collection && strcmp(method, "GET") == 0) list_users(actor->id, response);
     else if (collection && strcmp(method, "POST") == 0) create_user(body, actor->id, response);
     else if (item) {
         DbInt id;

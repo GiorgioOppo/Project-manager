@@ -4,7 +4,7 @@
 
 This documentation describes the web app for projects and time tracking, the services that run it, and its workflows. It is organized into **`tehnical/`** for developers and system administrators and **`prod/`** for people configuring and using the product. The `tehnical` directory name is retained as required by the project.
 
-**Reference:** workspace code as of 11 October 2026, application schema **13**. Native mode uses SQLite and local documents; Docker mode uses MySQL and MongoDB GridFS. Current schema and policy are described in the [API catalog](tehnical/api-app.md) and [operational workflows](prod/flussi-operativi.md); previous test counts remain historical evidence. The [main README](../../README.md) contains the general startup instructions.
+**Reference:** workspace code as of 11 October 2026, application schema **14**. Native mode uses SQLite and local documents; Docker mode uses MySQL and MongoDB GridFS. Current schema and policy are described in the [API catalog](tehnical/api-app.md) and [operational workflows](prod/flussi-operativi.md); previous test counts remain historical evidence. The [main README](../../README.md) contains the general startup instructions.
 
 ## Reading paths
 

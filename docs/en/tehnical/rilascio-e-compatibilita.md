@@ -12,15 +12,15 @@ A release must state which elements it changes. The application image includes b
 
 | Item | Current version/configuration | Compatibility relationship |
 | --- | --- | --- |
-| C app | C11 build with warnings as errors | Maximum application schema 10; API and frontend distributed together |
+| C app | C11 build with warnings as errors | Maximum application schema 14; API and frontend distributed together |
 | MySQL backend | `mysql:8.4` | Three members with consistent Group Replication configuration |
-| SQL application schema | 10 | Same logical version for MySQL and SQLite, with specific DDL and migrations |
+| SQL application schema | 14 | Same logical version for MySQL and SQLite, with specific DDL and migrations |
 | SQL proxy | `haproxy:3.2-alpine` and Python monitor | Checks multi-primary mode, quorum and TLS on three nodes |
 | MongoDB | `mongo:8.0`, GridFS `contract_pdfs` | PDF data linked to the SQL manifest, without a distributed transaction |
 | NPM | `jc21/nginx-proxy-manager:2.16.0` base with local patches | Administration entrypoint and configuration generation checked by the build |
 | Squid | Debian Trixie package in the project image | ACLs, IPs and allowlists must match Compose networks |
-| Email addon | Separate C binary; SQLite `deliveries` ledger | HTTPS `/v1` contract, outbox states introduced by schema 7 and retained in schema 10, and stable namespace |
-| Calendar addon | Separate C binary; SQLite `user_version=1` | HTTPS `/v1` contract, AES key and persistent user identifiers |
+| Email addon | Separate C binary; SQLite `deliveries` ledger | HTTPS `/v1` contract, outbox states introduced by schema 7 and retained in schema 14, and stable namespace |
+| Calendar addon | Separate C binary; SQLite `user_version=2` | HTTPS `/v1` contract, AES key and persistent user identifiers |
 | Inventory addon | Separate C binary; SQLite store version 5 | HTTPS `/v1` contract, persistent records and revisions |
 | Networks | Eight bridges, explicit IPs and interfaces | Docker Engine ≥28, Compose ≥2.36.0 and consistent SANs |
 | Private TLS | Local CA and per-service leaf certificates | Verified names/IPs/CA; files expected by mounts |
@@ -116,9 +116,9 @@ This second sequence is for a joint release of the listed components; it is not 
 
 ## Migrations: applied path and limits
 
-The app rejects databases declaring a version higher than supported. For SQLite it reads `PRAGMA user_version`; for MySQL it checks `schema_metadata`. Current code upgrades data to version 10; the actually deployed version must be read in the target environment. Calendar separately manages its version 1 and rejects higher versions; the email ledger does not manage `user_version` numbering like Calendar.
+The app rejects databases declaring a version higher than supported. For SQLite it reads `PRAGMA user_version`; for MySQL it checks `schema_metadata`. Current code upgrades data to version 14; the actually deployed version must be read in the target environment. Calendar separately manages its version 2 and rejects higher versions; the email ledger does not manage `user_version` numbering like Calendar.
 
-The current inventory release uses application schema 10: step 9 (`inventory_due`, `days_before`) is followed by step 10 (`inventory_return`, `inventory_verification`, `verification_days` 1–365, default 90), with no new app tables and preserving IDs, foreign keys, recipients, and history. The independent inventory schema is 5: step 3 → 4 introduced context, custody, and verifications, retaining the CSV previews from version 3; step 4 → 5 adds separate people and identity directories, many-to-many memberships, directory history, and direct asset links without changing existing assignments. It requires the app, inventory service and interface to be updated together. Retain backups of both stores; native verification does not certify MySQL cluster migration.
+The current inventory release uses application schema 14: step 9 (`inventory_due`, `days_before`) is followed by step 10 (`inventory_return`, `inventory_verification`, `verification_days` 1–365, default 90), with no new app tables and preserving IDs, foreign keys, recipients, and history. The independent inventory schema is 5: step 3 → 4 introduced context, custody, and verifications, retaining the CSV previews from version 3; step 4 → 5 adds separate people and identity directories, many-to-many memberships, directory history, and direct asset links without changing existing assignments. It requires the app, inventory service and interface to be updated together. Retain backups of both stores; native verification does not certify MySQL cluster migration.
 
 The tasks/blockers release moves from schema 7 to 8, adding two tables without transforming existing projects or hours. It requires the new binary together with `app.html`, `app.js` and `work-board.css`; addons retain their formats. Before deployment, check upgrades on a copy, Manager/Contributor/Viewer access, stale revisions, hierarchies and deletions. SQLite verification alone does not prove DDL or transactions on the MySQL cluster. See the [module specification](attivita-kanban-e-blocchi.md).
 

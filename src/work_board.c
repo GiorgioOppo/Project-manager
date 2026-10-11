@@ -1,3 +1,4 @@
+#include "access_control.h"
 #include "work_board.h"
 #include "organization.h"
 #include "storage.h"
@@ -262,7 +263,9 @@ static int job_permission(DbInt job_id, DbInt actor_id, bool manager,
     db_finalize(statement);
     if (result == DB_DONE) { error(response, 404, "Elemento non trovato."); return 0; }
     if (result != DB_ROW) { server_error(response); return 0; }
-    int permission = manager ? 3 : organization_job_access(database, job_id, actor_id, today, NULL);
+    (void)manager;
+    int managed=access_policy_can_manage_job(database,actor_id,job_id);
+    int permission = managed<0?-1:managed==1?3:organization_job_access(database, job_id, actor_id, today, NULL);
     if (permission < 0) server_error(response);
     else if (!permission) error(response, 404, "Elemento non trovato.");
     return permission > 0 ? permission : 0;
@@ -277,7 +280,8 @@ static bool eligible_user(DbInt job_id, DbInt user_id, const char *today,
     bool manager = active && strcmp(column_text(statement, 0), "manager") == 0;
     db_finalize(statement);
     if (result != DB_ROW && result != DB_DONE) { server_error(response); return false; }
-    int access = active ? (manager ? 3 : organization_job_access(database, job_id, user_id, today, NULL)) : 0;
+    int managed=active&&manager?access_policy_can_manage_job(database,user_id,job_id):0;
+    int access = managed<0?-1:active ? (managed==1 ? 3 : organization_job_access(database, job_id, user_id, today, NULL)) : 0;
     if (access < 0) { server_error(response); return false; }
     if (access != 3) { error(response, 400, "Seleziona un utente attivo abilitato a lavorare sulla commessa."); return false; }
     return true;
@@ -285,20 +289,20 @@ static bool eligible_user(DbInt job_id, DbInt user_id, const char *today,
 
 static const char task_select[] =
     "SELECT t.id,t.job_id,t.parent_id,t.assigned_user_id,u.name,t.title,t.description,t.status,t.priority,"
-    "t.due_date,t.revision,t.created_at,t.updated_at FROM job_tasks t LEFT JOIN users u ON u.id=t.assigned_user_id ";
+    "t.due_date,t.revision,t.created_at,t.updated_at,t.estimated_minutes FROM job_tasks t LEFT JOIN users u ON u.id=t.assigned_user_id ";
 static const char blocker_select[] =
     "SELECT b.id,b.job_id,b.task_id,b.title,b.description,b.impact,b.owner_id,u.name,b.status,b.next_action,"
     "b.due_date,b.created_by,b.revision,b.created_at,b.updated_at FROM job_blockers b LEFT JOIN users u ON u.id=b.owner_id ";
 static struct json_object *row_json(DbStmt *statement, bool task) {
     static const char *task_keys[] = {"id","job_id","parent_id","assigned_user_id","assigned_user_name","title",
-        "description","status","priority","due_date","revision","created_at","updated_at"};
+        "description","status","priority","due_date","revision","created_at","updated_at","estimated_minutes"};
     static const char *blocker_keys[] = {"id","job_id","task_id","title","description","impact","owner_id","owner_name",
         "status","next_action","due_date","created_by","revision","created_at","updated_at"};
     struct json_object *out = json_object_new_object();
     if (!out) return NULL;
-    int count = task ? 13 : 15;
+    int count = task ? 14 : 15;
     for (int i = 0; i < count; i++) {
-        bool integer = task ? (i <= 3 || i == 10) : (i <= 2 || i == 6 || i == 11 || i == 12);
+        bool integer = task ? (i <= 3 || i == 10 || i == 13) : (i <= 2 || i == 6 || i == 11 || i == 12);
         struct json_object *value = NULL;
         if (db_column_type(statement, i) != DB_NULL) {
             value = integer ? json_object_new_int64(db_column_int64(statement, i)) :
@@ -369,7 +373,8 @@ static bool list_assignees(struct json_object *out, DbInt job_id, bool manager,
     if (!okay || !candidates || result != DB_DONE) goto failure;
     for (size_t i = 0; i < json_object_array_length(candidates); i++) {
         struct json_object *item = json_object_array_get_idx(candidates, i);
-        int access = object_id(item, "manager") ? 3 : organization_job_access(database, job_id, object_id(item, "id"), today, NULL);
+        int managed=object_id(item,"manager")?access_policy_can_manage_job(database,object_id(item,"id"),job_id):0;
+        int access = managed<0?-1:managed==1?3:organization_job_access(database, job_id, object_id(item, "id"), today, NULL);
         if (access < 0) goto failure;
         if (access == 3) {
             json_object_object_del(item, "manager");
@@ -389,6 +394,9 @@ static void get_board(const char *query, DbInt actor_id, WorkspaceResponse *resp
     else if (!today_date(today)) server_error(response);
     else if (active_actor(actor_id, &manager, response)) {
         int permission = job_permission(job_id, actor_id, manager, today, response);
+        int managed=access_policy_can_manage_job(database,actor_id,job_id);
+        if(managed<0){server_error(response);free_fields(fields,1);return;}
+        manager=managed==1;
         if (permission) {
             struct json_object *out = json_object_new_object(), *permissions = json_object_new_object();
             if (!out || !permissions) { json_object_put(out); json_object_put(permissions); server_error(response); }
@@ -529,7 +537,8 @@ static bool work_notification_due(DbInt actor, bool manager, const char *today, 
         int result;
         while ((result = db_step(statement)) == DB_ROW) {
             DbInt item = db_column_int64(statement, 0), job = db_column_int64(statement, 1);
-            int permission = manager ? 3 : organization_job_access(database, job, actor, today, NULL);
+            int managed=manager?access_policy_can_manage_job(database,actor,job):0;
+            int permission = managed<0?-1:managed==1?3:organization_job_access(database, job, actor, today, NULL);
             if (permission < 0) { db_finalize(statement); return false; }
             if (!permission) continue;
             const char *due = column_text(statement, 3);
@@ -554,7 +563,9 @@ static bool work_notification_visible(DbStmt *statement, DbInt actor, bool manag
         strcmp(column_text(statement, 7), column_text(statement, 14)) != 0)) return false;
     if (strcmp(type, "blocker_due") == 0 && (strcmp(column_text(statement, 12), "resolved") == 0 || db_column_int64(statement, 13) != actor ||
         strcmp(column_text(statement, 7), column_text(statement, 15)) != 0)) return false;
-    int permission = manager ? 3 : organization_job_access(database, db_column_int64(statement, 1), actor, today, NULL);
+    DbInt job=db_column_int64(statement,1);
+    int managed=manager?access_policy_can_manage_job(database,actor,job):0;
+    int permission = managed<0?-1:managed==1?3:organization_job_access(database,job,actor,today,NULL);
     return permission > 0;
 }
 
@@ -655,6 +666,8 @@ static void write_record(bool task, const char *body, DbInt id, DbInt actor_id,
     }
     int permission = job_permission(job_id, actor_id, manager, today, response);
     if (!permission) goto cleanup;
+    int managed=access_policy_can_manage_job(database,actor_id,job_id);
+    if(managed<0){server_error(response);goto cleanup;}manager=managed==1;
     bool permitted = manager || (permission == 3 && (task ? id && object_id(before, "assigned_user_id") == actor_id :
         !id || object_id(before, "created_by") == actor_id || object_id(before, "owner_id") == actor_id));
     if (!permitted) { error(response, 403, "Non hai i permessi per questa operazione."); goto cleanup; }
@@ -792,7 +805,9 @@ static void delete_record(bool task, const char *body, DbInt id, DbInt actor_id,
     if (!active_actor(actor_id, &manager, response)) goto cleanup;
     before = load_record(task, id, response);
     if (!before || !job_permission(object_id(before, "job_id"), actor_id, manager, today, response)) goto cleanup;
-    if (!manager) { error(response, 403, "Soltanto i gestori possono eliminare attività e blocchi."); goto cleanup; }
+    int managed=access_policy_can_manage_job(database,actor_id,object_id(before,"job_id"));
+    if(managed<0){server_error(response);goto cleanup;}
+    if (managed!=1) { error(response, 403, "Soltanto i gestori possono eliminare attività e blocchi."); goto cleanup; }
     if (object_id(before, "revision") != revision) {
         error(response, 409, "L’elemento è stato modificato: aggiorna la pagina e riprova."); goto cleanup;
     }

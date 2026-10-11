@@ -1,6 +1,6 @@
 # punto — Projects and time tracking in C
 
-[Improved operational workflows (schema 13)](docs/en/prod/flussi-operativi.md)
+[Improved operational workflows (schema 14)](docs/en/prod/flussi-operativi.md)
 
 **English** | [Italiano](README.it.md)
 
@@ -57,7 +57,7 @@ The local CA lasts ten years and server certificates one year. **Renewal is manu
 
 The script stops the app during preparation, backs up the first node's data, initializes new empty nodes with a consistent copy, creates the group and starts the other services. The first node retains the `mysql_data` volume already used by the project: there is no need to delete the database to add replicas. The local `data/cluster-state.json` file retains markers for already prepared nodes, so seeding is not repeated on existing data. Internal accounts are created on each node and the seed is imported locally, without recording passwords in controller output. On macOS, the command uses the `desktop-linux` Docker context by default; `--docker-context` selects another.
 
-To update an existing installation with suppliers, contracts and MongoDB, **first run an SQL backup using the previous configuration**, retain `.env.docker` and volumes, then update the code. Add the new document variables from the template without overwriting existing credentials, and run `prepare` and `init` as above. If `data/cluster-state.json` indicates an already initialized cluster, `init` generates only missing passwords and invokes recovery: it does not repeat seeding. The app applies migrations through version 10, preserving users, projects, entries and access grants; Compose starts MongoDB as an app dependency. Upgrading from version 2 adds groups and roles: every previous access grant becomes Contributor without expanding the set of authorized users.
+To update an existing installation with suppliers, contracts and MongoDB, **first run an SQL backup using the previous configuration**, retain `.env.docker` and volumes, then update the code. Add the new document variables from the template without overwriting existing credentials, and run `prepare` and `init` as above. If `data/cluster-state.json` indicates an already initialized cluster, `init` generates only missing passwords and invokes recovery: it does not repeat seeding. The app applies migrations through version 14, preserving users, projects, entries and access grants; Compose starts MongoDB as an app dependency. Upgrading from version 2 adds groups and roles: every previous access grant becomes Contributor without expanding the set of authorized users.
 
 To apply segmentation and TLS to an **already initialized cluster**, use instead:
 
@@ -180,7 +180,7 @@ docker compose --env-file .env.docker build proxy-egress mail calendar inventory
 docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait proxy-egress mail calendar inventory app proxy-web
 ```
 
-Compose creates missing networks and volumes, starts Squid and addons, and recreates the app and NPM. The service may be briefly unavailable; the app applies missing SQL migrations through version 10, preserving data. The Calendar addon requires no other MySQL migrations. This update does not require `configure_network.py apply`, new seeding or database recreation. Squid's healthcheck verifies a local `403` response without requiring Internet: it does not by itself demonstrate Google reachability. If Squid stops, new external requests fail; database work remains independent of the proxy while the app is already running. At a new startup, however, Compose waits for Squid and addons to be healthy.
+Compose creates missing networks and volumes, starts Squid and addons, and recreates the app and NPM. The service may be briefly unavailable; the app applies missing SQL migrations through version 14, preserving data. The Calendar addon requires no other MySQL migrations. This update does not require `configure_network.py apply`, new seeding or database recreation. Squid's healthcheck verifies a local `403` response without requiring Internet: it does not by itself demonstrate Google reachability. If Squid stops, new external requests fail; database work remains independent of the proxy while the app is already running. At a new startup, however, Compose waits for Squid and addons to be healthy.
 
 To update the allowlist, edit `docker/squid/allowed-domains.txt`, keeping one exact host per line. Files are mounted read-only in the container. Before reloading, check the content actually mounted and the syntax:
 
@@ -582,7 +582,7 @@ The current base supports up to 200 users, 200 groups, 100 project roles, 1000 p
 
 ## Database tables
 
-In the MySQL backend, the application database, which defaults to `punto`, uses current schema **13**. Steps 9 and 10 extend inventory alerts; step 11 adds managed company groups; step 12 introduces corrections, schedules, operational notifications, templates and project lifecycle; step 13 introduces `access_groups` and `access_group_members` for explicit Sales and Finance profiles. Migrations do not automatically assign these profiles to managers. Every table has a primary key and foreign-key relationships; new resources declare their own deletion behavior. The [current API catalog](docs/en/tehnical/api-app.md) describes the enforced policy.
+In the MySQL backend, the application database, which defaults to `punto`, uses current schema **14**. Steps 9 and 10 extend inventory alerts; step 11 adds managed company groups; step 12 introduces corrections, schedules, operational notifications, templates and project lifecycle; step 13 introduces `access_groups` and `access_group_members` for explicit Sales and Finance profiles. Migrations do not automatically assign these profiles to managers. Every table has a primary key and foreign-key relationships; new resources declare their own deletion behavior. The [current API catalog](docs/en/tehnical/api-app.md) describes the enforced policy.
 
 | Table | Main data and structure |
 | --- | --- |
@@ -618,7 +618,7 @@ In the MySQL backend, the application database, which defaults to `punto`, uses 
 
 Text uses `utf8mb4`; emails and codes are unique without case sensitivity. Days and intervals are ISO `YYYY-MM-DD` strings, durations are whole minutes and history JSON is text. Triggers protect history from updates and deletions and prevent changing the user already associated with an entry. The complete definition is in `src/mysql_schema.c`.
 
-SQLite retains application tables, plus the internal `sqlite_sequence` table, and uses `PRAGMA user_version=13` for the schema version. `schema_metadata` and `cluster_write_guard` belong to MySQL mode; NPM's SQLite database contains only reverse proxy configuration and is not a replica of application data. The email addon uses a separate SQLite database with a single `deliveries` table in its own volume, dedicated to outcomes and deduplication.
+SQLite retains application tables, plus the internal `sqlite_sequence` table, and uses `PRAGMA user_version=14` for the schema version. `schema_metadata` and `cluster_write_guard` belong to MySQL mode; NPM's SQLite database contains only reverse proxy configuration and is not a replica of application data. The email addon uses a separate SQLite database with a single `deliveries` table in its own volume, dedicated to outcomes and deduplication.
 
 The MongoDB database, which defaults to **`punto_documents`**, contains PDFs in the `contract_pdfs` GridFS bucket:
 
@@ -881,7 +881,7 @@ backups/               MySQL dumps and MongoDB archives with 0600 permissions, e
 nginx-proxy-manager/   Persistent NPM configuration, SQLite and certificates
 ```
 
-Tasks, subtasks, Kanban and the blocker register are implemented. Planning, dependencies, team workload, budgets, approvals, the client area and linking hours to individual tasks are subsequent developments. The Google Calendar addon and application APIs are implemented; real activation requires the OAuth project and user consent. The Calendar interface and linking events to projects and time entries remain to be developed.
+Tasks, subtasks, Kanban, blockers, task-linked hours, work estimates, capacity, scoped delegations, sensitive-profile approvals, budget forecasts and immutable economic periods are implemented. Calendar and Ticket references can prepare personal time proposals requiring explicit confirmation. Google OAuth and SMTP still require provider configuration. Dependencies, a client portal, invoicing, multiple companies and currencies remain future developments. See the [twenty workflow improvements](docs/en/prod/flussi-operativi.md) for the delivered paths and their limits.
 
 The roadmap for 20 additional features is described in the [20-feature implementation plan](docs/en/prod/roadmap-20-funzionalita.md), with release sequence, dependencies, planned schema and acceptance criteria. The [updated feature status](docs/en/prod/roadmap.md) distinguishes available features from releases still to be implemented.
 

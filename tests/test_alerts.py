@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import test_reports as reports
 import test_roles as roles
+import native_application
 
 
 ROME = ZoneInfo("Europe/Rome")
@@ -34,7 +35,8 @@ def build_native_check(directory):
                     str(roles.ROOT / "src/access_control.c"),
                     str(roles.ROOT / "src/mail_client.c"),
                     str(roles.ROOT / "src/inventory_client.c"),
-                    str(roles.ROOT / "tests/alerts_native_check.c"), "-lsqlite3", "-lcurl", *json_flags, "-o", str(binary)],
+                    *native_application.missing_sources("alerts.c", "storage.c", "workspace.c", "organization.c", "access_control.c", "mail_client.c", "inventory_client.c"),
+                    str(roles.ROOT / "tests/alerts_native_check.c"), "-lsqlite3", *native_application.link_flags(), *json_flags, "-o", str(binary)],
                    check=True, capture_output=True, text=True)
     return binary
 
@@ -429,7 +431,8 @@ class AlertIntegrationTests(unittest.TestCase):
 
     def test_demoted_manager_immediately_loses_other_subject_notifications_in_existing_session(self):
         manager = self.users()[0]
-        self.create_user(email="remaining-manager@punto.local", role="manager")
+        backup = self.create_user(email="remaining-manager@punto.local", role="manager")
+        roles.RoleIntegrationTests.make_space_admin(self, backup)
         subject_id, subject = self.worker()
         rule_id = self.create_rule(recipient_user_ids=str(manager["id"]))
         self.record_invalid_attempt(subject)
@@ -519,7 +522,7 @@ class AlertIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (6,7,8,9,10,12,13)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (6,7,8,9,10,12,13,14)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=5")
             db.commit()
@@ -528,13 +531,13 @@ class AlertIntegrationTests(unittest.TestCase):
             old_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()
         self.restart_and_login()
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (14,))
             for table, rows in old.items():
                 self.assertEqual(db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             for table in ALERT_TABLES:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM "' + table + '"').fetchone(), (0,), table)
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (6,7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (6,7,8,9,10,12,13,14)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=6").fetchone(), (1,))
             final_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()

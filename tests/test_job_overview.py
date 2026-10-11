@@ -99,7 +99,7 @@ class JobOverviewIntegrationTests(unittest.TestCase):
         closure = self.get("/api/jobs/%d/closure" % job)
         self.assertEqual((closure["total_minutes"], closure["time_entries"], closure["users_with_hours"]), (50, 2, 2))
         closed = self.post("/api/jobs/%d/lifecycle" % job,
-            {"revision": 1, "action": "close", "reason": "Consegna"}, expected=200)
+            {"revision": 1, "action": "close", "reason": "Consegna", "checklist_confirmed": "1"}, expected=200)
         self.assertEqual((closed["total_minutes"], closed["time_entries"]), (50, 2))
         self.post("/api/users/%d/access-groups" % manager_id, {"groups": '["finance"]'}, expected=200)
         self.assertEqual(self.overview(job)["job"]["contract_code"], "SECRET")

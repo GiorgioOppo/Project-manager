@@ -2,11 +2,11 @@
 
 **English** | [Italiano](../../prod/flussi-operativi.md)
 
-Workspace implementation as of 11 October 2026, schema **13**. Building or testing this version does not update an existing Docker deployment.
+Workspace implementation as of 11 October 2026, schema **14**. Building or testing this version does not update an existing Docker deployment.
 
 ## Profiles and time scope
 
-Every active account is an Operator; Manager derives from the identity role. In **Users → Profiles**, managers separately assign Sales and Finance, including to Keycloak accounts. Sales edits suppliers, contracts and PDFs; Finance views them and reads values, rates and labor costs aggregated by project, without third-party personal hours or a User filter. Editing rates requires Manager + Finance. The Manager role alone does not grant these rights.
+Every active account is an Operator; Manager derives from the identity role. In **Users → Profiles**, administrators request Sales and Finance changes, including for Keycloak accounts. With two or more active administrators a different administrator must approve. A single administrator can apply changes immediately in the explicit, audited bootstrap mode. Sales edits suppliers, contracts and PDFs; Finance views them and reads values, rates and labor costs aggregated by project, without third-party personal hours or a User filter. Editing rates requires Manager + Finance. The Manager role alone does not grant these rights.
 
 For hours, managers see themselves and members of their own organizational groups and subgroups. Without groups, or if company groups are unavailable, they see only themselves. The Time log’s person selector provides read-only team day/week viewing. Work reports, summaries, corrections, History and alerts apply the same team scope; revocations and profiles are checked on every request.
 
@@ -56,4 +56,32 @@ Templates store explicit setup data and require review before use. They do not c
 
 The lifecycle dialog shows open work and preserved data. Closing blocks new hours; archiving additionally hides the job from the current catalogue. Both retain authorized access to hours, tasks and blockers. Show archived retrieves archived jobs. Reopening requires an explicit reason; lifecycle revisions prevent stale overwrites and decisions enter the audit log.
 
-Descriptive job status remains separate from logging closure. The pre-existing permanent delete command remains destructive and distinct from archive.
+Descriptive job status remains separate from logging closure. Permanent deletion requires a space administrator and remains destructive. It returns a conflict when consolidated hours, economic adjustments, budget or published contract revision references require retention; use closure and archive to preserve history.
+
+
+## Schema 14 improvements
+
+The twenty improvements following the workflow review are separate from the original twenty-feature roadmap:
+
+1. Space administrators and dated, organizationally scoped manager delegations. Existing managers retain administration once during migration; new managers require explicit appointment. Administration never expands time visibility.
+2. Sales/Finance profile requests approved by another administrator, with an audited single-administrator bootstrap exception.
+3. Group membership and move impact previews, followed by live checks at confirmation.
+4. Correction queues with status, person and date filters and cursor pagination.
+5. UI and documentation aligned with schedules, team scope and current schemas.
+6. Explicit personal device drafts for time, batch time and guided setup, expiring after seven days and cleared on logout/account change.
+7. Daily batch previews including existing time, additions and final totals, with row-specific errors and server revalidation.
+8. Selective copying of days and entries across up to seven days, with at most 100 entries per confirmed batch.
+9. Scoped, expiring correction-approver delegation and immediate revocation checks.
+10. Task estimates and personal capacity compared with scheduled and actual work.
+11. Interval absence requests applied only after approval by another authorized manager.
+12. Schedule revisions preventing stale updates and retaining before/after audit records.
+13. Template editing, archived versions and explicit restoration, with revalidation before reuse.
+14. Immutable published contract revisions and explicit job references to a published revision of the same contract.
+15. Finance previews and approves immutable global economic periods; time in those periods is locked and later economic adjustments are separate, reasoned entries.
+16. Job budgets combining closed snapshots, open-period actuals, explicit remaining cost and final forecast. Earlier reports are labelled live estimates.
+17. Calendar and Ticket time proposals require personal review and explicit, idempotent confirmation.
+18. Email outbox visibility, cancellation before sending and explicit review of uncertain results, without automatic resend.
+19. Verified inventory person-to-Punto account mapping for My assets; shared identities do not expand personal results.
+20. Closure checklists include corrections and explicit ticket/equipment references. Open items require a reasoned confirmation. External references are maintained manually, without automatic reconciliation.
+
+Real Google OAuth and SMTP still require provider configuration. Local tests use isolated databases and simulated services; building files does not update a running deployment.

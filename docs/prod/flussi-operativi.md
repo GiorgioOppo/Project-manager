@@ -2,11 +2,11 @@
 
 **Italiano** | [English](../en/prod/flussi-operativi.md)
 
-Codice del workspace all'11 ottobre 2026, schema **13**. Questa guida descrive le dieci migliorie operative introdotte nell'interfaccia. La compilazione o il collaudo locale non aggiornano automaticamente il deployment Docker esistente.
+Codice del workspace all'11 ottobre 2026, schema **14**. Questa guida descrive i flussi operativi e le venti migliorie successive alla verifica. La compilazione o il collaudo locale non aggiornano automaticamente il deployment Docker esistente.
 
 ## Profili e ambito delle ore
 
-Ogni account attivo è Operatore; Gestore deriva dal ruolo dell’identità. In **Utenti → Profili** il gestore assegna separatamente Commerciali e Finance, anche agli account Keycloak. Commerciali modifica fornitori, contratti e PDF; Finance li consulta e legge valori, tariffe e costi aggregati per commessa, senza ore personali di terzi o filtro Utente. Le tariffe si modificano con Gestore + Finance. Il solo ruolo Gestore non concede questi accessi.
+Ogni account attivo è Operatore; Gestore deriva dal ruolo dell’identità. In **Utenti → Profili** un amministratore propone Commerciali e Finance, anche per gli account Keycloak. Con almeno due amministratori attivi serve l’approvazione di un amministratore diverso dal richiedente. Quando ne esiste uno solo, la modalità iniziale applica la richiesta subito e registra l’eccezione nello storico. Commerciali modifica fornitori, contratti e PDF; Finance li consulta e legge valori, tariffe e costi aggregati per commessa, senza ore personali di terzi o filtro Utente. Le tariffe si modificano con Gestore + Finance. Il solo ruolo Gestore non concede questi accessi.
 
 Per le ore il gestore vede sé stesso e i membri dei propri gruppi organizzativi e sottogruppi. Senza gruppi, o se i gruppi aziendali non sono disponibili, vede soltanto sé stesso. Il selettore persona del Registro ore consente una consultazione di squadra in sola lettura, giorno e settimana. Report del lavoro, riepiloghi, rettifiche, Storico e alert applicano la stessa squadra; revoche e profili vengono verificati a ogni richiesta.
 
@@ -28,7 +28,7 @@ Ogni conferma contiene al massimo 100 righe. Il server salva tutto oppure nulla,
 
 Dalla propria registrazione si apre **Richiedi rettifica**. Si possono proporre commessa, giornata, durata e nota differenti, oppure chiedere la cancellazione. La motivazione è obbligatoria. La registrazione originale rimane invariata finché la richiesta non viene approvata.
 
-La coda mostra all'operatore le proprie richieste e al gestore quelle della propria squadra. Un gestore può approvare o respingere una richiesta altrui della squadra; non può decidere sulla propria. L'autore può annullare una richiesta pendente. Il rifiuto richiede una motivazione.
+La coda mostra all'operatore le proprie richieste e al gestore quelle della propria squadra. Un amministratore o un gestore con delega attiva di approvazione può decidere una richiesta altrui della squadra; non può decidere sulla propria. L'autore può annullare una richiesta pendente. Il rifiuto richiede una motivazione.
 
 Esiste una sola richiesta pendente per registrazione. Prima dell'approvazione il server ricontrolla revisione, contenuto originale, permessi e limiti giornalieri. Se la registrazione è stata nel frattempo modificata o eliminata, la richiesta passa **In conflitto** e conserva originale e proposta. Una decisione ripetuta non modifica nuovamente le ore.
 
@@ -42,7 +42,7 @@ Il riepilogo commessa mostra il tempo effettivo per attività, personale per l'o
 
 ## Orari, assenze e festività
 
-Il gestore configura i minuti attesi per ciascun giorno della settimana e una data di inizio. Un nuovo orario conserva i precedenti periodi. Le eccezioni personali possono indicare ferie, permessi o turni particolari; le festività aziendali valgono per tutti.
+L’amministratore o il gestore delegato nell’ambito della persona configura i minuti attesi per ciascun giorno della settimana e una data di inizio. Un nuovo orario conserva i precedenti periodi. Le eccezioni personali possono indicare ferie, permessi o turni particolari; le festività aziendali valgono per tutti.
 
 Per una giornata si applica, nell'ordine: **eccezione personale → festività aziendale → ultimo orario valido → valore predefinito**. Il valore predefinito resta otto ore dal lunedì al venerdì, zero nel fine settimana. Un'eccezione con minuti positivi può rappresentare un turno durante una festività.
 
@@ -76,4 +76,34 @@ Il gestore apre **Chiusura / archivio**, controlla attività e blocchi ancora ap
 
 La riapertura è esplicita e motivata. Il motivo e la revisione proteggono il salvataggio e ne registrano l'autore nello Storico. Lo stato descrittivo Completata o Annullata rimane distinto dalla chiusura delle registrazioni.
 
-La cancellazione definitiva preesistente rimane un comando separato e distruttivo: non equivale all'archivio e continua a rimuovere i dati collegati. Usare la chiusura e l'archivio per conservare lo storico del lavoro.
+La cancellazione definitiva è un comando separato e distruttivo, riservato agli amministratori. Rimuove i dati collegati soltanto se non esistono ore consolidate, rettifiche economiche, budget o riferimenti a revisioni contrattuali pubblicate. In questi casi restituisce un conflitto: usare chiusura e archivio per conservare lo storico.
+
+
+## Venti migliorie della verifica, schema 14
+
+La numerazione seguente riguarda la verifica dei flussi, distinta dal piano originario delle venti funzionalità.
+
+| N. | Miglioria | Percorso utente e comportamento |
+| --- | --- | --- |
+| 1 | Amministrazione e responsabilità di area | Gruppi e ruoli distingue amministratori e deleghe limitate a gruppi, discendenti, persone e commesse. I gestori esistenti mantengono l’amministrazione nella migrazione; i nuovi non la ricevono automaticamente. L’amministrazione non amplia la visibilità delle ore. |
+| 2 | Profili sensibili approvati | Utenti → Profili prepara una richiesta Sales/Finance; un secondo amministratore decide. La modalità iniziale con un solo amministratore è esplicita e tracciata. |
+| 3 | Impatto dei gruppi | Prima di spostare un gruppo o cambiare un membro, l’anteprima mostra l’effetto sulle visibilità. La conferma ricontrolla lo stato corrente. |
+| 4 | Coda rettifiche | Filtri per stato, persona e date, con caricamento progressivo; nessun blocco a mille richieste complessive. |
+| 5 | Testi coerenti | Alert, guide, API e versioni descrivono orari personali, squadra e profili effettivi. |
+| 6 | Bozze personali | Nei moduli ore, inserimento multiplo e creazione guidata si salva e riprende una bozza sul dispositivo. Scade dopo sette giorni; logout/cambio account la eliminano. Il recupero richiede una scelta esplicita. |
+| 7 | Anteprima dei totali | Inserimento multiplo mostra ore esistenti, aggiunte e totale finale per giornata; segnala la riga e i limiti prima della conferma. Il server ricontrolla tutto. |
+| 8 | Copia selettiva | Registro ore → Copia giorni o righe permette di scegliere un intervallo fino a sette giorni, destinazione e righe; ogni conferma contiene fino a cento righe. |
+| 9 | Deleghe temporanee | Gruppi e ruoli assegna una delega per ambito e date, inclusa l’approvazione delle rettifiche; scadenza e revoca valgono alle richieste successive. |
+| 10 | Stime e capacità | Bacheca aggiunge stime alle attività; La mia giornata confronta lavoro pianificato, ore effettive e capacità personale considerando orari e assenze. |
+| 11 | Assenze richieste | Orari di lavoro permette una richiesta su intervallo. Un responsabile autorizzato diverso dall’autore approva; le giornate diventano eccezioni soltanto allora. |
+| 12 | Revisione degli orari | Gli aggiornamenti richiedono la revisione letta: una modifica concorrente restituisce conflitto e conserva il prima/dopo nello storico. |
+| 13 | Modelli versionati | Il gestore può modificare, archiviare e ripristinare una versione dei propri modelli; il riuso passa sempre dal riepilogo e dalla verifica dei riferimenti. |
+| 14 | Revisioni contrattuali | Commerciali crea una revisione e la pubblica; la versione pubblicata rimane immutabile. La commessa può riferirsi esplicitamente a una versione pubblicata del proprio contratto. |
+| 15 | Periodi economici | Finance verifica l’anteprima e approva un periodo globale. La fotografia dei costi resta immutabile e le ore del periodo sono bloccate. Le rettifiche economiche successive sono movimenti motivati separati. |
+| 16 | Budget e previsioni | Analisi mostra per commessa budget, consuntivo consolidato più periodi aperti, lavoro residuo valorizzato e previsione finale. Le analisi precedenti sono indicate come stima live. |
+| 17 | Proposte ore | Da Calendar e da un riferimento Ticket si prepara una bozza da rivedere. Solo la conferma personale salva le ore, con idempotenza e controlli di accesso aggiornati. |
+| 18 | Coda email | Alert mostra stato e revisione della coda. Gli invii ancora in attesa possono essere annullati; gli esiti incerti richiedono revisione esplicita e non vengono reinviati automaticamente. |
+| 19 | Le mie dotazioni | Inventario permette un collegamento verificato fra persona e account Punto. I miei asset comprende assegnazioni dirette all’account e alla persona collegata; le identità condivise non estendono automaticamente il risultato. |
+| 20 | Checklist di chiusura | Chiusura/archivio include attività, blocchi, rettifiche e riferimenti espliciti a ticket/dotazioni. Gli elementi aperti richiedono una conferma motivata. I riferimenti ticket/asset vanno mantenuti aggiornati: non sono una riconciliazione automatica dei servizi esterni. |
+
+Google OAuth e SMTP reali richiedono la configurazione dei rispettivi provider. Le prove locali usano archivi isolati e servizi simulati; il rilascio dei file non aggiorna da solo i processi in produzione.

@@ -12,16 +12,16 @@ Un rilascio deve dichiarare quali elementi modifica. L'immagine applicativa comp
 
 | Elemento | Versione/configurazione corrente | Relazione di compatibilità |
 | --- | --- | --- |
-| App C | Compilazione C11 con warning come errori | Schema applicativo massimo 10; API e frontend distribuiti insieme |
+| App C | Compilazione C11 con warning come errori | Schema applicativo massimo 14; API e frontend distribuiti insieme |
 | Backend MySQL | `mysql:8.4` | Tre membri con configurazione Group Replication coerente |
-| Schema applicativo SQL | 10 | Stessa versione logica per MySQL e SQLite, con DDL e migrazioni specifici |
+| Schema applicativo SQL | 14 | Stessa versione logica per MySQL e SQLite, con DDL e migrazioni specifici |
 | Proxy SQL | `haproxy:3.2-alpine` e monitor Python | Controlla modalità multi-primary, quorum e TLS dei tre nodi |
 | MongoDB | `mongo:8.0`, GridFS `contract_pdfs` | Dati PDF collegati al manifesto SQL, senza transazione distribuita |
 | NPM | Base `jc21/nginx-proxy-manager:2.16.0` con patch locali | Entry point amministrativo e generazione configurazioni sono verificati dalla build |
 | Squid | Pacchetto Debian Trixie nell'immagine del progetto | ACL, IP e allowlist devono coincidere con le reti Compose |
-| Addon email | Binario C separato; ledger SQLite `deliveries` | Contratto HTTPS `/v1`, stati outbox introdotti dallo schema 7, conservati nello schema 10, e namespace stabile |
-| Addon Calendar | Binario C separato; SQLite `user_version=1` | Contratto HTTPS `/v1`, chiave AES e identificativi utenti persistenti |
-| Addon inventory | Binario C separato; archivio SQLite versione 5 | Contratto HTTPS `/v1`, schede e revisioni persistenti |
+| Addon email | Binario C separato; ledger SQLite `deliveries` | Contratto HTTPS `/v1`, stati outbox introdotti dallo schema 7, conservati nello schema 14, e namespace stabile |
+| Addon Calendar | Binario C separato; SQLite `user_version=2` | Contratto HTTPS `/v1`, chiave AES e identificativi utenti persistenti |
+| Addon inventory | Binario C separato; archivio SQLite versione 6 | Contratto HTTPS `/v1`, schede e revisioni persistenti |
 | Reti | Otto bridge, IP e interfacce espliciti | Docker Engine ≥28, Compose ≥2.36.0 e SAN coerenti |
 | TLS privato | CA locale e leaf per servizio | Nomi/IP/CA verificati; file attesi dai mount |
 

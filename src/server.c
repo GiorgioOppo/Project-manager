@@ -20,6 +20,7 @@
 #include "workspace.h"
 #include "accounts.h"
 #include "access_control.h"
+#include "improvements.h"
 #include "storage.h"
 #include "procurement.h"
 #include "documents.h"
@@ -859,21 +860,22 @@ static void session_response(int fd, const Session *session) {
     char body[sizeof(email) + sizeof(name) + sizeof(origin) + 1280];
     snprintf(body, sizeof(body),
         "{\"authenticated\":true,\"user_id\":%lld,\"email\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
-        "\"permissions\":{\"manage_jobs\":%s,\"manage_users\":%s,\"edit_time_entries\":%s,"
+        "\"permissions\":{\"manage_jobs\":%s,\"manage_users\":%s,\"edit_users\":%s,\"edit_time_entries\":%s,"
         "\"manage_assignments\":%s,\"view_audit\":%s,"
         "\"manage_suppliers\":%s,\"manage_contracts\":%s,"
         "\"manage_groups\":%s,\"manage_job_roles\":%s,"
         "\"view_contracts\":%s,\"view_suppliers\":%s,\"view_costs\":%s,"
         "\"view_labor_rates\":%s,\"manage_labor_rates\":%s,"
-        "\"view_team_hours\":%s,\"manage_access_groups\":%s%s},"
+        "\"view_team_hours\":%s,\"manage_access_groups\":%s,\"manage_space\":%s,\"administrator\":%s%s},"
         "\"tickets\":{\"configured\":%s,\"origin\":%s%s%s}}",
         (long long)account.id, email, name, account.role, allowed,
+        policy.admin && !oidc_users_managed() ? "true" : "false",
         manager && !oidc_users_managed() ? "true" : "false",
         allowed, allowed, allowed, policy.sales ? "true" : "false", policy.sales ? "true" : "false",
         allowed, allowed,
         policy.sales || policy.finance ? "true" : "false", policy.sales || policy.finance ? "true" : "false",
         policy.finance ? "true" : "false", policy.finance ? "true" : "false",
-        manager && policy.finance ? "true" : "false", allowed, allowed,
+        manager && policy.finance ? "true" : "false", allowed, policy.admin ? "true" : "false", policy.admin ? "true" : "false", policy.admin ? "true" : "false",
         organization_groups_managed() ? ",\"edit_groups\":false" : "",
         tickets_configured ? "true" : "false", tickets_configured ? "\"" : "",
         tickets_configured ? origin : "null", tickets_configured ? "\"" : "");
@@ -1354,8 +1356,10 @@ static bool inventory_route(int fd, Request *request, const char *query) {
         else json(fd, 401, "{\"ok\":false,\"error\":\"Accedi per continuare.\"}", NULL);
         return true;
     }
-    if ((user_directory && strcmp(account.role,"manager")) ||
-        (post && (strcmp(account.role, "manager") || !same_origin(request)))) {
+    AccessPolicy inventory_policy;
+    if (accounts_access_policy(account.id, &inventory_policy) != 1) { error_response(fd,503); return true; }
+    if ((user_directory && !inventory_policy.admin) ||
+        (post && (!inventory_policy.admin || !same_origin(request)))) {
         error_response(fd, 403); return true;
     }
     if (post) {
@@ -1384,7 +1388,7 @@ static bool inventory_route(int fd, Request *request, const char *query) {
 
 static bool workspace_route(int fd, Request *request, const char *query) {
     const char *target = request->target;
-    bool workflows = !strncmp(target,"/api/time-corrections",21) || !strcmp(target,"/api/my-work") ||
+    bool workflows = !strncmp(target,"/api/improvements/",18) || !strncmp(target,"/api/time-corrections",21) || !strcmp(target,"/api/my-work") ||
         !strcmp(target,"/api/job-templates") || !strncmp(target,"/api/work-schedules",19) ||
         !strncmp(target,"/api/work-exceptions",20) || !strncmp(target,"/api/business-holidays",22) ||
         !strncmp(target,"/api/work-notifications",23) || !strcmp(target,"/api/access-groups") ||
@@ -1475,6 +1479,7 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         if (data) { erase(data, size); free(data); }
         return true;
     }
+    if (!handled) handled = improvements_handle(request->method, target, query, request->body, account.id, &response);
     if (!handled) handled = organization_handle(request->method, target, query, request->body,
                                                 account.id, account.role, &response);
     if (!handled) handled = procurement_handle(request->method, target, query, request->body,
@@ -1651,10 +1656,17 @@ static void route(int fd, Request *request) {
         {"/locales/fr.json", "locales/fr.json", "application/json; charset=utf-8"},
         {"/locales/de.json", "locales/de.json", "application/json; charset=utf-8"},
         {"/app.js", "app.js", "text/javascript; charset=utf-8"},
+        {"/improvements-governance.js", "improvements-governance.js", "text/javascript; charset=utf-8"},
+        {"/improvements-core.js", "improvements-core.js", "text/javascript; charset=utf-8"},
+        {"/improvements-operations.js", "improvements-operations.js", "text/javascript; charset=utf-8"},
+        {"/improvements-integrations.js", "improvements-integrations.js", "text/javascript; charset=utf-8"},
         {"/workspace.css", "workspace.css", "text/css; charset=utf-8"},
         {"/reports.css", "reports.css", "text/css; charset=utf-8"},
         {"/work-board.css", "work-board.css", "text/css; charset=utf-8"},
         {"/time-workflows.css", "time-workflows.css", "text/css; charset=utf-8"},
+        {"/improvements-governance.css", "improvements-governance.css", "text/css; charset=utf-8"},
+        {"/improvements-operations.css", "improvements-operations.css", "text/css; charset=utf-8"},
+        {"/improvements-integrations.css", "improvements-integrations.css", "text/css; charset=utf-8"},
         {"/inventory.css", "inventory.css", "text/css; charset=utf-8"},
         {"/qrcodegen.js", "qrcodegen.js", "text/javascript; charset=utf-8"},
         {"/inventory-qr.js", "inventory-qr.js", "text/javascript; charset=utf-8"},
@@ -1795,6 +1807,10 @@ int main(void) {
     if (!storage_open(database_path)) {
         fprintf(stderr, "Impossibile aggiornare il database. I dati restano conservati; controlla la versione e i permessi.\n");
         accounts_close(); workspace_close(); return 1;
+    }
+    if (!improvements_open(database_path) || atexit(improvements_close) != 0) {
+        fprintf(stderr, "Impossibile inizializzare i flussi operativi.\n");
+        improvements_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     if (!organization_open(database_path)) {
         fprintf(stderr, "Impossibile configurare gruppi, ruoli e abilitazioni. Controlla database e permessi.\n");

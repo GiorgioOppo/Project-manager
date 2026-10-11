@@ -2,11 +2,11 @@
 
 [Italiano](../../tehnical/api-app.md) | **English**
 
-Contract verified against the code on **11 October 2026**, data schema 13. APIs use the `/api` prefix on the app's public origin, for example `https://progetti.tuaazienda.it`. The names and methods below are those implemented: updates use `POST`, not `PUT` or `PATCH`.
+Contract verified against the code on **11 October 2026**, data schema 14. APIs use the `/api` prefix on the app's public origin, for example `https://progetti.tuaazienda.it`. The names and methods below are those implemented: updates use `POST`, not `PUT` or `PATCH`.
 
 Sources: [HTTP router](../../../src/server.c), [users](../../../src/accounts.c), [projects, time, reports, rates](../../../src/workspace.c), [organization](../../../src/organization.c), [tasks and blockers](../../../src/work_board.c), [suppliers and contracts](../../../src/procurement.c), [alerts](../../../src/alerts.c), [audit](../../../src/storage.c), [calendar bridge](../../../src/calendar_client.c). Persistent types are in the [data model](modello-dati.md); internal calls are in the [addon API](api-addon.md).
 
-## Current schema 13 policy
+## Current schema 14 policy
 
 This section takes precedence over access descriptions in the pre-existing tables below. The server resolves roles, profiles and team scope from the database on every request, including open sessions: knowing an ID or retaining a URL does not grant access.
 
@@ -18,16 +18,16 @@ This section takes precedence over access descriptions in the pre-existing table
 
 | Method and path | Current contract |
 | --- | --- |
-| `GET /api/access-groups` | Manager; catalog of the four predefined profiles. |
-| `GET /api/users/{id}/access-groups` | Manager; `user_id`, `active`, `role`, explicit `selected` and derived `effective`. |
-| `POST /api/users/{id}/access-groups` | Manager; sole form field `groups`, a JSON array of `sales` and/or `finance`; `[]` revokes both. Atomic replacement with audit; also works for Keycloak-managed identities. |
+| `GET /api/access-groups` | Space administrator; catalog of the four predefined profiles. |
+| `GET /api/users/{id}/access-groups` | Space administrator; `user_id`, `active`, `role`, explicit `selected`, derived `effective` and `revision`. |
+| `POST /api/users/{id}/access-groups` | Space administrator; `groups` as a JSON array of `sales` and/or `finance`, plus current `revision`. Returns `202` pending independent approval when two administrators exist, or audited `200` in single-administrator bootstrap. `[]` requests revocation. |
 | `GET /api/time-team` | Active account, no query; `{scope,users:[{id,name,email,active}]}` contains only currently visible people, including deactivated historical accounts within the team. |
 | `GET /api/time-entries?date=YYYY-MM-DD&user_id=N` | Optional `user_id`, defaulting to self; a colleague must be in the current team. Other people’s rows are read-only. |
 | `GET /api/time-entries/week?date=YYYY-MM-DD&user_id=N` | Monday–Sunday week containing the date; the same personal/team scope. |
 
 `GET /api/session` now includes `user_id` and separate UI flags: `view_contracts`, `view_suppliers`, `view_costs`, `view_labor_rates`, `manage_labor_rates`, `view_team_hours`, `manage_access_groups`, alongside administrative flags. `manage_contracts` and `manage_suppliers` depend on Sales; cost flags depend on Finance. Flags describe the UI and do not replace live module checks.
 
-Policy sources: [access control](../../../src/access_control.c), [corrections](../../../src/time_corrections.inc), [weekly logs](../../../src/time_week.inc). New operational flows are described in the [schema 13 guide](../prod/flussi-operativi.md).
+Policy sources: [access control](../../../src/access_control.c), [corrections](../../../src/time_corrections.inc), [weekly logs](../../../src/time_week.inc). New operational flows are described in the [schema 14 guide](../prod/flussi-operativi.md).
 
 ## HTTP conventions
 
@@ -96,28 +96,28 @@ Authenticated response:
 }
 ```
 
-The example above shows the original flags; the current contract includes `user_id` and the new schema 13 policy flags. Permissions are descriptive for the UI; the backend still checks every operation. The login counter is per process, not per individual account or IP.
+The example above shows the original flags; the current contract includes `user_id` and the new schema 14 policy flags. Permissions are descriptive for the UI; the backend still checks every operation. The login counter is per process, not per individual account or IP.
 
 ## Users
 
-All endpoints in this section require `manager`. No queries are allowed.
+User creation requires a space administrator. Listing and editing require either administration or an active user-management delegation covering the target. No queries are allowed.
 
 | Method and path | Body | Outcome |
 | --- | --- | --- |
-| `GET /api/users` | — | `200 {"users":[...]}` with `id`, `name`, `email`, `role`, `active`. |
+| `GET /api/users` | — | `200 {"users":[...]}` with `id`, `name`, `email`, `role`, `active`, `admin`, `can_manage`, `profile_revision` and `access_groups`. |
 | `POST /api/users` | `name`, `email`, `password`, `role` | `201 {"ok":true,"id":...}`. Created active. |
 | `POST /api/users/{id}` | `name`, `role`, `active` | `200 {"ok":true}`. Does not accept email or password changes. |
 
-UTF-8 name of 1–120 characters; validated/canonicalized and unique email; password of 8–1024 UTF-8 bytes without tab/CR/LF; `manager` or `worker` role; maximum 200 users. `409` for duplicate email, limit reached or an attempt to disable/demote the last active manager. No password reset, user deletion or public registration endpoints are exposed.
+UTF-8 name of 1–120 characters; validated/canonicalized and unique email; password of 8–1024 UTF-8 bytes without tab/CR/LF; `manager` or `worker` role; maximum 200 users. `409` for duplicate email, limit reached or an attempt to disable/demote the last active space administrator. No password reset, user deletion or public registration endpoints are exposed.
 
 ## Projects and time entries
 
 | Method and path | Access | Fields/query | Outcome |
 | --- | --- | --- | --- |
-| `GET /api/jobs` | Manager: all; operator: common and authorized projects. | No query. | `200 {"jobs":[...]}`. |
-| `POST /api/jobs` | Manager. | `code`, `name`, `client`, `description`, `status`, optional `contract_id`, `is_common`. | `201 {"ok":true,"id":...}`. |
-| `POST /api/jobs/{id}` | Manager. | Same fields. Code, name and status must be sent; omitted `contract_id`/`is_common` retain the previous value. | `200 {"ok":true,"id":...}`. |
-| `DELETE /api/jobs/{id}` | Manager. | Empty body. | `200 {"ok":true}`; also deletes the project's tasks, blockers, time entries, assignments and grants. |
+| `GET /api/jobs` | Space administrator: all; other accounts: common and authorized projects. | No query. | `200 {"jobs":[...]}`, including per-resource `can_manage`. |
+| `POST /api/jobs` | Space administrator; area managers use the scoped wizard. | `code`, `name`, `client`, `description`, `status`, optional `contract_id`, `is_common`. | `201 {"ok":true,"id":...}`. |
+| `POST /api/jobs/{id}` | Administrator or job-management delegation covering this project. | Same fields. Code, name and status must be sent; omitted `contract_id`/`is_common` retain the previous value. | `200 {"ok":true,"id":...}`. |
+| `DELETE /api/jobs/{id}` | Space administrator. | Empty body. | `200 {"ok":true}`; deletes linked data, or `409` when consolidated hours, economic adjustments, budget or published revision references require retention. Use archive for retention. |
 | `GET /api/time-entries?date=YYYY-MM-DD` | Authenticated user. | Mandatory `date`; no `user_id`. | `200 {"entries":[...],"total_minutes":...}` for **their own hours only**, even for managers. |
 | `POST /api/time-entries` | Manager or authorized operator. | `job_id`, `date`, `minutes`, optional `note`. | `201 {"ok":true,"id":...}`; owner derived from the session. |
 | `POST /api/time-entries/{id}` | Manager, own entries only. | `job_id`, `date`, `minutes`, optional `note`. | `200 {"ok":true,"id":...}`. |
@@ -162,7 +162,7 @@ An outdated `revision` produces `409` without overwriting data; reread the board
 
 ## Direct assignments, groups and local roles
 
-All endpoints below require `manager`; no queries are allowed. An empty date denotes an open endpoint.
+Mutations require a space administrator or a current delegation covering the affected group/project and, for new direct assignments, the target person. Global local-role editing requires administration. No queries are allowed. An empty date denotes an open endpoint.
 
 | Method and path | Body | Response |
 | --- | --- | --- |
@@ -189,7 +189,7 @@ Lists expose: group = `id`, `name`, `parent_id` (number or `null`), `members_cou
 
 ## Suppliers, contracts and PDFs
 
-All endpoints require `manager`.
+Reading requires Sales or Finance; creation, updates and PDF upload require Sales. Manager and administrator status do not automatically grant either profile.
 
 | Method and path | Body/query | Outcome |
 | --- | --- | --- |
@@ -342,3 +342,10 @@ The main C server handles connections sequentially and runs the scheduler in the
 Business mutations and audit are transactional, with MySQL certification checking through `cluster_write_guard`. Tasks and blockers require `revision` on update/delete, checked in the same transaction; stale editors receive `409`. There are no ETags/versions for project updates: two serialized updates may both apply, and the last may replace fields from the previous one. Public webhooks, generated OpenAPI, GraphQL, personal API tokens, invoice endpoints and automatic event→project/time linking are not provided.
 
 Contract and regression tests: [suite](../../../tests), particularly `test_server.py`, `test_roles.py`, `test_workspace.py`, `test_groups.py`, `test_assignments.py`, `test_procurement.py`, `test_alerts.py`, `test_reports.py`, `test_labor_rates.py`, [task/blocker tests](../../../tests/test_work_board.py) and [calendar bridge tests](../../../tests/test_calendar_client.py). For running the suite, see [development and testing](sviluppo-test.md).
+
+
+## Schema 14 API changes
+
+The current contract adds `/api/improvements/governance/` for explicit administrators, dated scoped delegations, separate Sales/Finance approvals and group-impact previews; `/operations/` for capacity, estimates, absence approval, versioned templates and closure references; and `/integrations/` for published contract revisions, immutable economic periods, budgets, personal time proposals, email outbox decisions and verified inventory-person mappings. See the [current Italian API tables](../../tehnical/api-app.md#api-aggiuntive-schema-14) for field-level contracts.
+
+A Manager role does not imply administration. Existing managers are migrated once; new managers need an explicit administrator appointment or organizational delegation. With two active administrators profile changes remain pending until a different administrator approves; single-administrator bootstrap is explicitly audited. Administration does not expand time visibility. Schedule updates require their revision; closing with open checklist items requires `checklist_confirmed=1` and a reason. Economic approval requires a fresh `preview_hash`, freezes the global date interval and retains immutable snapshots plus separate adjustments. Session flags include `administrator`, `manage_space` and `edit_users`; job and user rows expose per-resource `can_manage`.

@@ -31,7 +31,7 @@ class JobLifecycleIntegrationTests(unittest.TestCase):
         if revision is None:
             revision = self.closure(job_id)["lifecycle_revision"]
         status, data, _ = self.api("POST", "/api/jobs/%d/lifecycle" % job_id,
-                                   {"action": action, "revision": revision, "reason": reason},
+                                   {"action": action, "revision": revision, "reason": reason, "checklist_confirmed": "1"},
                                    cookie=self.manager_cookie)
         self.assertEqual(status, 200, data)
         self.assertIs(data["ok"], True)
@@ -150,7 +150,7 @@ class JobLifecycleIntegrationTests(unittest.TestCase):
         self.assertEqual((state["lifecycle_revision"], state["total_minutes"]), (1, 42))
         self.assertFalse(state["time_closed"])
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 13)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 14)
             self.assertEqual(db.execute("SELECT id,revision,task_id FROM time_entries").fetchone(), (entry_id, 1, None))
 
 

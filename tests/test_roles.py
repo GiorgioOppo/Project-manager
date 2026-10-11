@@ -132,6 +132,12 @@ class RoleIntegrationTests(unittest.TestCase):
         return self.api("POST", "/api/users/%d" % user_id, {
             "name": name, "role": role, "active": active}, cookie=self.manager_cookie)
 
+    def make_space_admin(self, user_id):
+        status, data, _ = self.api("POST", "/api/improvements/governance/admins", {
+            "user_id": user_id, "admin": "1", "reason": "Explicit test appointment"},
+            cookie=self.manager_cookie)
+        self.assertEqual(status, 200, data)
+
     def session(self, cookie):
         status, data, _ = self.api("GET", "/api/session", cookie=cookie)
         self.assertEqual(status, 200, data)
@@ -174,6 +180,7 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertTrue(session.get("name"))
         self.assertEqual(session.get("role"), "manager")
         self.assertEqual(session.get("permissions"), {
+            "administrator": True, "manage_space": True, "edit_users": True,
             "manage_jobs": True, "manage_users": True, "edit_time_entries": True,
             "manage_assignments": True, "view_audit": True,
             "manage_suppliers": False, "manage_contracts": False,
@@ -200,6 +207,7 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertEqual(worker["name"], 'Mario "Qualità" ✓')
         self.assertEqual(worker["role"], "worker")
         self.assertEqual(worker.get("permissions"), {
+            "administrator": False, "manage_space": False, "edit_users": False,
             "manage_jobs": False, "manage_users": False, "edit_time_entries": False,
             "manage_assignments": False, "view_audit": False,
             "manage_suppliers": False, "manage_contracts": False,
@@ -283,6 +291,9 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertEqual(self.session(worker)["role"], "manager")
         self.assertEqual(self.session(worker)["name"], "Nuovo gestore")
+        self.assertFalse(self.session(worker)["permissions"]["manage_space"])
+        self.make_space_admin(worker_id)
+        self.assertTrue(self.session(worker)["permissions"]["manage_space"])
         status, data, _ = self.api("POST", "/api/jobs", {
             "code": "PROMOTED", "name": "Da utente promosso", "status": "planned"}, cookie=worker)
         self.assertEqual(status, 201, data)
@@ -330,7 +341,7 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertIs(self.session(new_cookie).get("authenticated"), True)
         self.assertEqual(self.session(new_cookie)["role"], "worker")
 
-    def test_last_active_manager_cannot_be_demoted_or_disabled(self):
+    def test_last_active_space_admin_cannot_be_demoted_or_disabled(self):
         manager = self.users()[0]
         for role, active in (("worker", "1"), ("manager", "0"), ("worker", "0")):
             with self.subTest(role=role, active=active):
@@ -345,6 +356,10 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 409, data)
         status, data, _ = self.edit_user(second, role="manager", active="1")
         self.assertEqual(status, 200, data)
+        # A second manager is not implicitly a space administrator.
+        status, data, _ = self.edit_user(manager["id"], name=manager["name"], role="worker")
+        self.assertEqual(status, 409, data)
+        self.make_space_admin(second)
         status, data, _ = self.edit_user(manager["id"], name=manager["name"], role="worker")
         self.assertEqual(status, 200, data)
         self.assertEqual(self.session(self.manager_cookie)["role"], "worker")
@@ -423,7 +438,8 @@ class RoleIntegrationTests(unittest.TestCase):
     def test_user_responses_do_not_expose_passwords_hashes_or_salts(self):
         self.create_user()
         for user in self.users():
-            self.assertEqual(set(user), {"id", "name", "email", "role", "active", "access_groups"})
+            self.assertEqual(set(user), {"id", "name", "email", "role", "active", "access_groups",
+                                         "admin", "can_manage", "profile_revision"})
         worker = self.login(WORKER_EMAIL, WORKER_PASSWORD)
         for cookie in (worker, self.manager_cookie):
             session = self.session(cookie)

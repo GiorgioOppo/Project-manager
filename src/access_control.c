@@ -1,7 +1,12 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include "access_control.h"
 #include "organization.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <time.h>
 
 #define ACCESS_GROUP_LIMIT 200U
 #define ACCESS_GROUP_DEPTH 16U
@@ -28,6 +33,13 @@ int access_policy_resolve(Db *db, DbInt actor_id, const char *role,
     resolved.manager = strcmp(stored_role, "manager") == 0;
     db_finalize(statement); statement = NULL;
     if (!active) return 0;
+    if (db_prepare_v2(db, "SELECT 1 FROM access_space_admins WHERE user_id=?",
+                     -1, &statement, NULL) != DB_OK ||
+        db_bind_int64(statement, 1, actor_id) != DB_OK) goto failure;
+    step = db_step(statement);
+    if (step != DB_ROW && step != DB_DONE) goto failure;
+    resolved.admin = step == DB_ROW && resolved.manager;
+    db_finalize(statement); statement = NULL;
     if (db_prepare_v2(db, "SELECT group_code FROM access_group_members WHERE user_id=?",
                      -1, &statement, NULL) != DB_OK ||
         db_bind_int64(statement, 1, actor_id) != DB_OK) goto failure;
@@ -51,6 +63,7 @@ typedef struct {
     DbInt parent;
     bool direct;
     bool visible;
+    bool active;
 } AccessGroup;
 
 static size_t find_group(const AccessGroup *groups, size_t count, DbInt id) {
@@ -74,7 +87,9 @@ bool access_policy_visible_users(Db *db, DbInt actor_id, bool manager,
     AccessGroup groups[ACCESS_GROUP_LIMIT] = {{0}};
     size_t group_count = 0;
     DbStmt *statement = NULL;
-    if (db_prepare_v2(db, "SELECT id,parent_id FROM organization_groups ORDER BY id LIMIT 201",
+    if (db_prepare_v2(db, organization_groups_managed() ?
+                     "SELECT g.id,g.parent_id,COALESCE(o.active,0) FROM organization_groups g LEFT JOIN oidc_groups o ON o.group_id=g.id ORDER BY g.id LIMIT 201" :
+                     "SELECT id,parent_id,1 FROM organization_groups ORDER BY id LIMIT 201",
                      -1, &statement, NULL) != DB_OK) goto failure;
     int step;
     while ((step = db_step(statement)) == DB_ROW) {
@@ -82,6 +97,7 @@ bool access_policy_visible_users(Db *db, DbInt actor_id, bool manager,
         AccessGroup *group = &groups[group_count++];
         group->id = db_column_int64(statement, 0);
         group->parent = db_column_type(statement, 1) == DB_NULL ? 0 : db_column_int64(statement, 1);
+        group->active = db_column_int(statement,2)==1;
         if (group->id <= 0 || group->parent < 0) goto failure;
     }
     if (step != DB_DONE) goto failure;
@@ -93,7 +109,7 @@ bool access_policy_visible_users(Db *db, DbInt actor_id, bool manager,
     while ((step = db_step(statement)) == DB_ROW) {
         size_t at = find_group(groups, group_count, db_column_int64(statement, 0));
         if (at == group_count || ++memberships > ACCESS_GROUP_LIMIT) goto failure;
-        groups[at].direct = true;
+        groups[at].direct = groups[at].active;
     }
     if (step != DB_DONE) goto failure;
     db_finalize(statement); statement = NULL;
@@ -120,7 +136,7 @@ bool access_policy_visible_users(Db *db, DbInt actor_id, bool manager,
         DbInt user = db_column_int64(statement, 0);
         size_t at = find_group(groups, group_count, db_column_int64(statement, 1));
         if (user <= 0 || at == group_count) goto failure;
-        if (!groups[at].visible) continue;
+        if (!groups[at].visible || !groups[at].active) continue;
         size_t index = 0;
         while (index < *count && ids[index] != user) index++;
         if (index != *count) continue;
@@ -149,4 +165,91 @@ int access_policy_can_view_time(Db *db, DbInt actor_id, DbInt target_id,
     for (size_t index = 0; index < count; index++)
         if (ids[index] == target_id) return 1;
     return 0;
+}
+
+static int delegated_group(Db *db, DbInt actor, DbInt target, const char *capability) {
+    if (!organization_groups_available()) return 0;
+    char today[11], sql[700];
+    time_t now = time(NULL); struct tm local;
+    if (now == (time_t)-1 || !localtime_r(&now, &local) ||
+        strftime(today, sizeof(today), "%Y-%m-%d", &local) != 10) return -1;
+    int n = snprintf(sql, sizeof(sql), "SELECT d.group_id FROM access_area_delegations d "
+        "WHERE d.manager_id=? AND d.active=1 AND d.%s=1 AND d.starts_on<=? "
+        "AND (d.ends_on='' OR d.ends_on>=?) %s ORDER BY d.id LIMIT 201", capability,
+        organization_groups_managed()?"AND EXISTS(SELECT 1 FROM oidc_groups o WHERE o.group_id=d.group_id AND o.active=1)":"");
+    if (n < 0 || (size_t)n >= sizeof(sql)) return -1;
+    DbStmt *statement = NULL;
+    DbInt delegated[200]; size_t count = 0;
+    if (db_prepare_v2(db, sql, -1, &statement, NULL) != DB_OK ||
+        db_bind_int64(statement, 1, actor) != DB_OK ||
+        db_bind_text(statement, 2, today, -1, DB_TRANSIENT) != DB_OK ||
+        db_bind_text(statement, 3, today, -1, DB_TRANSIENT) != DB_OK) goto failure;
+    int step;
+    while ((step = db_step(statement)) == DB_ROW) {
+        if (count == 200) goto failure;
+        delegated[count++] = db_column_int64(statement, 0);
+    }
+    if (step != DB_DONE) goto failure;
+    db_finalize(statement); statement = NULL;
+    if (!target) return count ? 1 : 0;
+    DbInt seen[16]; size_t depth = 0;
+    while (target) {
+        if (depth == 16) return -1;
+        for (size_t i = 0; i < depth; i++) if (seen[i] == target) return -1;
+        seen[depth++] = target;
+        if (db_prepare_v2(db, organization_groups_managed()?
+                         "SELECT g.parent_id,COALESCE(o.active,0) FROM organization_groups g LEFT JOIN oidc_groups o ON o.group_id=g.id WHERE g.id=?":
+                         "SELECT parent_id,1 FROM organization_groups WHERE id=?", -1,
+                         &statement, NULL) != DB_OK || db_bind_int64(statement, 1, target) != DB_OK) goto failure;
+        step = db_step(statement);
+        if (step != DB_ROW) goto failure;
+        if (db_column_int(statement,1)!=1) {db_finalize(statement);return 0;}
+        target = db_column_type(statement, 0) == DB_NULL ? 0 : db_column_int64(statement, 0);
+        db_finalize(statement); statement = NULL;
+    }
+    for (size_t i = 0; i < depth; i++)
+        for (size_t j = 0; j < count; j++) if (seen[i] == delegated[j]) return 1;
+    return 0;
+failure:
+    db_finalize(statement); return -1;
+}
+
+static int can_manage(Db *db, DbInt actor, DbInt target, int kind) {
+    AccessPolicy policy;
+    int resolved = access_policy_resolve(db, actor, NULL, &policy);
+    if (resolved != 1) return resolved;
+    if (policy.admin) return 1;
+    if (!policy.manager) return 0;
+    const char *capability = kind == 0 ? "can_manage_groups" :
+        kind == 1 ? "can_manage_users" : kind == 2 ? "can_manage_jobs" : "can_approve_corrections";
+    if (kind == 0 || !target) return delegated_group(db, actor, target, capability);
+    const char *sql = kind == 2 ?
+        "SELECT group_id FROM job_group_grants WHERE job_id=? ORDER BY group_id LIMIT 201" :
+        "SELECT group_id FROM group_members WHERE user_id=? ORDER BY group_id LIMIT 201";
+    DbStmt *statement = NULL;
+    if (db_prepare_v2(db, sql, -1, &statement, NULL) != DB_OK ||
+        db_bind_int64(statement, 1, target) != DB_OK) goto failure;
+    int step, allowed = 0; size_t count = 0;
+    while ((step = db_step(statement)) == DB_ROW) {
+        if (++count > 200) goto failure;
+        int match = delegated_group(db, actor, db_column_int64(statement, 0), capability);
+        if (match < 0) goto failure;
+        if (match) allowed = 1;
+    }
+    if (step != DB_DONE) goto failure;
+    db_finalize(statement); return allowed;
+failure:
+    db_finalize(statement); return -1;
+}
+
+int access_policy_can_manage_job(Db *db, DbInt actor, DbInt job) { return can_manage(db, actor, job, 2); }
+int access_policy_can_manage_group(Db *db, DbInt actor, DbInt group) { return can_manage(db, actor, group, 0); }
+int access_policy_can_manage_user(Db *db, DbInt actor, DbInt user) { return can_manage(db, actor, user, 1); }
+int access_policy_can_approve_correction(Db *db, DbInt actor, DbInt requester) {
+    if (actor == requester || requester <= 0) return 0;
+    AccessPolicy policy;
+    int active = access_policy_resolve(db, actor, NULL, &policy);
+    if (active != 1) return active;
+    int visible = access_policy_can_view_time(db, actor, requester, policy.manager);
+    return visible != 1 ? visible : can_manage(db, actor, requester, 3);
 }

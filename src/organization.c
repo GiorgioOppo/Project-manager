@@ -1,5 +1,6 @@
 #include "organization.h"
 #include "storage.h"
+#include "access_control.h"
 #include "../auth/oidc.h"
 
 #include <errno.h>
@@ -543,8 +544,20 @@ static bool require_target(const char *table, DbInt id, const char *message,
     return false;
 }
 
+static bool organization_manage(DbInt actor, int kind, DbInt id, WorkspaceResponse *response) {
+    AccessPolicy policy;
+    int live=access_policy_resolve(database,actor,NULL,&policy);
+    int allowed=live!=1?live:policy.admin?1:kind==3?0:
+        kind==0?access_policy_can_manage_group(database,actor,id):
+        kind==1?access_policy_can_manage_user(database,actor,id):access_policy_can_manage_job(database,actor,id);
+    if (allowed==1) return true;
+    if (allowed<0) server_error(response);
+    else error(response,403,"La risorsa non appartiene alla tua area delegata o richiede l'amministratore dello spazio.");
+    return false;
+}
+
 static void list_rows(const char *base, const char *suffix, const char *label,
-                      DbInt id, int limit, JsonRow row, WorkspaceResponse *response) {
+                      DbInt id, int limit, JsonRow row, DbInt actor_id, WorkspaceResponse *response) {
     char sql[1024];
     int length = snprintf(sql, sizeof(sql), "%s%s LIMIT %d", base, suffix, limit + 1);
     DbStmt *statement = NULL;
@@ -557,14 +570,20 @@ static void list_rows(const char *base, const char *suffix, const char *label,
         append_integer(&json, id); append(&json, ",");
     }
     append_string(&json, label); append(&json, ":[");
-    int result, count = 0;
+    int result, count = 0, scanned = 0;
     while ((result = db_step(statement)) == DB_ROW) {
-        if (++count > limit) break;
+        if (++scanned > limit) break;
+        if (!strcmp(label,"groups")) {
+            int allowed=access_policy_can_manage_group(database,actor_id,db_column_int64(statement,0));
+            if (allowed<0) {db_finalize(statement);free(json.data);server_error(response);return;}
+            if (!allowed) continue;
+        }
+        count++;
         if (count > 1) append(&json, ",");
         row(&json, statement);
     }
     db_finalize(statement);
-    if (count > limit || result != DB_DONE) {
+    if (scanned > limit || result != DB_DONE) {
         free(json.data);
         if (count > limit) error(response, 409, "Troppi risultati. Riduci gli elementi prima di proseguire.");
         else server_error(response);
@@ -618,15 +637,16 @@ static void write_group(const char *body, DbInt actor_id, DbInt id,
     Json before = {0}, after = {0};
     DbStmt *statement = NULL;
     char *old_name = NULL;
-    DbInt parent_id = 0;
+    DbInt parent_id = 0, old_parent_id = 0;
     if (!begin_transaction(response)) goto cleanup;
+    if (id && !organization_manage(actor_id,0,id,response)) {rollback();goto cleanup;}
     if (id) {
         int found = snapshot(group_select, "WHERE g.id=?", id, 0, group_json, &before);
         if (found < 0) goto database_failure;
         if (!found) { rollback(); error(response, 404, "Gruppo non trovato."); goto cleanup; }
         if (!prepare(&statement, "SELECT name,parent_id FROM organization_groups WHERE id=?") ||
             !bind_id(statement, 1, id) || db_step(statement) != DB_ROW) goto database_failure;
-        old_name = duplicate(column_text(statement, 0)); parent_id = db_column_int64(statement, 1);
+        old_name = duplicate(column_text(statement, 0)); parent_id = db_column_int64(statement, 1); old_parent_id = parent_id;
         db_finalize(statement); statement = NULL;
         if (!old_name) goto database_failure;
     }
@@ -636,6 +656,12 @@ static void write_group(const char *body, DbInt actor_id, DbInt id,
         rollback(); error(response, 400, "Inserisci un nome valido e un gruppo superiore esistente."); goto cleanup;
     }
     if (fields[1].value && !*fields[1].value) parent_id = 0;
+    AccessPolicy group_editor;
+    if (access_policy_resolve(database,actor_id,NULL,&group_editor)!=1) goto database_failure;
+    if (!group_editor.admin && ((!id && !parent_id) ||
+        ((!id || parent_id != old_parent_id) && (!parent_id || !organization_manage(actor_id,0,parent_id,response))))) {
+        rollback();if (!response->body) error(response,403,"La destinazione deve appartenere alla tua area delegata.");goto cleanup;
+    }
     if (parent_id && !require_target("organization_groups", parent_id, "Gruppo superiore non trovato.", response)) {
         rollback(); goto cleanup;
     }
@@ -667,6 +693,7 @@ static void delete_group(const char *body, DbInt actor_id, DbInt id,
                          WorkspaceResponse *response) {
     if (*body) { error(response, 400, "La richiesta di eliminazione non deve contenere campi."); return; }
     if (!begin_transaction(response)) return;
+    if (!(organization_manage(actor_id,0,id,response))) {rollback();return;}
     Json before = {0};
     DbStmt *statement = NULL;
     int found = snapshot(group_select, "WHERE g.id=?", id, 0, group_json, &before);
@@ -702,6 +729,7 @@ static void write_member(const char *body, DbInt actor_id, DbInt group_id,
         error(response, 400, "Seleziona un utente valido."); free_fields(&field, 1); return;
     }
     if (!begin_transaction(response)) { free_fields(&field, 1); return; }
+    if (!(organization_manage(actor_id,0,group_id,response) && organization_manage(actor_id,1,user_id,response))) {rollback();free_fields(&field,1);return;}
     Json after = {0};
     DbStmt *statement = NULL;
     if (!require_target("organization_groups", group_id, "Gruppo non trovato.", response)) {
@@ -743,6 +771,7 @@ static void delete_member(const char *body, DbInt actor_id, DbInt group_id,
                           DbInt user_id, WorkspaceResponse *response) {
     if (*body) { error(response, 400, "La richiesta di eliminazione non deve contenere campi."); return; }
     if (!begin_transaction(response)) return;
+    if (!(organization_manage(actor_id,0,group_id,response) && organization_manage(actor_id,1,user_id,response))) {rollback();return;}
     Json before = {0};
     DbStmt *statement = NULL;
     if (!require_target("organization_groups", group_id, "Gruppo non trovato.", response)) {
@@ -787,6 +816,7 @@ static void write_role(const char *body, DbInt actor_id, DbInt id,
     char *old_code = NULL, *old_name = NULL;
     int can_log = 0;
     if (!begin_transaction(response)) goto cleanup;
+    if (!(organization_manage(actor_id,3,id,response))) {rollback();free_fields(fields,3);return;}
     if (id) {
         int found = snapshot(role_select, "WHERE id=?", id, 0, role_json, &before);
         if (found < 0) goto database_failure;
@@ -851,6 +881,7 @@ static void write_grant(const char *body, DbInt actor_id, DbInt job_id,
         error(response, 400, "Seleziona un gruppo e un ruolo validi."); free_fields(fields, 4); return;
     }
     if (!begin_transaction(response)) { free_fields(fields, 4); return; }
+    if (!(organization_manage(actor_id,2,job_id,response) && organization_manage(actor_id,0,group_id,response))) {rollback();free_fields(fields,4);return;}
     Json before = {0}, after = {0};
     DbStmt *statement = NULL;
     char old_start[11] = "", old_end[11] = "";
@@ -912,6 +943,7 @@ static void delete_grant(const char *body, DbInt actor_id, DbInt job_id,
                          DbInt group_id, WorkspaceResponse *response) {
     if (*body) { error(response, 400, "La richiesta di eliminazione non deve contenere campi."); return; }
     if (!begin_transaction(response)) return;
+    if (!(organization_manage(actor_id,2,job_id,response) && organization_manage(actor_id,0,group_id,response))) {rollback();return;}
     Json before = {0};
     DbStmt *statement = NULL;
     if (!require_target("jobs", job_id, "Commessa non trovata.", response)) { rollback(); return; }
@@ -958,8 +990,11 @@ bool organization_handle(const char *method, const char *target, const char *que
     if (!groups && !group_item && !roles && !role_item && !job_item) return false;
     response->status = 0; response->body = NULL;
     if (actor_id <= 0) { error(response, 401, "Accedi per continuare."); return true; }
-    if (!role || strcmp(role, "manager") != 0) { error(response, 403, "Solo i gestori possono modificare gruppi, ruoli e abilitazioni."); return true; }
     if (!database) { server_error(response); return true; }
+    AccessPolicy policy;
+    int live=access_policy_resolve(database,actor_id,role,&policy);
+    if (live<0) {server_error(response);return true;}
+    if (live!=1 || !policy.manager) {error(response,403,"Solo amministratori e gestori delegati possono gestire gruppi e abilitazioni.");return true;}
     if (!query) query = "";
     if (!body) body = "";
     if (*query) { error(response, 400, "Parametri della richiesta non validi."); return true; }
@@ -967,6 +1002,9 @@ bool organization_handle(const char *method, const char *target, const char *que
         (role_item && !parse_item(target + 15, &id, &suffix))) {
         error(response, 400, "Identificativo non valido."); return true;
     }
+    if ((group_item && !organization_manage(actor_id,0,id,response)) ||
+        (job_item && !organization_manage(actor_id,2,id,response)) ||
+        ((roles || role_item) && strcmp(method,"GET") && !organization_manage(actor_id,3,id,response))) return true;
     bool get = strcmp(method, "GET") == 0, post = strcmp(method, "POST") == 0;
     bool remove = strcmp(method, "DELETE") == 0;
     if (groups_managed && (groups || group_item) && (post || remove)) {
@@ -977,23 +1015,23 @@ bool organization_handle(const char *method, const char *target, const char *que
     }
     if (groups && get) list_rows(group_select, groups_managed ?
         "WHERE g.id IN (SELECT group_id FROM oidc_groups WHERE active=1) ORDER BY g.id" : "ORDER BY g.id",
-        "groups", 0, GROUP_LIMIT, group_json, response);
+        "groups", 0, GROUP_LIMIT, group_json, actor_id, response);
     else if (groups && post) write_group(body, actor_id, 0, response);
-    else if (roles && get) list_rows(role_select, "ORDER BY id", "roles", 0, ROLE_LIMIT, role_json, response);
+    else if (roles && get) list_rows(role_select, "ORDER BY id", "roles", 0, ROLE_LIMIT, role_json, actor_id, response);
     else if (roles && post) write_role(body, actor_id, 0, response);
     else if (role_item && !*suffix && post) write_role(body, actor_id, id, response);
     else if (group_item && !*suffix && post) write_group(body, actor_id, id, response);
     else if (group_item && !*suffix && remove) delete_group(body, actor_id, id, response);
     else if (group_item && strcmp(suffix, "/members") == 0 && get) {
         if (require_target("organization_groups", id, "Gruppo non trovato.", response))
-            list_rows(member_select, "WHERE m.group_id=? ORDER BY u.id", "members", id, 200, member_json, response);
+            list_rows(member_select, "WHERE m.group_id=? ORDER BY u.id", "members", id, 200, member_json, actor_id, response);
     } else if (group_item && strcmp(suffix, "/members") == 0 && post) write_member(body, actor_id, id, response);
     else if (group_item && strncmp(suffix, "/members/", 9) == 0 && remove) {
         if (!parse_positive(suffix + 9, &item_id)) error(response, 400, "Identificativo utente non valido.");
         else delete_member(body, actor_id, id, item_id, response);
     } else if (job_item && strcmp(suffix, "/group-grants") == 0 && get) {
         if (require_target("jobs", id, "Commessa non trovata.", response))
-            list_rows(grant_select, "WHERE a.job_id=? ORDER BY a.group_id", "grants", id, GROUP_LIMIT, grant_json, response);
+            list_rows(grant_select, "WHERE a.job_id=? ORDER BY a.group_id", "grants", id, GROUP_LIMIT, grant_json, actor_id, response);
     } else if (job_item && strcmp(suffix, "/group-grants") == 0 && post) write_grant(body, actor_id, id, response);
     else if (job_item && strncmp(suffix, "/group-grants/", 14) == 0 && remove) {
         if (!parse_positive(suffix + 14, &item_id)) error(response, 400, "Identificativo gruppo non valido.");

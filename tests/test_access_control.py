@@ -88,11 +88,11 @@ class FunctionalGroupIntegrationTests(unittest.TestCase):
         self.assign(worker, ["sales"])
         with sqlite3.connect(self.db_path) as database:
             audit = database.execute("SELECT before_json,after_json FROM audit_events "
-                "WHERE action='users.access_groups.update' ORDER BY id DESC LIMIT 1").fetchone()
+                "WHERE action='governance.profiles.bootstrap' ORDER BY id DESC LIMIT 1").fetchone()
             self.assertEqual(json.loads(audit[0])["selected"], [])
             self.assertEqual(json.loads(audit[1])["selected"], ["sales"])
             database.execute("CREATE TRIGGER reject_profile_audit BEFORE INSERT ON audit_events "
-                "WHEN NEW.action='users.access_groups.update' BEGIN SELECT RAISE(ABORT,'fixture'); END")
+                "WHEN NEW.action='governance.profiles.bootstrap' BEGIN SELECT RAISE(ABORT,'fixture'); END")
         self.assign(worker, ["finance"], 500)
         self.assertEqual(self.get(path)["selected"], ["sales"])
 
@@ -107,7 +107,7 @@ class FunctionalGroupIntegrationTests(unittest.TestCase):
         self.start_server()
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         with sqlite3.connect(self.db_path) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 13)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 14)
             self.assertEqual(database.execute("SELECT COUNT(*) FROM access_group_members").fetchone()[0], 0)
             self.assertEqual(database.execute("SELECT COUNT(*) FROM users").fetchone()[0], 2)
             self.assertEqual(database.execute("SELECT id,minutes FROM time_entries").fetchall(), [(entry, 37)])

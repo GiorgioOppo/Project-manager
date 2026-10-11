@@ -261,7 +261,8 @@ class ReportsIntegrationTests(unittest.TestCase):
 
     def test_existing_session_immediately_loses_team_scope_after_manager_demotion(self):
         self.seed_reports()
-        self.create_user(email="remaining-manager@example.test", name="Altro gestore", role="manager")
+        backup = self.create_user(email="remaining-manager@example.test", name="Altro gestore", role="manager")
+        roles.RoleIntegrationTests.make_space_admin(self, backup)
         name = next(user["name"] for user in self.users() if user["id"] == self.manager_id)
         status, data, _ = self.api("POST", "/api/users/%d" % self.manager_id,
                                    {"name": name, "role": "worker", "active": "1"},

@@ -1,3 +1,4 @@
+#include "improvements_integrations.h"
 /* Included by workspace.c: correction requests share its transaction/JSON helpers. */
 #include "access_control.h"
 typedef struct {
@@ -80,6 +81,8 @@ static int correction_request_load(DbInt id, CorrectionRequest *request) {
 /* Access is always checked for the owner, never the approving manager. A real
    reduction/removal on the original day remains possible after access closes. */
 static int correction_change_allowed(const CorrectionRequest *request) {
+    if (!improvements_integrations_time_open(database, request->original_job_id, request->original_date) ||
+        (!request->delete_requested && !improvements_integrations_time_open(database, request->job_id, request->date))) return 0;
     if (request->job_id == request->original_job_id &&
         strcmp(request->date, request->original_date) == 0 &&
         (request->delete_requested || request->minutes < request->original_minutes)) return 1;
@@ -95,7 +98,7 @@ static int correction_change_allowed(const CorrectionRequest *request) {
     db_finalize(statement);
     if (result != DB_ROW && result != DB_DONE) return -1;
     if (!open) return 0;
-    if (manager) return 1;
+    if (manager) { int managed=access_policy_can_manage_job(database,request->requester_id,request->job_id); if(managed<0)return -1; if(managed==1)return 1; }
     char today[11];
     if (!today_date(today)) return -1;
     int permission = organization_job_access(database, request->job_id, request->requester_id, today, request->date);
@@ -128,33 +131,39 @@ static void correction_audit_json(Json *json, const CorrectionRequest *request, 
 }
 
 static void correction_list(const char *query, DbInt actor_id, bool manager, WorkspaceResponse *response) {
-    Field fields[] = {{"status", NULL}, {"pending", NULL}};
-    if (!parse_fields(query, fields, 2, response)) return;
-    const char *status = field_value(&fields[0]), *pending = field_value(&fields[1]);
-    if ((*status && strcmp(status, "pending") != 0) || (*pending && strcmp(pending, "1") != 0)) {
-        free_fields(fields, 2); error(response, 400, "Filtro rettifiche non valido."); return;
-    }
-    bool only_pending = *status || *pending;
-    DbStmt *statement = NULL;
-    Json json = {0};
-    if (!prepare(&statement, "SELECT c.id,c.entry_id,c.original_entry_id,c.requester_id,u.name,u.email,"
+    Field fields[] = {{"status",NULL},{"pending",NULL},{"after_id",NULL},{"limit",NULL},{"user_id",NULL},{"from",NULL},{"to",NULL}};
+    if (!parse_fields(query, fields, 7, response)) return;
+    const char *status=field_value(&fields[0]), *pending=field_value(&fields[1]);
+    DbInt after=0,limit=50,user=0;
+    bool valid=!*status || !strcmp(status,"pending") || !strcmp(status,"approved") || !strcmp(status,"rejected") || !strcmp(status,"cancelled") || !strcmp(status,"conflict");
+    valid=valid&&(!*pending||!strcmp(pending,"1"))&&(!*pending||!*status||!strcmp(status,"pending"));
+    if (*field_value(&fields[2])) valid=parse_positive(fields[2].value,&after)&&valid;
+    if (*field_value(&fields[3])) valid=parse_positive(fields[3].value,&limit)&&limit<=100&&valid;
+    if (*field_value(&fields[4])) valid=parse_positive(fields[4].value,&user)&&valid;
+    const char *from=field_value(&fields[5]),*to=field_value(&fields[6]);
+    valid=valid&&(!*from||valid_date(from))&&(!*to||valid_date(to))&&(!*from||!*to||strcmp(from,to)<=0);
+    if(!valid){free_fields(fields,7);error(response,400,"Filtro rettifiche non valido.");return;}
+    if(user){int visible=access_policy_can_view_time(database,actor_id,user,manager);if(visible!=1){free_fields(fields,7);if(visible<0)server_error(response);else error(response,403,"Utente non consentito.");return;}}
+    if(*pending)status="pending";
+    DbStmt *statement=NULL;Json json={0};
+    if(!prepare(&statement,"SELECT c.id,c.entry_id,c.original_entry_id,c.requester_id,u.name,u.email,"
         "c.entry_revision,c.job_id,j.code,j.name,c.date,c.minutes,c.note,c.reason,c.delete_requested,"
         "c.status,c.decision_reason,c.decided_by,c.created_at,c.decided_at,c.before_json "
         "FROM time_corrections c JOIN users u ON u.id=c.requester_id LEFT JOIN jobs j ON j.id=c.job_id "
-        "WHERE (?=1 OR c.requester_id=?) AND (?=0 OR c.status='pending') ORDER BY c.id DESC") ||
-        !bind_id(statement, 1, manager ? 1 : 0) || !bind_id(statement, 2, actor_id) ||
-        !bind_id(statement, 3, only_pending ? 1 : 0)) goto database_failure;
+        "WHERE (?=1 OR c.requester_id=?) AND (?='' OR c.status=?) AND (?=0 OR c.id<?) "
+        "AND (?=0 OR c.requester_id=?) AND (?='' OR c.date>=?) AND (?='' OR c.date<=?) ORDER BY c.id DESC")||
+        !bind_id(statement,1,manager?1:0)||!bind_id(statement,2,actor_id)||!bind_text(statement,3,status)||!bind_text(statement,4,status)||
+        !bind_id(statement,5,after)||!bind_id(statement,6,after)||!bind_id(statement,7,user)||!bind_id(statement,8,user)||
+        !bind_text(statement,9,from)||!bind_text(statement,10,from)||!bind_text(statement,11,to)||!bind_text(statement,12,to))goto database_failure;
     append(&json, "{\"ok\":true,\"scope\":"); append_string(&json, manager ? "team" : "personal");
     append(&json, ",\"requests\":[");
-    int result, rows = 0;
+    int result, rows = 0; DbInt cursor=0; bool more=false;
     while ((result = db_step(statement)) == DB_ROW) {
         int visible = access_policy_can_view_time(database, actor_id, db_column_int64(statement, 3), manager);
         if (visible < 0) goto database_failure;
         if (!visible) continue;
-        if (++rows > RESULT_LIMIT) {
-            db_finalize(statement); free(json.data); free_fields(fields, 2);
-            error(response, 409, "Oltre 1000 rettifiche: usa il filtro delle richieste in attesa."); return;
-        }
+        if(rows>=limit){more=true;break;}
+        rows++;cursor=db_column_int64(statement,0);
         if (rows > 1) append(&json, ",");
         append(&json, "{\"id\":"); append_integer(&json, db_column_int64(statement, 0));
         append(&json, ",\"entry_id\":");
@@ -182,13 +191,17 @@ static void correction_list(const char *query, DbInt actor_id, bool manager, Wor
         append(&json, ",\"before\":"); append(&json, column_text(statement, 20));
         bool active = strcmp(column_text(statement, 15), "pending") == 0;
         bool author = db_column_int64(statement, 3) == actor_id;
-        append(&json, ",\"can_decide\":"); append(&json, active && manager && !author ? "true" : "false");
+        int approval=active?access_policy_can_approve_correction(database,actor_id,db_column_int64(statement,3)):0;
+        if(approval<0)goto database_failure;
+        append(&json, ",\"can_decide\":"); append(&json, approval==1 ? "true" : "false");
         append(&json, ",\"can_cancel\":"); append(&json, active && author ? "true" : "false"); append(&json, "}");
     }
-    if (result != DB_DONE) goto database_failure;
-    db_finalize(statement); append(&json, "]}"); free_fields(fields, 2); finish_json(response, 200, &json); return;
+    if(result!=DB_DONE&&!more)goto database_failure;
+    db_finalize(statement);append(&json,"],\"has_more\":");append(&json,more?"true":"false");
+    append(&json,",\"next_after_id\":");if(more)append_integer(&json,cursor);else append(&json,"null");
+    append(&json,",\"limit\":");append_integer(&json,limit);append(&json,"}");free_fields(fields,7);finish_json(response,200,&json);return;
 database_failure:
-    db_finalize(statement); free(json.data); free_fields(fields, 2); server_error(response);
+    db_finalize(statement);free(json.data);free_fields(fields,7);server_error(response);
 }
 
 static void correction_create(const char *body, DbInt actor_id, WorkspaceResponse *response) {
@@ -285,7 +298,9 @@ static void correction_decide(const char *body, DbInt actor_id, bool manager, Db
     if (!found || !visible || (!manager && request.requester_id != actor_id)) {
         rollback(); error(response, 404, "Rettifica non trovata."); goto cleanup;
     }
-    if ((cancel && request.requester_id != actor_id) || (!cancel && (!manager || request.requester_id == actor_id))) {
+    int approval=cancel?1:access_policy_can_approve_correction(database,actor_id,request.requester_id);
+    if(approval<0)goto database_failure;
+    if ((cancel && request.requester_id != actor_id) || (!cancel && approval!=1)) {
         rollback(); error(response, 403, "Solo un altro gestore può approvare o rifiutare; soltanto l’autore può annullare."); goto cleanup;
     }
     if (strcmp(request.status, "pending") != 0) {

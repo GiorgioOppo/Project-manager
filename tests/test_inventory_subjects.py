@@ -165,5 +165,32 @@ class InventorySubjectsTests(unittest.TestCase):
             self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
 
 
+    def test_mapped_person_union_keeps_shared_identity_assets_out_of_mine(self):
+        self.start()
+        person, identity = self.person(), self.identity()
+        status, value = self.request("POST", f'/v1/identities/{identity["id"]}/people',
+                                    dict(version=identity["version"], person_id=person["id"], actor_id=7))
+        self.assertEqual(status, 201, value)
+        identity = value["identity"]
+        direct = self.create(tag="PERSON-DIRECT")
+        direct, _ = self.link(direct, "person", person)
+        shared = self.create(tag="SHARED-ONLY")
+        shared, _ = self.link(shared, "identity", identity)
+        user = self.create(tag="ACCOUNT-DIRECT")
+        status, value = self.request("POST", f'/v1/assets/{user["id"]}/context',
+                                    dict(version=user["version"], actor_id=7, assignee_user_id=42,
+                                         assignee_user_name="Account verificato"))
+        self.assertEqual(status, 200, value)
+        expected = {direct["id"], user["id"]}
+        query = f'assignee_user_id=42&mapped_person_id={person["id"]}'
+        self.assertEqual({asset["id"] for asset in self.get('/v1/assets?' + query)["items"]}, expected)
+        self.assertEqual(self.get('/v1/dashboard?' + query)["counts"]["total"], 2)
+        rows = list(csv.DictReader(io.StringIO(self.get('/v1/assets/export?' + query)["csv"])))
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn(shared["asset_tag"], str(rows))
+        for path in ('/v1/assets', '/v1/dashboard', '/v1/assets/export'):
+            self.assertEqual(self.request("GET", path + '?mapped_person_id=0')[0], 400)
+
+
 if __name__ == '__main__':
     unittest.main()

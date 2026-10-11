@@ -1,3 +1,4 @@
+#include "improvements_operations.h"
 /* Included by workspace.c after its shared form, transaction and JSON helpers. */
 
 static int job_lifecycle_snapshot(DbInt job_id, Json *json, bool successful,
@@ -58,7 +59,7 @@ static void job_lifecycle_read(DbInt job_id, DbInt actor_id, WorkspaceResponse *
 
 static void job_lifecycle_write(DbInt job_id, const char *body, DbInt actor_id,
                                 WorkspaceResponse *response) {
-    Field fields[] = {{"revision", NULL}, {"action", NULL}, {"reason", NULL}};
+    Field fields[] = {{"revision", NULL}, {"action", NULL}, {"reason", NULL}, {"checklist_confirmed",NULL}};
     const size_t count = sizeof(fields) / sizeof(fields[0]);
     if (!parse_fields(body, fields, count, response)) return;
     trim(fields[2].value);
@@ -69,7 +70,8 @@ static void job_lifecycle_write(DbInt job_id, const char *body, DbInt actor_id,
     bool archive = strcmp(action, "archive") == 0;
     bool reopen = strcmp(action, "reopen") == 0;
     if (!parse_positive(field_value(&fields[0]), &revision) || revision == INT64_MAX ||
-        (!close && !archive && !reopen) || !valid_text(reason, 1000, true, true)) {
+        (!close && !archive && !reopen) || !valid_text(reason, 1000, true, true) ||
+        (fields[3].value&&strcmp(field_value(&fields[3]),"0")&&strcmp(field_value(&fields[3]),"1"))) {
         free_fields(fields, count);
         error(response, 400, "Indica un'azione valida, la revisione corrente e un motivo (massimo 1000 caratteri).");
         return;
@@ -80,7 +82,9 @@ static void job_lifecycle_write(DbInt job_id, const char *body, DbInt actor_id,
     char scope[5000];
     AccessPolicy policy;
     if (!workspace_policy(actor_id, &policy) || !workspace_time_scope(actor_id, true, scope)) goto failure;
-    if (!policy.manager) {
+    int managed=access_policy_can_manage_job(database,actor_id,job_id);
+    if(managed<0)goto failure;
+    if (managed!=1) {
         rollback(); free_fields(fields, count);
         error(response, 403, "La chiusura delle commesse è riservata ai gestori."); return;
     }
@@ -100,6 +104,9 @@ static void job_lifecycle_write(DbInt job_id, const char *body, DbInt actor_id,
         error(response, 409, stale ? "La commessa è stata aggiornata. Ricarica il riepilogo prima di riprovare." :
               "La commessa è archiviata. Riaprila prima di cambiare la chiusura delle ore."); return;
     }
+    DbInt remaining=0;
+    if(!reopen&&improvements_operations_unresolved(database,actor_id,job_id,&remaining)<0)goto failure;
+    if(!reopen&&remaining&&strcmp(field_value(&fields[3]),"1")!=0){rollback();free_fields(fields,count);error(response,409,"La checklist contiene elementi aperti. Controllali e conferma esplicitamente prima di chiudere.");return;}
     if (job_lifecycle_snapshot(job_id, &before, false, NULL, NULL) != 1 ||
         !prepare(&statement,
             "UPDATE jobs SET time_closed=?,archived=?,lifecycle_revision=lifecycle_revision+1 "
@@ -142,6 +149,8 @@ static bool job_lifecycle_handle(const char *method, const char *target, const c
     }
     memcpy(identifier, target + 10, size); identifier[size] = '\0';
     if (!parse_positive(identifier, &job_id)) { error(response, 400, "Identificativo non valido."); return true; }
+    int managed=access_policy_can_manage_job(database,actor_id,job_id);
+    if(managed!=1){if(managed<0)server_error(response);else error(response,403,"Questa commessa non rientra nella tua delega.");return true;}
     if (strcmp(suffix, "/closure") == 0 && strcmp(method, "GET") == 0) job_lifecycle_read(job_id, actor_id, response);
     else if (strcmp(suffix, "/lifecycle") == 0 && strcmp(method, "POST") == 0)
         job_lifecycle_write(job_id, body ? body : "", actor_id, response);

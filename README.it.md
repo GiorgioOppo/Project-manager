@@ -1,6 +1,6 @@
 # punto — Commesse e ore di lavoro in C
 
-[Flussi operativi migliorati (schema 13)](docs/prod/flussi-operativi.md)
+[Flussi operativi migliorati (schema 14)](docs/prod/flussi-operativi.md)
 
 **Italiano** | [English](README.md)
 
@@ -57,7 +57,7 @@ La CA locale dura dieci anni e i certificati server un anno. **Il rinnovo è man
 
 Lo script ferma l’app durante la preparazione, esegue un backup dei dati del primo nodo, inizializza i nuovi nodi vuoti con una copia coerente, crea il gruppo e avvia gli altri servizi. Il primo nodo conserva il volume `mysql_data` già usato dal progetto: non occorre eliminare il database per aggiungere le repliche. Il file locale `data/cluster-state.json` conserva i marcatori dei nodi già preparati, così il seed non viene ripetuto sui dati esistenti. Gli account interni vengono creati su ciascun nodo e il seed viene importato localmente, senza registrare le password nell’output del controller. Su macOS il comando usa per impostazione predefinita il contesto Docker `desktop-linux`; `--docker-context` permette di sceglierne un altro.
 
-Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 10, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
+Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 14, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
 
 Per applicare la segmentazione e il TLS a un **cluster già inizializzato**, usa invece:
 
@@ -180,7 +180,7 @@ docker compose --env-file .env.docker build proxy-egress mail calendar inventory
 docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait proxy-egress mail calendar inventory app proxy-web
 ```
 
-Compose crea le reti e i volumi mancanti, avvia Squid e addon e ricrea app e NPM. Il servizio può essere brevemente indisponibile; l’app applica le migrazioni SQL mancanti fino alla versione 10 conservando i dati. L’addon Calendar non richiede altre migrazioni MySQL. Questo aggiornamento non richiede `configure_network.py apply`, un nuovo seed o la ricreazione dei database. Il controllo di salute di Squid verifica una risposta locale `403` senza richiedere Internet: non dimostra da solo che Google sia raggiungibile. Se Squid si arresta, le nuove richieste esterne falliscono; il lavoro sui database rimane indipendente dal proxy mentre l’app è già avviata. A un nuovo avvio Compose attende invece che Squid e addon siano sani.
+Compose crea le reti e i volumi mancanti, avvia Squid e addon e ricrea app e NPM. Il servizio può essere brevemente indisponibile; l’app applica le migrazioni SQL mancanti fino alla versione 14 conservando i dati. L’addon Calendar non richiede altre migrazioni MySQL. Questo aggiornamento non richiede `configure_network.py apply`, un nuovo seed o la ricreazione dei database. Il controllo di salute di Squid verifica una risposta locale `403` senza richiedere Internet: non dimostra da solo che Google sia raggiungibile. Se Squid si arresta, le nuove richieste esterne falliscono; il lavoro sui database rimane indipendente dal proxy mentre l’app è già avviata. A un nuovo avvio Compose attende invece che Squid e addon siano sani.
 
 Per aggiornare la allowlist, modifica `docker/squid/allowed-domains.txt` mantenendo un host esatto per riga. I file sono montati in sola lettura nel container. Prima di ricaricare, verifica il contenuto effettivamente montato e la sintassi:
 
@@ -520,11 +520,11 @@ La schermata **Calendario** di Punto permette di collegare Google, selezionare u
 
 ### Asset inventory
 
-Il modulo gestisce dispositivi IT, rete, beni fisici, software e licenze con relazioni manuali. Include esportazione CSV filtrata, importazione con anteprima e conferma atomica, alert configurabili sulle scadenze e backup automatici. Gli alert richiedono lo schema applicativo 10; il database separato inventory migra alla versione 5. Le regole `inventory_return` segnalano restituzioni scadute e `inventory_verification` beni mai verificati o da verificare nuovamente, con `verification_days` predefinito a 90 giorni (1–365).
+Il modulo gestisce dispositivi IT, rete, beni fisici, software e licenze con relazioni manuali. Include esportazione CSV filtrata, importazione con anteprima e conferma atomica, alert configurabili sulle scadenze e backup automatici. Gli alert richiedono lo schema applicativo 10; il database separato inventory migra alla versione 6. Le regole `inventory_return` segnalano restituzioni scadute e `inventory_verification` beni mai verificati o da verificare nuovamente, con `verification_days` predefinito a 90 giorni (1–365).
 
 **`inventory`** è un'applicazione C separata, con schede dei beni, stati, assegnazione, acquisto, garanzia e storico persistente. La scheda **Asset inventory** dell'app permette a tutti gli utenti autenticati di consultare catalogo e revisioni; i Gestori possono creare e modificare le schede. L'etichetta è univoca e le modifiche usano una versione per impedire sovrascritture concorrenti. Per ritirare un bene si usa lo stato Dismesso; non è prevista la cancellazione.
 
-Le anagrafiche **Persone** e **Identità** distinguono individui reali e utenze dei sistemi, indipendentemente dagli account di accesso a Punto. I collegamenti sono molti a molti e supportano utenze condivise. Persone e identità possono essere collegate direttamente ai beni, con ruolo, note, storico e filtri condivisi con cruscotto ed esportazione. Lo schema inventory 5 migra le versioni precedenti conservando i dati; la [guida operativa](docs/prod/asset-inventory.md#persone-e-identità) descrive il flusso.
+Le anagrafiche **Persone** e **Identità** distinguono individui reali e utenze dei sistemi, indipendentemente dagli account di accesso a Punto. I collegamenti sono molti a molti e supportano utenze condivise. Persone e identità possono essere collegate direttamente ai beni, con ruolo, note, storico e filtri condivisi con cruscotto ed esportazione. Lo schema inventory 6 migra le versioni precedenti conservando i dati; la [guida operativa](docs/prod/asset-inventory.md#persone-e-identità) descrive il flusso.
 
 Il servizio ascolta su `https://inventory-api:8092` (`172.30.80.2`) e accetta soltanto l'app `172.30.80.10`, con token dedicato e verifica TLS. La sola rete `inventory_api` non fornisce accesso a Internet, Squid o database dell'app. Il volume `inventory_addon_data` contiene un database SQLite indipendente, da salvare separatamente dal backup MySQL. Compose conserva copie automatiche verificate ogni 24 ore nel volume separato `inventory_addon_backups`, mantenendo le ultime 14. Non esegue autodiscovery o scansioni della rete.
 
@@ -576,7 +576,7 @@ La base attuale gestisce fino a 200 utenti, 200 gruppi, 100 ruoli sulle commesse
 
 ## Tabelle del database
 
-Nel backend MySQL il database applicativo, predefinito `punto`, usa lo schema corrente **13**. I passi 9 e 10 estendono gli alert inventory; il passo 11 aggiunge i gruppi aziendali gestiti; il passo 12 introduce rettifiche, orari, notifiche operative, modelli e ciclo di vita delle commesse; il passo 13 introduce `access_groups` e `access_group_members` per Commerciali e Finance espliciti. Le migrazioni non assegnano automaticamente questi profili ai gestori. Ogni tabella ha una chiave primaria e relazioni con chiavi esterne; le nuove risorse dichiarano i propri comportamenti di cancellazione. Il [catalogo API corrente](docs/tehnical/api-app.md) descrive la policy applicata.
+Nel backend MySQL il database applicativo, predefinito `punto`, usa lo schema corrente **14**. I passi 9 e 10 estendono gli alert inventory; il passo 11 aggiunge i gruppi aziendali gestiti; il passo 12 introduce rettifiche, orari, notifiche operative, modelli e ciclo di vita delle commesse; il passo 13 introduce `access_groups` e `access_group_members` per Commerciali e Finance espliciti. Le migrazioni non assegnano automaticamente questi profili ai gestori. Ogni tabella ha una chiave primaria e relazioni con chiavi esterne; le nuove risorse dichiarano i propri comportamenti di cancellazione. Il [catalogo API corrente](docs/tehnical/api-app.md) descrive la policy applicata.
 
 | Tabella | Dati principali e struttura |
 | --- | --- |
@@ -612,7 +612,7 @@ Nel backend MySQL il database applicativo, predefinito `punto`, usa lo schema co
 
 I testi usano `utf8mb4`; email e codici sono univoci senza distinzione tra maiuscole e minuscole. Le giornate e gli intervalli sono stringhe ISO `YYYY-MM-DD`, le durate sono minuti interi e i JSON dello storico sono testo. I trigger proteggono lo storico da aggiornamenti ed eliminazioni e impediscono di cambiare l’utente già associato a una registrazione. La definizione completa si trova in `src/mysql_schema.c`.
 
-SQLite conserva le tabelle applicative, oltre alla tabella interna `sqlite_sequence`, e usa `PRAGMA user_version=13` per la versione dello schema. `schema_metadata` e `cluster_write_guard` appartengono alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
+SQLite conserva le tabelle applicative, oltre alla tabella interna `sqlite_sequence`, e usa `PRAGMA user_version=14` per la versione dello schema. `schema_metadata` e `cluster_write_guard` appartengono alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
 
 Il database MongoDB, predefinito **`punto_documents`**, contiene i PDF nel bucket GridFS `contract_pdfs`:
 
@@ -870,7 +870,7 @@ backups/               Dump MySQL e archivi MongoDB con permessi 0600, esclusi d
 nginx-proxy-manager/   Configurazione, SQLite e certificati NPM persistenti
 ```
 
-Attività, sottoattività, Kanban e registro dei blocchi sono implementati. Pianificazione, dipendenze, carico del team, budget, approvazioni, area cliente e collegamento delle ore alle singole attività sono sviluppi successivi. L’addon Google Calendar e le API applicative sono implementati; l’attivazione reale richiede il progetto OAuth e il consenso degli utenti. Restano da sviluppare l’interfaccia Calendario e il collegamento degli eventi alle commesse e alle registrazioni ore.
+Attività, sottoattività, Kanban, blocchi, ore collegate, stime, capacità personale, budget, periodi economici e richieste di assenza sono implementati. L’interfaccia Calendario è disponibile e può proporre ore da confermare. Google richiede il progetto OAuth e il consenso degli utenti. Dipendenze, area cliente e contabilità completa rimangono nella roadmap.
 
 La roadmap delle 20 ulteriori funzionalità è descritta in [Piano di implementazione delle 20 funzionalità](docs/prod/roadmap-20-funzionalita.md), con sequenza dei rilasci, dipendenze, schema previsto e criteri di accettazione. Lo [stato aggiornato delle funzionalità](docs/prod/roadmap.md) distingue ciò che è disponibile dai rilasci ancora da realizzare.
 

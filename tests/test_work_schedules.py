@@ -66,12 +66,14 @@ class WorkSchedulesIntegrationTests(unittest.TestCase):
         first = self.post("/api/work-schedules", self.schedule())["id"]
         second = self.post("/api/work-schedules", self.schedule(starts_on="2026-10-01", fri=120))["id"]
         self.assertNotEqual(first, second)
-        self.post("/api/work-schedules", self.schedule(starts_on="2026-10-01", fri=180), expected=200)
+        self.post("/api/work-schedules", self.schedule(starts_on="2026-10-01", fri=180, revision=1), expected=200)
         own = self.get("/api/work-schedules", self.worker_cookie)["schedules"]
         self.assertEqual([row["id"] for row in own], [second, first])
         self.assertEqual([row["fri"] for row in own], [180, 240])
         other = self.create_user(email="schedule-other@example.test")
         self.post("/api/work-schedules", self.schedule(user_id=other))
+        self.assertEqual(len(self.get("/api/work-schedules")["schedules"]), 2)
+        self.post("/api/groups/%d/members" % self.get("/api/groups")["groups"][0]["id"], {"user_id": other})
         self.assertEqual(len(self.get("/api/work-schedules")["schedules"]), 3)
         self.assertEqual(len(self.get("/api/work-schedules?user_id=%d" % self.worker_id)["schedules"]), 2)
         self.assert_error(403, "GET", "/api/work-schedules?user_id=%d" % other, cookie=self.worker_cookie)

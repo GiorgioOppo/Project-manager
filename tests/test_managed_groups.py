@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import native_application
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,8 @@ def database(path):
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT COLLATE NOCASE UNIQUE,name TEXT,role TEXT,active INTEGER);
+CREATE TABLE access_space_admins(user_id INTEGER PRIMARY KEY REFERENCES users(id));
+CREATE TABLE access_group_members(group_code TEXT,user_id INTEGER,PRIMARY KEY(group_code,user_id));
 CREATE TABLE oidc_identities(issuer TEXT,subject TEXT,user_id INTEGER UNIQUE REFERENCES users(id),PRIMARY KEY(issuer,subject));
 CREATE TABLE organization_groups(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,parent_id INTEGER REFERENCES organization_groups(id),CHECK(parent_id IS NULL OR parent_id<>id));
 CREATE TABLE oidc_groups(issuer TEXT,subject TEXT,group_id INTEGER UNIQUE REFERENCES organization_groups(id),active INTEGER,PRIMARY KEY(issuer,subject));
@@ -37,6 +40,7 @@ CREATE TABLE job_assignments(job_id INTEGER,user_id INTEGER,role_id INTEGER,star
 CREATE TABLE job_group_grants(job_id INTEGER,group_id INTEGER REFERENCES organization_groups(id),role_id INTEGER,starts_on TEXT,ends_on TEXT,PRIMARY KEY(job_id,group_id));
 CREATE TABLE audit_events(id INTEGER PRIMARY KEY,actor_id INTEGER,actor_name TEXT,actor_email TEXT,action TEXT,entity_type TEXT,entity_id INTEGER,before_json TEXT,after_json TEXT);
 INSERT INTO users VALUES(1,'admin@example.test','Admin','manager',1),(2,'worker@example.test','Worker','worker',1),(3,'other@example.test','Other','worker',1);
+INSERT INTO access_space_admins VALUES(1);
 INSERT INTO organization_groups VALUES(10,'Engineering',NULL),(11,'Design',10);
 INSERT INTO group_members VALUES(11,2);
 INSERT INTO job_roles VALUES(1,'reader','Lettore',0,1),(2,'contributor','Collaboratore',1,1);
@@ -73,7 +77,8 @@ void test_free(void *p) { free(p); }
         subprocess.run(["cc", "-shared", "-fPIC", "-D_POSIX_C_SOURCE=200809L", "-Dtime=managed_test_time", "-std=c11",
                         "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-I" + str(ROOT / "src"),
                         str(ROOT / "src/organization.c"), str(ROOT / "src/storage.c"),
-                        str(ROOT / "src/access_control.c"), str(helper),
+                        str(ROOT / "src/access_control.c"), *native_application.missing_sources("organization.c", "storage.c", "access_control.c"), str(helper),
+                        *native_application.link_flags(),
                         "-o", str(binary), "-lsqlite3", *flags], check=True, capture_output=True)
         cls.lib = ctypes.CDLL(str(binary))
         cls.lib.organization_open.argtypes = [ctypes.c_char_p]

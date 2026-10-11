@@ -468,6 +468,9 @@ static bool write_operation(InventoryOperation operation) {
         operation == INVENTORY_SUBJECT_CREATE || operation == INVENTORY_SUBJECT_REMOVE;
 }
 
+static InventoryPersonLookup person_lookup;
+void inventory_client_set_person_lookup(InventoryPersonLookup lookup) { person_lookup=lookup; }
+
 static char *build_form(InventoryOperation operation, const char *input, DbInt actor_id,
                        InventoryUserLookup lookup, int *error_status) {
     struct { char *name, *value; } fields[FIELD_LIMIT] = {{0}};
@@ -568,6 +571,11 @@ static char *build_form(InventoryOperation operation, const char *input, DbInt a
             }
             strcat(form, field_name); strcat(form, "="); strcat(form, encoded);
             free(encoded);
+            if (!strcmp(fields[i].name,"mine") && person_lookup) {
+                DbInt person=person_lookup(actor_id);
+                if(person<0){free(form);form=NULL;*error_status=503;break;}
+                if(person>0){char suffix[80];snprintf(suffix,sizeof(suffix),"&mapped_person_id=%lld",(long long)person);strcat(form,suffix);}
+            }
         }
         if (form && user_field) {
             char *encoded=encode(user_name);

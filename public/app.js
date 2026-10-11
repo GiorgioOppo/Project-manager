@@ -4,6 +4,12 @@
   if (window.PuntoI18n) await window.PuntoI18n.ready;
   const { t, locale } = window.PuntoI18n || { t: (source, values = []) => source.replace(/\{(\d+)\}/g, (_, index) => values[index]), locale: "it-IT" };
   const $ = (id) => document.getElementById(id);
+  const extensionListeners = new Set();
+  function notifyExtensions() {
+    for (const listener of extensionListeners) {
+      try { Promise.resolve(listener({ session: state.session, state })).catch(() => {}); } catch { /* Extensions expose their own contextual errors. */ }
+    }
+  }
   const states = { planned: t("Da avviare"), active: t("In corso"), paused: t("In pausa"), completed: t("Completata"), cancelled: t("Annullata") };
   const roles = { manager: t("Gestore"), worker: t("Operatore") };
   const contractStates = { draft: t("Bozza"), active: t("Attivo"), expired: t("Scaduto"), closed: t("Chiuso"), cancelled: t("Annullato") };
@@ -17,7 +23,7 @@
   Object.assign(state, { alertRules: [], alertUsers: [], alertRulesReady: false, alertRulesLoading: false, alertRulesRequest: 0, editingAlertRule: null, runningAlertRule: null, alertSmtpConfigured: false, notifications: [], notificationsReady: false, notificationsLoading: false, notificationsRequest: 0, notificationsUnread: 0, readingNotifications: new Set() });
   const alertTypes = {
     invalid_job: { label: t("Commessa inesistente"), description: t("Controlla i tentativi rifiutati di registrare ore su commesse inesistenti o eliminate. Le ore di questi tentativi non sono state salvate.") },
-    missing_hours: { label: t("Ore giornaliere mancanti"), description: t("Controlla le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore reali dalla fine della giornata in Europe/Rome. Il monitoraggio parte dalla creazione della regola.") },
+    missing_hours: { label: t("Ore giornaliere mancanti"), description: t("Confronta le ore registrate con l'orario di lavoro personale, considerando assenze approvate e festività. Il controllo parte dopo 48 ore reali dalla fine della giornata in Europe/Rome e dalla creazione della regola.") },
     inventory_due: { label: t("Scadenze inventario"), description: t("Controlla garanzie, manutenzioni, scadenze e rinnovi delle licenze. Include le date già superate; esclude beni dismessi o smarriti. Ogni destinatario riceve un solo avviso per asset, tipo di scadenza, data e anticipo impostato.") },
     inventory_return: { label: t("Restituzioni inventario scadute"), description: t("Controlla le consegne ancora aperte dal giorno successivo alla restituzione prevista. Esclude beni dismessi o smarriti; ogni nuova consegna può generare un nuovo avviso.") },
     inventory_verification: { label: t("Verifiche inventario"), description: t("Controlla i beni materiali mai verificati e quelli la cui ultima verifica ha raggiunto l’intervallo impostato. Esclude beni dismessi o smarriti; una nuova verifica avvia un nuovo intervallo.") }
@@ -84,7 +90,7 @@
 
   function redirectToLogin() {
     const hash = window.location.hash;
-    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash) || hash === "#calendar") ? hash : "";
+    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash) || /^#time-draft\?/.test(hash) || hash === "#calendar") ? hash : "";
     window.location.replace(window.PuntoI18n ? window.PuntoI18n.url("/" + retained) : "/" + retained);
   }
 
@@ -115,6 +121,8 @@
         const error = new Error((data.error ? t(data.error) : "") || (response.status === 403 ? t("Il tuo account non è abilitato a questa operazione.") : t("Non siamo riusciti a completare l’operazione. Riprova.")));
         error.status = response.status;
         error.sourceMessage = data.error;
+        error.row = data.row;
+        error.date = data.date;
         throw error;
       }
       if (fetchOptions.method && fetchOptions.method !== "GET" && /^\/api\/(?:time-entries|jobs|users|contracts|suppliers|groups|job-roles|labor-rates)(?:\/|$|\?)/.test(path)) invalidateReports();
@@ -509,7 +517,7 @@
     $("session-role").textContent = (Array.isArray(session.access_groups) ? session.access_groups : ["operator", ...(session.role === "manager" ? ["manager"] : []), ...(can("manage_contracts") ? ["sales"] : []), ...(can("view_costs") ? ["finance"] : [])]).map((code) => accessProfileLabels[code] || code).join(" · ");
     $("session-role").hidden = false;
     $("user-avatar").textContent = (session.name || session.email || "P").charAt(0).toUpperCase();
-    $("new-job").hidden = !can("manage_jobs");
+    $("new-job").hidden = !can("manage_jobs") || session.permissions?.manage_space === false;
     $("tab-suppliers").hidden = !can("view_suppliers");
     $("tab-contracts").hidden = !can("view_contracts");
     $("tab-users").hidden = !canReadUsers();
@@ -624,6 +632,7 @@
     $("documents-readonly-close").hidden = can("manage_contracts");
     renderJobs();
     renderEntries();
+    notifyExtensions();
     return true;
   }
 
@@ -675,6 +684,7 @@
     if (name === "work-schedules" && !workspaceFlows.scheduleLoading) refreshWorkSchedules();
     if (name === "notifications" && !workspaceFlows.notificationLoading) refreshWorkNotifications();
     if (["suppliers", "contracts"].includes(name) && !state[name + "Ready"] && !state[name + "Loading"]) refreshRegistry(name);
+    notifyExtensions();
   }
 
   function isReportManager() {
@@ -1157,10 +1167,10 @@
       actions.append(action(t("Riepilogo"), t("Apri riepilogo della commessa ") + job.name, () => openJobOverview(job)));
       actions.append(action(t("Attività"), t("Apri attività e blocchi di ") + job.name, () => { if (state.workBusy) return; resetWorkBoard(true); state.workJobId = String(job.id); selectTab("work-board"); }), node("span", "row-divider"));
       if (state.session?.tickets?.configured) actions.append(ticketAppLink(t("Ticket ↗"), "job", job.id), node("span", "row-divider"), ticketAppLink(t("+ Ticket"), "job", job.id, true), node("span", "row-divider"), ticketAppLink(t("Agenda ↗"), "job", job.id, false, true), node("span", "row-divider"));
-      if (can("manage_jobs")) actions.append(action(t("Modifica"), t("Modifica la commessa ") + job.name, () => openJob(job)), node("span", "row-divider"));
-      if (can("manage_jobs")) actions.append(action(t("Chiusura / archivio"), t("Gestisci chiusura e archivio di ") + job.name, () => openJobLifecycle(job)), node("span", "row-divider"));
-      if (can("manage_assignments")) actions.append(action(t("Spiega accesso"), t("Spiega accesso alla commessa ") + job.name, () => openJobAccess(job)), node("span", "row-divider"));
-      if (can("manage_assignments")) {
+      if (can("manage_jobs") && job.can_manage !== false) actions.append(action(t("Modifica"), t("Modifica la commessa ") + job.name, () => openJob(job)), node("span", "row-divider"));
+      if (can("manage_jobs") && job.can_manage !== false) actions.append(action(t("Chiusura / archivio"), t("Gestisci chiusura e archivio di ") + job.name, () => openJobLifecycle(job)), node("span", "row-divider"));
+      if (can("manage_assignments") && job.can_manage !== false) actions.append(action(t("Spiega accesso"), t("Spiega accesso alla commessa ") + job.name, () => openJobAccess(job)), node("span", "row-divider"));
+      if (can("manage_assignments") && job.can_manage !== false) {
         const count = Number(job.assigned_users) || 0;
         const groupCount = Number(job.assigned_groups) || 0;
         actions.append(action(t("Abilitazioni · ") + count + (groupCount ? " + " + groupCount + t(" gruppi") : ""), t("Gestisci le abilitazioni della commessa ") + job.name + ": " + count + t(" utenti e ") + groupCount + t(" gruppi"), () => openAssignments(job)), node("span", "row-divider"));
@@ -1183,7 +1193,7 @@
     $("jobs-table-footer").hidden = empty;
     $("jobs-empty-title").textContent = noJobs ? can("manage_jobs") ? t("La prossima commessa parte da qui.") : t("Nessuna commessa abilitata.") : t("Nessuna commessa corrisponde alla ricerca.");
     $("jobs-empty-description").textContent = noJobs ? can("manage_jobs") ? t("Aggiungi la prima commessa, scegli il suo stato e inizia a registrare il lavoro.") : t("Un gestore deve abilitarti a una commessa prima che tu possa registrare il lavoro svolto. Le ore già inserite restano nel tuo registro.") : t("Prova con un altro nome, codice o cliente, oppure cambia il filtro di stato.");
-    $("empty-new-job").hidden = !noJobs || !can("manage_jobs");
+    $("empty-new-job").hidden = !noJobs || !can("manage_jobs") || state.session?.permissions?.manage_space === false;
     $("clear-filters").hidden = noJobs;
     $("jobs-visible-count").textContent = `${jobs.length} ${jobs.length === 1 ? t("commessa") : t("commesse")}${jobs.length !== state.jobs.length ? t(" su ") + state.jobs.length : ""}`;
     ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => { $(id).hidden = !can("manage_jobs") && !state.jobs.some(canLogTime); });
@@ -1193,7 +1203,7 @@
   }
 
   function canLogTime(job) {
-    return !isJobArchived(job) && !isJobTimeClosed(job) && (can("manage_jobs") || job.can_log_time === true);
+    return !isJobArchived(job) && !isJobTimeClosed(job) && ((can("manage_jobs") && job.can_manage !== false) || job.can_log_time === true);
   }
 
   function isJobArchived(job) { return job?.archived === true || job?.archived === 1; }
@@ -1431,6 +1441,33 @@
   function updateHoursBatchTotal() {
     const minutes = timeWorkflow.batchRows.reduce((sum, row) => sum + (Number(row.minutes) || 0), 0);
     $("hours-batch-total").textContent = t("{0} righe da aggiungere · {1}. Nessuna registrazione ancora salvata.", [timeWorkflow.batchRows.length, minutesLabel(minutes)]);
+    clearTimeout(timeWorkflow.previewTimer);
+    const sequence = (timeWorkflow.previewSequence || 0) + 1; timeWorkflow.previewSequence = sequence;
+    timeWorkflow.previewTimer = setTimeout(async () => {
+      let preview = $("hours-batch-day-totals");
+      if (!preview) { preview = node("p", "workflow-note"); preview.id = "hours-batch-day-totals"; preview.setAttribute("aria-live", "polite"); $("hours-batch-total").after(preview); }
+      const rows = timeWorkflow.batchRows.map((row) => ({ date: row.date, minutes: Number(row.minutes) }));
+      if (rows.some((row) => !validDate(row.date) || !Number.isInteger(row.minutes) || row.minutes < 1)) { preview.textContent = ""; return; }
+      try { const days = await batchExistingTotals(rows); if (sequence !== timeWorkflow.previewSequence) return; preview.textContent = days.map((day) => t("{0}: già registrate {1} + nuove {2} = {3}", [dateLabel(day.date), minutesLabel(day.existing), minutesLabel(day.added), minutesLabel(day.existing + day.added)])).join(" · "); }
+      catch (error) { if (sequence === timeWorkflow.previewSequence) preview.textContent = error.message; }
+    }, 250);
+  }
+
+  async function batchExistingTotals(rows) {
+    const dates = [...new Set(rows.map((row) => row.date))], result = [], identity = state.session?.user_id;
+    for (let index = 0; index < dates.length; index += 4) {
+      const chunk = await Promise.all(dates.slice(index, index + 4).map(async (date) => {
+        const data = await api("/api/time-entries?date=" + encodeURIComponent(date));
+        if (state.session?.user_id !== identity) throw new Error(t("La sessione è cambiata. Riapri la bozza."));
+        const additions = rows.filter((row) => row.date === date), existing = Number(data.total_minutes), added = additions.reduce((sum, row) => sum + row.minutes, 0);
+        if (existing + added > 1440 || (data.entries || []).length + additions.length > 1000) {
+          const row = rows.findIndex((entry) => entry.date === date) + 1;
+          throw new Error(t("Riga {0}, giornata {1}: il totale finale supera 24 ore o 1000 registrazioni. Già registrati {2} minuti, nuovi {3}.", [row, dateLabel(date), existing, added]));
+        }
+        return { date, existing, added };
+      })); result.push(...chunk);
+    }
+    return result;
   }
 
   async function copyPreviousHoursWeek() {
@@ -1442,7 +1479,7 @@
       if (state.session?.email !== identity) return;
       const rows = (data.entries || []).map((entry) => ({ job_id: entry.job_id, task_id: entry.task_id || null, task_title: entry.task_title || "", date: shiftedWorkDate(entry.date, 7), minutes: entry.minutes, note: entry.note || "" }));
       if (!rows.length) { showNotice(t("La settimana precedente non contiene ore da copiare.")); return; }
-      if (rows.length > 100) { showNotice(t("La settimana precedente contiene più di 100 righe. Copia un gruppo più piccolo con Aggiungi righe."), true); return; }
+      if (rows.length > 100) { window.PuntoDrafts?.selectCopy(rows); return; }
       openHoursBatch(rows);
     } catch (error) { if (state.session?.email === identity) showNotice(error.message, true); }
     finally { timeWorkflow.copyBusy = false; updateTimeWorkflowControls(); }
@@ -1460,13 +1497,22 @@
     const totals = new Map(); rows.forEach((row) => totals.set(row.date, (totals.get(row.date) || 0) + row.minutes));
     if ([...totals.values()].some((minutes) => minutes > 1440)) { workflowError("hours-batch-error", new Error(t("Le nuove righe superano 24 ore nella stessa giornata. Riduci i minuti prima di confermare."))); return; }
     const payload = JSON.stringify(rows);
-    if (payload !== timeWorkflow.batchPayload) { timeWorkflow.batchKey = crypto.randomUUID(); timeWorkflow.batchPayload = payload; }
+    const changed = payload !== timeWorkflow.batchPayload || !timeWorkflow.batchKey;
     dialogBusy("hours-batch-dialog", true, "hours-batch-save", t("Conferma e salva tutte le righe"));
     try {
+      if (changed) { await batchExistingTotals(rows); timeWorkflow.batchKey = crypto.randomUUID(); timeWorkflow.batchPayload = payload; }
+      if (window.PuntoDrafts?.persistAttempt("batch") === false) throw new Error(t("Impossibile salvare la bozza su questo dispositivo."));
       await post("/api/time-entries/batch", { request_key: timeWorkflow.batchKey, entries: payload });
+      window.PuntoDrafts?.discard("batch");
       $("hours-batch-dialog").close(); state.auditReady = false; timeWorkflow.userId = ""; renderHoursTeam();
       showNotice(t("{0} registrazioni salvate.", [rows.length])); await refreshAll();
-    } catch (error) { workflowError("hours-batch-error", error); }
+    } catch (error) {
+      if (Number.isInteger(error.row) && error.row > 0 && error.row <= rows.length) {
+        error.message = t("Riga") + " " + error.row + (error.date ? " · " + dateLabel(error.date) : "") + ": " + error.message;
+        $("hours-batch-rows").children[error.row - 1]?.querySelector("select,input,textarea")?.focus();
+      }
+      workflowError("hours-batch-error", error);
+    }
     finally { dialogBusy("hours-batch-dialog", false, "hours-batch-save", t("Conferma e salva tutte le righe")); $("hours-batch-add").disabled = timeWorkflow.batchRows.length >= 100; $("hours-batch-save").disabled = !timeWorkflow.batchRows.length; }
   }
 
@@ -1481,6 +1527,7 @@
   }
 
   async function refreshTimeCorrections() {
+    if (window.PuntoOperations?.refreshCorrections) return window.PuntoOperations.refreshCorrections();
     if (!state.session?.authenticated || timeWorkflow.requestsLoading) return;
     const request = ++timeWorkflow.requestsRequest; timeWorkflow.requestsLoading = true;
     $("time-corrections-loading").hidden = false; $("time-corrections-error").hidden = true; $("time-corrections-refresh").disabled = true;
@@ -1588,7 +1635,7 @@
     $("job-lifecycle-reason").value = $("job-lifecycle-reason").value.trim(); if (!$("job-lifecycle-form").reportValidity()) return;
     dialogBusy("job-lifecycle-dialog", true, "job-lifecycle-save", t("Conferma operazione"));
     try {
-      await post("/api/jobs/" + encodeURIComponent(timeWorkflow.lifecycleJob.id) + "/lifecycle", { revision: timeWorkflow.lifecycle.lifecycle_revision, action: $("job-lifecycle-action").value, reason: $("job-lifecycle-reason").value });
+      await post("/api/jobs/" + encodeURIComponent(timeWorkflow.lifecycleJob.id) + "/lifecycle", { revision: timeWorkflow.lifecycle.lifecycle_revision, action: $("job-lifecycle-action").value, reason: $("job-lifecycle-reason").value, checklist_confirmed: $("io-checklist-confirmed")?.checked ? "1" : "0" });
       $("job-lifecycle-dialog").close(); state.auditReady = false; showNotice(t("Stato della commessa aggiornato. Dati e storico sono conservati.")); await refreshAll();
     } catch (error) { workflowError("job-lifecycle-error", error); if (error.status === 409) { timeWorkflow.lifecycle = null; $("job-lifecycle-retry").hidden = false; } }
     finally { dialogBusy("job-lifecycle-dialog", false, "job-lifecycle-save", t("Conferma operazione")); $("job-lifecycle-save").disabled = !timeWorkflow.lifecycle; }
@@ -1767,7 +1814,7 @@
 
   function openWorkSchedule(kind, item = null) {
     if (!can("manage_jobs") || busyDialogs.has("work-schedule-dialog")) return;
-    workspaceFlows.scheduleKind = kind; $("work-schedule-form").reset(); $("work-schedule-error").hidden = true;
+    workspaceFlows.scheduleKind = kind; workspaceFlows.scheduleRevision = item?.revision || null; workspaceFlows.scheduleKey = item ? String(item.user_id) + ":" + item.starts_on : null; $("work-schedule-form").reset(); $("work-schedule-error").hidden = true;
     const schedule = kind === "schedule", holiday = kind === "holiday";
     $("work-schedule-title").textContent = schedule ? t("Imposta orario settimanale") : holiday ? t("Festività aziendale") : t("Assenza o eccezione personale");
     $("work-schedule-person-field").hidden = holiday; $("work-schedule-person").disabled = holiday; $("work-schedule-person").required = !holiday;
@@ -1788,7 +1835,7 @@
     const kind = workspaceFlows.scheduleKind, fields = {};
     if (!validDate($("work-schedule-date").value)) { workflowError("work-schedule-error", new Error(t("Inserisci una data valida."))); return; }
     let endpoint;
-    if (kind === "schedule") { endpoint = "/api/work-schedules"; fields.user_id = $("work-schedule-person").value; fields.starts_on = $("work-schedule-date").value; for (const [key] of workflowWeekDays) fields[key] = $("work-schedule-" + key).value; }
+    if (kind === "schedule") { endpoint = "/api/work-schedules"; fields.user_id = $("work-schedule-person").value; fields.starts_on = $("work-schedule-date").value; const key = String(fields.user_id) + ":" + fields.starts_on, existing = workspaceFlows.schedules.find((item) => String(item.user_id) === String(fields.user_id) && item.starts_on === fields.starts_on), revision = key === workspaceFlows.scheduleKey ? workspaceFlows.scheduleRevision || 0 : existing?.revision || 0; if (revision) fields.revision = revision; for (const [key] of workflowWeekDays) fields[key] = $("work-schedule-" + key).value; }
     else if (kind === "exception") { endpoint = "/api/work-exceptions"; Object.assign(fields, { user_id: $("work-schedule-person").value, date: $("work-schedule-date").value, expected_minutes: $("work-schedule-minutes").value, reason: $("work-schedule-reason").value }); }
     else { endpoint = "/api/business-holidays"; Object.assign(fields, { date: $("work-schedule-date").value, name: $("work-schedule-reason").value }); }
     dialogBusy("work-schedule-dialog", true, "work-schedule-save", t("Salva"));
@@ -1980,9 +2027,11 @@
     const payload = JSON.stringify(fields); if (payload !== wizard.payload) { wizard.key = crypto.randomUUID(); wizard.payload = payload; }
     fields.request_key = wizard.key; dialogBusy("job-wizard-dialog", true, "job-wizard-save", t("Crea commessa, squadra e attività"));
     try {
+      if (window.PuntoDrafts?.persistAttempt("wizard") === false) throw new Error(t("Impossibile salvare la bozza su questo dispositivo."));
       if (!wizard.createdId) { const result = await post("/api/jobs/wizard", fields); wizard.createdId = result.id; wizard.createdDefinition = definition; }
       const template = $("job-wizard-save-template").value.trim();
       if (template) await post("/api/job-templates", { name: template, definition: JSON.stringify(wizard.createdDefinition) });
+      window.PuntoDrafts?.discard("wizard");
       $("job-wizard-dialog").close(); state.auditReady = false; selectTab("jobs"); showNotice(t("Commessa, squadra e attività iniziali create.")); await refreshAll();
       const job = state.jobs.find((item) => String(item.id) === String(wizard.createdId)); if (job) openJobOverview(job);
     } catch (error) { workflowError("job-wizard-error", new Error(wizard.createdId ? t("La commessa è stata creata. Il modello non è stato salvato: {0}. Correggi il nome e riprova; la commessa non verrà creata nuovamente.", [error.message]) : error.message)); }
@@ -2031,11 +2080,11 @@
     const groups = Array.from($("access-groups-options").querySelectorAll("input:checked:not(:disabled)"), (input) => input.value);
     $("access-groups-error").hidden = true; dialogBusy("access-groups-dialog", true, "access-groups-save", t("Salva profili"));
     try {
-      await post("/api/users/" + encodeURIComponent(user.id) + "/access-groups", { groups: JSON.stringify(groups) });
+      const result = await post("/api/users/" + encodeURIComponent(user.id) + "/access-groups", { groups: JSON.stringify(groups), revision: accessProfiles.data.revision });
       if (state.session?.email !== identity) return;
       $("access-groups-dialog").close(); state.auditReady = false;
       if (user.email === identity) await refreshSession(); else await refreshUsers();
-      showNotice(t("Profili funzionali aggiornati. I permessi si applicano alle richieste successive."));
+      showNotice(result.pending ? t("Richiesta inviata: un altro amministratore deve approvare i profili.") : t("Profili funzionali aggiornati. I permessi si applicano alle richieste successive."));
     } catch (error) { if (state.session?.email === identity) workflowError("access-groups-error", error); }
     finally { dialogBusy("access-groups-dialog", false, "access-groups-save", t("Salva profili")); for (const input of $("access-groups-options").querySelectorAll("input")) input.disabled = !["sales", "finance"].includes(input.value); }
   }
@@ -2190,6 +2239,7 @@
         state[kind + "Loading"] = false;
         $(kind + "-loading").hidden = true;
         $(kind + "-retry").disabled = false;
+        notifyExtensions();
       }
     }
   }
@@ -3349,6 +3399,7 @@
     }
     await Promise.all(tasks);
     if (request === state.refreshRequest) $("retry-load").disabled = false;
+    if (request === state.refreshRequest) notifyExtensions();
   }
 
   function dialogError(id, error) {
@@ -3665,7 +3716,7 @@
   let inventorySearchTimer;
   Object.assign(state, { inventoryBackup: null, inventoryExporting: false, inventoryImportRequest: 0, inventoryImportBusy: false, inventoryImportPlan: null });
 
-  function isInventoryManager() { return state.session?.role === "manager"; }
+  function isInventoryManager() { return state.session?.role === "manager" && state.session?.permissions?.manage_space !== false; }
 
   Object.assign(state, { inventoryPlaces: [], inventoryPlacesReady: false, inventoryPlacesRequest: 0, inventoryUsers: [], inventoryUsersReady: false, inventoryUsersRequest: 0, inventoryDirectoryRequest: 0, inventoryDirectoryBusy: false, inventoryDirectoryEditing: null, inventoryContextRequest: 0, inventoryContextAsset: null, inventoryContextBusy: false, inventoryContextLoading: false, inventoryContextConflict: false, inventoryOperationRequest: 0, inventoryOperationAsset: null, inventoryOperation: null, inventoryOperationBusy: false, inventoryOperationLoading: false, inventoryOperationConflict: false, inventoryCustodyRequest: 0, inventoryCustodyItems: [], inventoryCustodyCursor: null, inventoryCustodyLoading: false, inventoryCustodyRetryMore: false, inventoryVerificationsRequest: 0, inventoryVerificationItems: [], inventoryVerificationsCursor: null, inventoryVerificationsLoading: false, inventoryVerificationsRetryMore: false });
   const inventoryPlaceKinds = { site: t("Sede"), department: t("Reparto"), location: t("Ubicazione") };
@@ -6133,7 +6184,7 @@
     try {
       await post("/api/time-entries" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
-      $("entry-dialog").close();
+      window.PuntoDrafts?.discard("entry"); $("entry-dialog").close();
       timeWorkflow.userId = ""; renderHoursTeam();
       state.selectedDate = fields.date;
       $("entry-date-filter").value = fields.date;
@@ -6777,5 +6828,15 @@
       $("session-status").textContent = error.message + t(" Ricarica la pagina per riprovare.");
     }
   }
+  window.PuntoExtensions = Object.freeze({
+    api, post, can, t, locale, refreshAll, selectTab, showNotice,
+    openHoursBatch, renderHoursBatch, openEntry, localDate, hoursToMinutes, validDate, viewingOwnHours,
+    openJobWizard, renderJobWizardTeam, renderJobWizardTasks, renderJobWizardStep,
+    renderTimeCorrections, openTimeDecision,
+    timeWorkflow, workspaceFlows,
+    session: () => state.session, getState: () => state,
+    register(listener) { extensionListeners.add(listener); if (state.session) listener({ session: state.session, state }); return () => extensionListeners.delete(listener); }
+  });
+  window.dispatchEvent(new Event("punto:extensions-ready"));
   initialize();
 })();

@@ -63,8 +63,9 @@ L’applicazione attuale ha un unico spazio operativo. Le società separate e i 
 | Notifiche | Implementato | Avvisi personali, contatore e marcatura come letti |
 | Storico | Implementato | Eventi delle modifiche con autore, data e dettagli precedenti/successivi, riservati ai gestori |
 | Invio email | Parziale nell’uso operativo | Addon e coda implementati; SMTP ancora da configurare, quindi nessuna spedizione reale |
-| Google Calendar | Parziale nell’uso operativo | Addon C e API di sincronizzazione bidirezionale implementati; OAuth da configurare; schermata calendario e collegamento alle ore ancora da sviluppare |
-| Modulo finanziario completo | Pianificato | Più società e valute, budget, fatture, incassi, pagamenti, partite e reporting finanziario |
+| Google Calendar | Richiede configurazione del provider | Addon C, interfaccia personale, sincronizzazione e proposta ore con conferma implementati; OAuth e consenso individuale necessari |
+| Controllo economico EUR | Implementato | Finance consulta budget, previsione e costi; approva fotografie immutabili dei periodi e rettifiche motivate |
+| Modulo finanziario completo | Pianificato | Più società e valute, fatture, incassi, pagamenti, partite e reporting contabile |
 
 «Implementato» descrive una funzione presente nel codice e nell’interfaccia, dove prevista. «Parziale» indica che una parte tecnica è disponibile ma il percorso operativo richiede ancora configurazione o interfaccia. «Pianificato» indica un progetto, non una funzione già utilizzabile.
 

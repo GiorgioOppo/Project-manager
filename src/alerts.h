@@ -4,6 +4,10 @@
 #include <time.h>
 
 bool alerts_open(const char *db_path);
+bool alerts_outbox_controls_schema(Db *db);
+struct json_object;
+void alerts_outbox_handle(Db *db,const char *method,struct json_object *fields,
+                         DbInt actor_id,WorkspaceResponse *response);
 void alerts_close(void);
 bool alerts_handle(const char *method, const char *target, const char *query,
                    const char *body, DbInt actor_id, const char *role,

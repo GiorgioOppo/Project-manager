@@ -2,7 +2,7 @@
 
 [Italiano](../../tehnical/modello-dati.md) | **English**
 
-Verified against the repository code on **11 October 2026**. Application schema **10**; SQLite calendar schema **1** and SQLite inventory schema **5**. This document describes the current implementation, rather than the financial or cryptographic proposals in the roadmap.
+Verified against the repository code on **11 October 2026**. Application schema **14**; SQLite calendar schema **2** and SQLite inventory schema **6**. This document describes the current implementation, rather than the financial or cryptographic proposals in the roadmap.
 
 Sources: [MySQL DDL](../../../src/mysql_schema.c), [migrations](../../../src/storage.c), [users](../../../src/accounts.c), [projects and time](../../../src/workspace.c), [organization](../../../src/organization.c), [tasks and blockers](../../../src/work_board.c), [contracts](../../../src/procurement.c), [documents](../../../src/documents.c), [alerts](../../../src/alerts.c), [mailer](../../../addon/src/mailer.c), [calendar](../../../calendar-addon/src/calendar.c) and [Compose](../../../compose.yaml).
 
@@ -10,7 +10,7 @@ Sources: [MySQL DDL](../../../src/mysql_schema.c), [migrations](../../../src/sto
 
 | Store | Default name/path | Contents and owner |
 | --- | --- | --- |
-| MySQL InnoDB, three Group Replication replicas | `punto`, configurable with `MYSQL_DATABASE`/`DB_NAME` | The 25 application tables described below. Three nodes replicate the same logical database: they are not three separate business databases. |
+| MySQL InnoDB, three Group Replication replicas | `punto`, configurable with `MYSQL_DATABASE`/`DB_NAME` | The application tables described below and the schema 14 extensions. Three nodes replicate the same logical database: they are not three separate business databases. |
 | Application SQLite, native development | `DB_PATH`, default `data/punto.db` | An alternative to MySQL for the same features; versioned through `PRAGMA user_version`. |
 | MongoDB GridFS | `punto_documents`, configurable with `DOC_DB_NAME` | Original PDFs and GridFS metadata, managed by the app through the document account. |
 | Nginx Proxy Manager SQLite | `nginx-proxy-manager/data/database.sqlite` on the host, `/data/database.sqlite` in the container | NPM configuration, NPM administrative users, proxy hosts and certificate references. The schema belongs to NPM 2.16.0, not to application migrations. |
@@ -71,13 +71,13 @@ erDiagram
 
 `alert_events.job_id` intentionally has no FK: it records attempts involving a nonexistent project. `audit_events.entity_id` is a historical polymorphic reference, not an FK: history survives deletion of the entity.
 
-## Functional catalog of the 25 MySQL tables
+## Functional catalog of the base MySQL tables
 
-The complete DDL at the end specifies **every column, type, nullability, default, index, key and CHECK**. This section explains responsibilities and rules that the DDL alone does not express.
+The base DDL below retains historical schema 10. Later extensions are described here; migration sources provide the complete current column and constraint definitions.
 
 | Table | Responsibility and interpretation |
 | --- | --- |
-| `schema_metadata` | One row `id=1`; `version=10` after migrations. An unknown future version prevents startup. |
+| `schema_metadata` | One row `id=1`; `version=14` after migrations. An unknown future version prevents startup. |
 | `cluster_write_guard` | One row `id=1`, `generation>=0`; updated at the start of application writes so the cluster certifies transaction conflicts, including rules depending on aggregates. This is not user data. |
 | `users` | Application identity: unique email, name, global `manager`/`worker` role, enabled state, password hash and salt. The API does not expose hash/salt. Active on creation; reversible disabling; no exposed user deletion. |
 | `oidc_identities` | Persistent link from the exact `(issuer,subject)` pair to the local `user_id`, itself unique and an FK to `users`. Identifies users independently of email changes and prevents two identities from claiming the same profile. Contains no passwords or tokens. |
@@ -103,9 +103,26 @@ The complete DDL at the end specifies **every column, type, nullability, default
 | `alert_email_outbox` | Email request persisted in SQL with recipient and content. Uniqueness `(rule_id,email,event_key)`; states `pending_configuration`, `retrying`, `sent`, `delivery_unknown`, `delivery_failed`. |
 | `audit_events` | Append-only history: actor with snapshotted name/email, action, entity type/ID, before/after JSON. `actor_id=NULL` for system operations. The audit may contain personal data and copies of business values. |
 
+### Current extensions, schema 14
+
+| Tables or columns | Responsibility |
+| --- | --- |
+| `access_governance_state`, `access_space_admins` | One-time administrator migration and subsequent explicit appointments, separate from the Manager role. |
+| `access_area_delegations` | Organizational scope, four independent powers, dates, revision and revocation. |
+| `access_profile_revisions`, `access_profile_requests` | Sales/Finance revisions, independent approval and audited single-administrator bootstrap. |
+| `operations_absences` | Requested intervals and decisions; approval creates daily exceptions. |
+| `operations_template_versions`, `operations_checklist` | Template versions and explicit Ticket/asset closure references. |
+| `job_tasks.estimated_minutes`, `user_work_schedules.revision`, `job_templates.revision/archived` | Estimates, concurrent-edit protection and template lifecycle. |
+| `ii_contract_revisions`, `ii_job_contract_revisions` | Immutable published revisions and the version selected for each project. |
+| `ii_economic_periods`, `ii_economic_corrections`, `ii_job_budgets` | Immutable cost snapshots, global closed periods, separate adjustments and forecasts. |
+| `ii_time_drafts`, `ii_inventory_person_accounts` | Confirmed/idempotent personal time proposals and verified person–account mappings. |
+| `ii_email_controls` | Delivery claims, cancellation and explicit review of uncertain outcomes, retaining the historical outbox CHECK. |
+
+The full current extension DDL lives in [governance](../../../src/improvements_governance.c), [operations](../../../src/improvements_operations.c), [integrations](../../../src/improvements_integrations.c) and [alerts](../../../src/alerts.c). Explicit device drafts use localStorage rather than the server proposal table. Permanent project deletion returns a conflict when consolidated hours, economic adjustments, budget or published contract references require retention.
+
 ### Integrity, deletion and concurrency
 
-MySQL FKs do not declare `ON DELETE CASCADE`: deletion is normally restrictive. The project deletion API explicitly removes blockers, parent relationships between tasks, tasks, time entries, direct assignments and group grants, then the project, in the same transaction as the audit. The audit retains deleted identities and aggregate counts; it is not a complete backup of time entries. The contract, supplier and PDFs are not deleted by this operation.
+Base-table MySQL FKs do not declare `ON DELETE CASCADE`: deletion is normally restrictive. The project deletion API explicitly removes blockers, parent relationships between tasks, tasks, time entries, direct assignments and group grants, then the project, in the same transaction as the audit. The audit retains deleted identities and aggregate counts; it is not a complete backup of time entries. The contract, supplier and PDFs are not deleted by this operation.
 
 Deleting a task is rejected if it has children. Otherwise, it unlinks blockers without deleting them, increments their revisions and retains the audit of removal and unlinking. Composite FKs `(job_id,parent_id)` and `(job_id,task_id)` prevent links between different projects. Cycle and depth checks remain application responsibilities. Updates and deletions require the current revision, unlike projects, which have no optimistic version.
 
@@ -120,7 +137,7 @@ Additional MySQL triggers:
 
 `time_entries.user_id` remains nullable for compatibility with data predating the identity migration. SQLite attempts linking by email; rows that cannot be reconciled remain historical and do not become another user's personal hours.
 
-Checks for 24 hours per day, the last active manager, maximum entity counts, rate overlaps, assignment validity, group cycles and task hierarchies require the application. Writing directly in SQL can violate business rules even when all CHECKs pass. Application writes update `cluster_write_guard` before checking rules; contention and unavailability may return a temporary error. Business APIs have no universal idempotency key: after an ambiguous response, reread the state before creating a second entity.
+Checks for 24 hours per day, the last active space administrator, maximum entity counts, rate overlaps, assignment validity, group cycles and task hierarchies require the application. Writing directly in SQL can violate business rules even when all CHECKs pass. Application writes update `cluster_write_guard` before checking rules; contention and unavailability may return a temporary error. Business APIs have no universal idempotency key: after an ambiguous response, reread the state before creating a second entity.
 
 ## Application SQLite and migrations
 
@@ -138,10 +155,14 @@ In native mode, `users`, `jobs` and `time_entries` are initialized by their resp
 | 8 | Tasks and subtasks, Kanban states and blockers with revisions, FKs within the same project and auditing of new operations. |
 | 9 | `inventory_due` alert rules and `days_before` lead time for inventory expiry dates; no new application table. |
 | 10 | `inventory_return` and `inventory_verification` rules, `verification_days` interval 1–365 (default 90). Preserves IDs, sequence, FKs, recipients and delivery history; no new application table. |
+| 11 | Compatible version accepted by step 12; no separate migration 11 event. |
+| 12 | Weekly and batch time logs, corrections, task-linked hours, schedules, templates and project lifecycle. |
+| 13 | Explicit sensitive profiles and organizational team-hour visibility. |
+| 14 | Administrators and delegations, independent profile approval, capacity and absences, versioned templates, contract revisions, immutable economic periods, budgets, personal proposals and integration controls. |
 
-SQLite has neither `schema_metadata` nor `cluster_write_guard`: it uses `PRAGMA user_version` and `BEGIN IMMEDIATE` transactions. Its business schema includes the other 23 tables; `sqlite_sequence` is an internal SQLite table. MySQL DDL must not be copied to the SQLite file. Migrations are performed by the app, without an HTTP migration endpoint.
+SQLite has neither `schema_metadata` nor `cluster_write_guard`: it uses `PRAGMA user_version` and `BEGIN IMMEDIATE` transactions. Its business schema includes the business tables and schema 14 extensions; `sqlite_sequence` is an internal SQLite table. MySQL DDL must not be copied to the SQLite file. Migrations are performed by the app, without an HTTP migration endpoint.
 
-The `oidc_identities` table is created idempotently during SQLite account initialization and MySQL schema preparation, including in local authentication mode, without incrementing version 10. In SQLite, `issuer` and `subject` are `TEXT COLLATE BINARY` with a composite PK, while `user_id` is `INTEGER NOT NULL UNIQUE REFERENCES users(id)`; in MySQL, provider keys use `VARBINARY`, as shown in the DDL below.
+The `oidc_identities` table is created idempotently during SQLite account initialization and MySQL schema preparation, including in local authentication mode, without incrementing version 14. In SQLite, `issuer` and `subject` are `TEXT COLLATE BINARY` with a composite PK, while `user_id` is `INTEGER NOT NULL UNIQUE REFERENCES users(id)`; in MySQL, provider keys use `VARBINARY`, as shown in the DDL below.
 
 In native mode, PDFs are local files in the `DOC_FILES_DIR` directory, or the `documents` subdirectory next to the `DB_PATH` file (default `data/documents`), with validated keys and symlink exclusion. In Docker, the document backend is MongoDB.
 
@@ -174,7 +195,7 @@ WAL and `synchronous=FULL`; the `sending` state is committed to disk before the 
 
 ## Calendar store
 
-SQLite uses FKs, WAL, `synchronous=FULL`, `user_version=1`, a 3-second contention timeout and separate connections for the API and worker. Its five tables are:
+SQLite uses FKs, WAL, `synchronous=FULL`, `user_version=2`, a 3-second contention timeout and separate connections for the API and worker. Its five tables are:
 
 | Table | Columns and constraints |
 | --- | --- |
@@ -221,7 +242,7 @@ FHE/homomorphic computation, vaults with per-user or per-field keys, KMS/HSM, pa
 
 For consistent backup and restore procedures, see [operations](operazioni-backup-ripristino.md). For constraints exposed to callers, see [app API](api-app.md) and [addon API](api-addon.md).
 
-## Complete MySQL DDL, schema 10
+## Base MySQL DDL, historical schema 10
 
 The following definitions are extracted from the DDL strings in `mysql_schema_prepare()` and formatted without changing their contents. They are a reference for the expected schema, **not a script to run to manually upgrade an existing database**: migrations also include checks, triggers, initial data and audit.
 

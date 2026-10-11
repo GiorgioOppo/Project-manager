@@ -84,7 +84,7 @@ The Calendar worker, however, is a separate thread with its own SQLite connectio
 
 ## Persistence, consistency and transactions
 
-The current application schema is **version 10**, with 24 MySQL tables or 22 functional SQLite tables, in addition to the internal `sqlite_sequence` table. Schema 9 extends alert rules with `inventory_due` and `days_before`; schema 10 adds `inventory_return`, `inventory_verification` and `verification_days` (1–365, default 90). Both preserve IDs, relationships and history without adding further application tables. The `job_tasks` and `job_blockers` tables, introduced in schema 8, use the same persistence as projects; they do not introduce a separate service or database. Migrations run at startup, and databases with unsupported versions are rejected. Calendar does not add tables to the MySQL schema: it keeps its data in its dedicated volume.
+The current application schema is **14**, with equivalent business behavior in SQLite and MySQL. It includes groups and explicit profiles, corrections, schedules, lifecycle, delegations, versions and economic periods. Startup applies migrations and rejects unknown future versions. Calendar and inventory retain independent stores, at schemas 2 and 6 respectively. See the data model and API catalogue for details.
 
 MySQL stores management data, PDF metadata and the alert outbox. GridFS stores PDF bytes. An upload spans both stores without a distributed transaction: a failure can leave an unreferenced blob, and there is no automatic reconciliation. Coordinated backups must preserve both SQL data and documents.
 

@@ -3,13 +3,14 @@
 #ifdef PUNTO_MYSQL
 
 #include "db.h"
+#include "improvements.h"
 
 #include <stddef.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
-#define MYSQL_SCHEMA_VERSION 13
+#define MYSQL_SCHEMA_VERSION 14
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -656,6 +657,7 @@ bool mysql_schema_prepare(void) {
     if (okay) okay = ensure_time_entry_columns(database);
     if (okay) okay = ensure_email_statuses(database);
     if (okay) okay = ensure_inventory_alerts(database);
+    if (okay) okay = improvements_schema(database);
     if (okay) okay = db_exec(database,
         "INSERT IGNORE INTO schema_metadata(id,version) VALUES(1,0)",
         NULL, NULL, NULL) == DB_OK;

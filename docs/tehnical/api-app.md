@@ -2,13 +2,13 @@
 
 **Italiano** | [English](../en/tehnical/api-app.md)
 
-Contratto verificato sul codice l’**11 ottobre 2026**, schema dati 13. Le API usano il prefisso `/api` sull'origine pubblica dell'app, per esempio `https://progetti.tuaazienda.it`. I nomi e i metodi sotto sono quelli implementati: l'aggiornamento usa `POST`, non `PUT` o `PATCH`.
+Contratto verificato sul codice l’**11 ottobre 2026**, schema dati 14. Le API usano il prefisso `/api` sull'origine pubblica dell'app, per esempio `https://progetti.tuaazienda.it`. I nomi e i metodi sotto sono quelli implementati: l'aggiornamento usa `POST`, non `PUT` o `PATCH`.
 
 Fonti: [router HTTP](../../src/server.c), [utenti](../../src/accounts.c), [commesse, ore, report, tariffe](../../src/workspace.c), [organizzazione](../../src/organization.c), [attività e blocchi](../../src/work_board.c), [fornitori e contratti](../../src/procurement.c), [alert](../../src/alerts.c), [audit](../../src/storage.c), [bridge calendario](../../src/calendar_client.c). Tipi persistenti nel [modello dati](modello-dati.md); chiamate interne in [API addon](api-addon.md).
 
-## Policy corrente dello schema 13
+## Policy corrente dello schema 14
 
-Questa sezione ha precedenza sulle descrizioni di accesso delle tabelle preesistenti sottostanti. Il server risolve da database ruolo, profili e squadra a ogni richiesta, anche con sessioni aperte: conoscere un ID o conservare un URL non concede accesso.
+Le autorizzazioni sono verificate per risorsa anche quando il ruolo generale è Gestore. Il server risolve da database ruolo, profili e squadra a ogni richiesta, anche con sessioni aperte: conoscere un ID o conservare un URL non concede accesso.
 
 - `operator` è implicito per ogni account attivo; `manager` deriva dal ruolo dell’identità. `sales` e `finance` sono assegnazioni locali esplicite, anche per Keycloak. Nessun manager le riceve automaticamente.
 - Fornitori, contratti, metadati PDF e download richiedono Sales oppure Finance. Creazione/modifica e caricamento PDF richiedono Sales. Finance è in sola lettura; il solo ruolo manager riceve `403`. Cambiare il contratto di una commessa richiede manager + Sales; i campi contrattuali sono omessi dalle commesse per chi non può leggerli.
@@ -18,16 +18,16 @@ Questa sezione ha precedenza sulle descrizioni di accesso delle tabelle preesist
 
 | Metodo e percorso | Contratto corrente |
 | --- | --- |
-| `GET /api/access-groups` | Manager; catalogo dei quattro profili predefiniti. |
-| `GET /api/users/{id}/access-groups` | Manager; `user_id`, `active`, `role`, `selected` espliciti ed `effective` derivati. |
-| `POST /api/users/{id}/access-groups` | Manager; unico campo form `groups`, array JSON di `sales` e/o `finance`; `[]` revoca entrambi. Sostituzione atomica e audit; funziona anche con identità gestita da Keycloak. |
+| `GET /api/access-groups` | Amministratore; catalogo dei quattro profili predefiniti. |
+| `GET /api/users/{id}/access-groups` | Amministratore; `user_id`, `active`, `role`, `selected` espliciti ed `effective` derivati. |
+| `POST /api/users/{id}/access-groups` | Amministratore; `groups` array JSON Sales/Finance e `revision`. Con almeno due amministratori attivi risponde `202 pending`, applicato soltanto dopo decisione distinta. Con un solo amministratore risponde `200 bootstrap`, tracciato nello storico. |
 | `GET /api/time-team` | Utente attivo, senza query; `{scope,users:[{id,name,email,active}]}` contiene soltanto le persone attualmente visibili, inclusi gli account storici disattivati nella squadra. |
 | `GET /api/time-entries?date=YYYY-MM-DD&user_id=N` | `user_id` facoltativo, predefinito sé stesso; un collega deve appartenere alla squadra corrente. Le righe altrui sono in sola lettura. |
 | `GET /api/time-entries/week?date=YYYY-MM-DD&user_id=N` | Settimana lunedì–domenica contenente la data; stesso ambito personale/squadra. |
 
 `GET /api/session` ora include `user_id` e flag UI distinti: `view_contracts`, `view_suppliers`, `view_costs`, `view_labor_rates`, `manage_labor_rates`, `view_team_hours`, `manage_access_groups`, oltre ai flag amministrativi. `manage_contracts` e `manage_suppliers` dipendono da Sales; i flag di costo da Finance. I flag descrivono la UI e non sostituiscono i controlli live dei moduli.
 
-Fonti della policy: [controllo accessi](../../src/access_control.c), [rettifiche](../../src/time_corrections.inc), [settimana](../../src/time_week.inc). Per i nuovi flussi operativi vedere la [guida schema 13](../prod/flussi-operativi.md).
+Fonti della policy: [controllo accessi](../../src/access_control.c), [rettifiche](../../src/time_corrections.inc), [settimana](../../src/time_week.inc). Per i nuovi flussi operativi vedere la [guida schema 14](../prod/flussi-operativi.md).
 
 ## Convenzioni HTTP
 
@@ -96,29 +96,29 @@ Risposta autenticata:
 }
 ```
 
-L’esempio sopra mostra i flag originari; il contratto corrente include `user_id` e i nuovi flag della policy schema 13. I permessi sono descrittivi per la UI; il backend controlla comunque ogni operazione. Il contatore login è per processo, non per singolo account o IP.
+L’esempio sopra mostra i flag originari; il contratto corrente include `user_id` e i nuovi flag della policy schema 14. I permessi sono descrittivi per la UI; il backend controlla comunque ogni operazione. Il contatore login è per processo, non per singolo account o IP.
 
 ## Utenti
 
-Tutti gli endpoint di questa sezione richiedono `manager`. Query non ammesse.
+La lettura richiede Gestore ed è limitata all’ambito delegato, salvo amministratore. La creazione richiede amministratore. La modifica di un lavoratore richiede una delega utenti sul suo gruppo; ruolo, amministratori e identità gestite richiedono i controlli amministrativi. Query non ammesse.
 
 | Metodo e percorso | Corpo | Esito |
 | --- | --- | --- |
-| `GET /api/users` | — | `200 {"users":[...]}` con `id`, `name`, `email`, `role`, `active`. |
+| `GET /api/users` | — | `200 {"users":[...]}` con `id`, `name`, `email`, `role`, `active`, `admin`, `can_manage`, `profile_revision` e `access_groups`. |
 | `POST /api/users` | `name`, `email`, `password`, `role` | `201 {"ok":true,"id":...}`. Creato attivo. |
 | `POST /api/users/{id}` | `name`, `role`, `active` | `200 {"ok":true}`. Non accetta cambio email o password. |
 
-Nome UTF-8 1–120 caratteri; email validata/canonicalizzata e univoca; password 8–1024 byte UTF-8 senza tab/CR/LF; ruolo `manager` o `worker`; massimo 200 utenti. `409` per email duplicata, limite raggiunto o tentativo di disabilitare/declassare l'ultimo gestore attivo. Non sono esposti reset password, cancellazione utente o endpoint di registrazione pubblica.
+Nome UTF-8 1–120 caratteri; email validata/canonicalizzata e univoca; password 8–1024 byte UTF-8 senza tab/CR/LF; ruolo `manager` o `worker`; massimo 200 utenti. `409` per email duplicata, limite raggiunto o tentativo di disabilitare/declassare l'ultimo amministratore attivo. Non sono esposti reset password, cancellazione utente o endpoint di registrazione pubblica.
 
 ## Commesse e registrazioni ore
 
 | Metodo e percorso | Accesso | Campi/query | Esito |
 | --- | --- | --- | --- |
-| `GET /api/jobs` | Gestore: tutte; lavoratore: comuni e abilitate. | Nessuna query. | `200 {"jobs":[...]}`. |
-| `POST /api/jobs` | Gestore. | `code`, `name`, `client`, `description`, `status`, facoltativi `contract_id`, `is_common`. | `201 {"ok":true,"id":...}`. |
-| `POST /api/jobs/{id}` | Gestore. | Stessi campi. Codice, nome e stato vanno inviati; `contract_id`/`is_common` omessi conservano il valore precedente. | `200 {"ok":true,"id":...}`. |
-| `DELETE /api/jobs/{id}` | Gestore. | Corpo vuoto. | `200 {"ok":true}`; elimina anche attività, blocchi, ore, assegnazioni e grant della commessa. |
-| `GET /api/time-entries?date=YYYY-MM-DD` | Utente autenticato. | `date` obbligatoria; nessun `user_id`. | `200 {"entries":[...],"total_minutes":...}` delle **sole proprie ore**, anche per il gestore. |
+| `GET /api/jobs` | Amministratore: tutte; gestore: commesse gestite o abilitate; operatore: comuni e abilitate. | Nessuna query. | `200 {"jobs":[...]}`. |
+| `POST /api/jobs` | Amministratore; il gestore di area usa la creazione guidata con gruppo autorizzato. | `code`, `name`, `client`, `description`, `status`, facoltativi `contract_id`, `is_common`. | `201 {"ok":true,"id":...}`. |
+| `POST /api/jobs/{id}` | Amministratore o gestore delegato sulla commessa. | Stessi campi. Codice, nome e stato vanno inviati; `contract_id`/`is_common` omessi conservano il valore precedente. | `200 {"ok":true,"id":...}`. |
+| `DELETE /api/jobs/{id}` | Amministratore; vietato per dati di periodi economici chiusi. | Corpo vuoto. | `200 {"ok":true}`; elimina anche attività, blocchi, ore, assegnazioni e grant della commessa. |
+| `GET /api/time-entries?date=YYYY-MM-DD` | Utente autenticato. | `date` obbligatoria; `user_id` facoltativo entro la squadra. | `200 {"entries":[...],"total_minutes":...}` personali o della persona selezionata nella propria squadra; consultazione altrui in sola lettura. |
 | `POST /api/time-entries` | Gestore o lavoratore autorizzato. | `job_id`, `date`, `minutes`, `note` facoltativa. | `201 {"ok":true,"id":...}`; proprietario derivato dalla sessione. |
 | `POST /api/time-entries/{id}` | Gestore, solo proprie registrazioni. | `job_id`, `date`, `minutes`, `note` facoltativa. | `200 {"ok":true,"id":...}`. |
 | `DELETE /api/time-entries/{id}` | Gestore, solo proprie registrazioni. | Corpo vuoto. | `200 {"ok":true}`. |
@@ -162,7 +162,7 @@ Una `revision` superata produce `409` senza sovrascrivere i dati; rileggere la b
 
 ## Assegnazioni dirette, gruppi e ruoli locali
 
-Tutti gli endpoint sotto richiedono `manager`; query non ammesse. Una data vuota indica estremo aperto.
+Gli endpoint sotto richiedono amministratore o gestore delegato sulla commessa e, per nuove assegnazioni, sulla persona destinataria; query non ammesse. Una data vuota indica estremo aperto.
 
 | Metodo e percorso | Corpo | Risposta |
 | --- | --- | --- |
@@ -189,7 +189,7 @@ Le liste espongono: gruppo = `id`, `name`, `parent_id` (numero o `null`), `membe
 
 ## Fornitori, contratti e PDF
 
-Tutti gli endpoint richiedono `manager`.
+La consultazione richiede Sales o Finance; creazione, modifica e caricamento PDF richiedono Sales. Il ruolo Gestore e la nomina amministratore non assegnano automaticamente questi profili.
 
 | Metodo e percorso | Corpo/query | Esito |
 | --- | --- | --- |
@@ -342,3 +342,20 @@ Il server C principale gestisce le connessioni in sequenza e fa girare lo schedu
 Le mutazioni business e l'audit sono transazionali, con controllo di certificazione MySQL tramite `cluster_write_guard`. Attività e blocchi hanno una `revision` obbligatoria su update/delete, verificata nella stessa transazione; gli editor obsoleti ricevono `409`. Non esistono ETag/versioni per gli aggiornamenti delle commesse: due aggiornamenti serializzati possono applicarsi entrambi e l'ultimo può sostituire campi del precedente. Non sono previsti webhook pubblici, OpenAPI generato, GraphQL, token API personali, endpoint fatture o collegamento automatico evento→commessa/ore.
 
 Test di contratto e regressione: [suite](../../tests), in particolare `test_server.py`, `test_roles.py`, `test_workspace.py`, `test_groups.py`, `test_assignments.py`, `test_procurement.py`, `test_alerts.py`, `test_reports.py`, `test_labor_rates.py`, [test attività/blocchi](../../tests/test_work_board.py) e [test bridge calendario](../../tests/test_calendar_client.py). Per l'esecuzione della suite vedere [sviluppo e test](sviluppo-test.md).
+
+
+## API aggiuntive, schema 14
+
+Tutte le risorse seguenti usano `/api/improvements/`, autenticazione corrente, form URL-encoded, stessa origine e controlli live. Le mutazioni richiedono motivazione e revisione quando indicato; i conflitti non sono riscritti automaticamente.
+
+| Area | Risorsa relativa | Contratto |
+| --- | --- | --- |
+| Governance | `governance/status`, `admins`, `delegations`, `profile-requests`, `group-impact` | Amministratori espliciti, deleghe per date/gruppo, approvazione distinta e anteprima degli accessi. Decisione `profile-requests/{id}/decision`; revoca `delegations/{id}/revoke`. I quattro flag di delega sono `can_manage_jobs`, `can_manage_groups`, `can_manage_users`, `can_approve_corrections`. |
+| Operazioni | `operations/capacity`, `task-plan`, `absences`, `absence-decision`, `templates`, `checklist` | Capacità personale, stima con revisione dell’attività, richieste di assenza, modelli con versioni e riferimenti ticket/asset espliciti. Le richieste sono paginate e la decisione richiede una persona diversa dall’autore. |
+| Contratti | `integrations/contract-revisions`, `contract-revisions/publish`, `job-contract-revision` | Bozza della revisione con `contract_id`; pubblicazione con `id,revision,reason`; collegamento tramite `job_id,revision_id` soltanto alla versione pubblicata del contratto della commessa. |
+| Finance | `integrations/economic-periods`, `economic-corrections`, `budget` | Anteprima intervallo `from,to,action=preview`; approvazione `action=approve` con `preview_hash` aggiornato. Correzione separata `period_id,job_id,delta_cents,reason`. Budget con `job_id,budget_cents,remaining_cents,revision,reason`. Tutte riservate a Finance. |
+| Proposte ore | `integrations/time-drafts`, `time-drafts/confirm`, `calendar-candidates` | Bozza personale `source,source_ref,job_id,entries` JSON; modifica con `id,revision`; conferma con `id,revision`. Gli eventi Calendar sono verificati nel calendario personale lato server. Un riferimento Ticket rimane una proposta non fidata. |
+| Email | `integrations/email-outbox`, `email-outbox/decision` | Coda amministrativa paginata; decisioni `cancel` oppure `review`, revisione e motivo obbligatori; una consegna incerta non viene reinviata. |
+| Inventario | `integrations/inventory-person-accounts` | Collegamento verificato `person_id,user_id,revision`, rimozione esplicita; gestore solo per gli account nell’ambito delegato. |
+
+`GET /api/session` aggiunge `administrator`, `manage_space` ed `edit_users`. `GET /api/jobs` aggiunge `can_manage`. `GET /api/users` aggiunge `admin`, `can_manage` e `profile_revision`. I flag UI non sostituiscono l’autorizzazione delle API. `GET /api/time-corrections` accetta `status,user_id,from,to,after_id,limit` (massimo 100), con cursore `next_after_id`. Aggiornare un orario richiede `revision`. Chiudere/archiviare una commessa con elementi aperti richiede `checklist_confirmed=1` e motivazione.

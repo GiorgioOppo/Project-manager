@@ -161,6 +161,7 @@ class TimeCorrectionsIntegrationTests(unittest.TestCase):
         reviewer_id = self.create_user(email="reviewer@example.test", role="manager")
         self.post("/api/groups/%d/members" % self.team_id, {"user_id": reviewer_id})
         reviewer = self.login("reviewer@example.test", roles.WORKER_PASSWORD)
+        self.post("/api/improvements/governance/delegations", {"user_id": reviewer_id, "group_id": self.team_id, "can_approve_corrections": 1, "starts_on": "2026-01-01", "ends_on": "", "reason": "Revisore della squadra"})
         self.decide(request_id, cookie=reviewer)
         self.assertEqual(self.entries(self.manager_cookie)[0]["minutes"], 30)
 
@@ -292,7 +293,8 @@ class TimeCorrectionsIntegrationTests(unittest.TestCase):
         for changes in ({"reason": "   "}, {"minutes": 0}, {"minutes": 1441}, {"delete_requested": 2},
                         {"date": "2026-02-30"}, {"unexpected": "value"}, {"revision": 0}):
             self.assert_error(400, "POST", "/api/time-corrections", self.fields(**changes), cookie=self.worker_cookie)
-        self.assert_error(400, "GET", "/api/time-corrections?status=approved", cookie=self.worker_cookie)
+        self.assertEqual(self.get("/api/time-corrections?status=approved", self.worker_cookie)["requests"], [])
+        self.assert_error(400, "GET", "/api/time-corrections?status=invalid", cookie=self.worker_cookie)
         self.assert_error(400, "POST", "/api/time-corrections/abc/decision", {"decision": "approved"}, cookie=self.manager_cookie)
 
 

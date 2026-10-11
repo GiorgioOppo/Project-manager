@@ -17,6 +17,15 @@ from html.parser import HTMLParser
 
 ROOT = Path(__file__).resolve().parents[1]
 LANGUAGES = ("en", "zh", "es", "fr", "de")
+EXTENSION_SCRIPTS = tuple(f"public/improvements-{kind}.js" for kind in ("core", "governance", "operations", "integrations"))
+
+
+def extension_messages(source):
+    """Include labels passed through field/button/section helpers and arrays."""
+    values = {json.loads(match[1]) for match in re.finditer(r'("(?:[^"\\\n]|\\.)*")', source)}
+    return {value for value in values if value and value[0].isupper()
+            and not (value.isupper() and value.isascii())}
+
 
 
 class MarkedText(HTMLParser):
@@ -63,9 +72,23 @@ class LocalizationCatalogTests(unittest.TestCase):
             parser = MarkedText()
             parser.feed((ROOT / name).read_text(encoding="utf-8"))
             self.assertFalse(parser.messages - set(catalog) - invariant, f"Untranslated HTML in {name}: {parser.messages - set(catalog) - invariant}")
-        for name in ("public/app.js", "public/login.js", "ticket-app/public/app.js", "public/inventory-qr.js"):
+        for name in ("public/app.js", "public/login.js", "ticket-app/public/app.js", "public/inventory-qr.js", *EXTENSION_SCRIPTS):
             messages = {json.loads(match[1]) for match in re.finditer(r'\bt\(("(?:[^"\\]|\\.)*")', (ROOT / name).read_text(encoding="utf-8"))}
+            if name in EXTENSION_SCRIPTS:
+                messages |= extension_messages((ROOT / name).read_text(encoding="utf-8"))
             self.assertFalse(messages - set(catalog), f"Untranslated JavaScript in {name}: {messages - set(catalog)}")
+
+    def test_improvements_backend_messages_are_translated(self):
+        catalog = json.loads((ROOT / "public/locales/en.json").read_text(encoding="utf-8"))
+        paths = [*sorted((ROOT / "src").glob("improvements*.c")),
+                 *(ROOT / "src" / name for name in ("workspace.c", "time_corrections.inc", "time_week.inc", "work_schedules.inc",
+                                                      "job_lifecycle.inc", "workspace_features.inc", "work_board.c"))]
+        for path in paths:
+            messages = set()
+            for call in re.finditer(r'\b(?:im_error|error)\((.*?);', path.read_text(encoding="utf-8"), re.S):
+                messages |= {value for value in extension_messages(call[1])
+                             if (" " in value or value.endswith(".")) and not value.startswith("SELECT ")}
+            self.assertFalse(messages - set(catalog), f"Untranslated backend messages in {path.name}: {messages - set(catalog)}")
 
     def test_script_order_and_locale_independent_api_codes(self):
         for name in ("public/index.html", "public/app.html", "ticket-app/public/index.html"):

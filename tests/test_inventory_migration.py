@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 SCHEMA_EIGHT = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
-INSERT INTO users VALUES(1,'Gestore','manager@example.test'),(2,'Tecnico','worker@example.test');
+CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'worker',active INTEGER NOT NULL DEFAULT 1);
+INSERT INTO users(id,name,email,role) VALUES(1,'Gestore','manager@example.test','manager'),(2,'Tecnico','worker@example.test','worker');
 CREATE TABLE jobs(id INTEGER PRIMARY KEY,code TEXT NOT NULL,name TEXT NOT NULL,status TEXT NOT NULL);
 INSERT INTO jobs VALUES(1,'MIGRATION','Commessa conservata','active');
 CREATE TABLE job_tasks(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs(id));
@@ -96,6 +96,9 @@ DELETE FROM alert_rules WHERE id=1000;
 """
 
 
+import native_application
+
+
 class InventoryAlertMigrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -104,7 +107,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
         cls.compilation = tempfile.TemporaryDirectory(prefix="punto-inventory-migration-build-")
         cls.addClassCleanup(cls.compilation.cleanup)
         source = Path(cls.compilation.name) / "migration.c"
-        source.write_text('#include "storage.h"\nbool organization_groups_available(void) { return true; }\n'
+        source.write_text('#include "storage.h"\nbool oidc_users_managed(void) { return false; }\n'
                           'int main(int argc,char **argv) {\n'
                           'if(argc!=2) return 2; bool okay=storage_open(argv[1]);\n'
                           'if(okay) okay=storage_health(); storage_close(); return okay ? 0 : 1;\n}\n')
@@ -112,7 +115,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
         flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "json-c"], text=True))
         subprocess.run(["cc", "-D_POSIX_C_SOURCE=200809L", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
                         "-I", str(ROOT / "src"), str(source), str(ROOT / "src/storage.c"),
-                        str(ROOT / "src/access_control.c"), "-lsqlite3", *flags, "-o", str(cls.binary)],
+                        str(ROOT / "src/access_control.c"), *native_application.missing_sources("storage.c", "access_control.c"), "-lsqlite3", *native_application.link_flags(), *flags, "-o", str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
     def setUp(self):
@@ -137,7 +140,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
             original_columns = [row[1] for row in database.execute("PRAGMA table_info(alert_rules)")]
         self.migrate()
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (13,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (14,))
             self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(database.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_rules'").fetchone(), (sequence,))
             for table, rows in self.original.items():
@@ -173,7 +176,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), migrated, "Restart must preserve rules and avoid a duplicate migration audit.")
 
     def test_schema_eight_upgrade_preserves_children_high_water_sequence_and_audit(self):
-        self.assert_preserved_upgrade([9, 10, 12, 13], 900)
+        self.assert_preserved_upgrade([9, 10, 12, 13, 14], 900)
 
     def schema_nine(self):
         self.db.unlink()
@@ -183,7 +186,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
 
     def test_schema_nine_upgrade_preserves_existing_inventory_rule_and_deliveries(self):
         self.schema_nine()
-        self.assert_preserved_upgrade([10, 12, 13], 1000)
+        self.assert_preserved_upgrade([10, 12, 13, 14], 1000)
 
     def test_schema_nine_audit_failure_rolls_back_complete_rebuild(self):
         self.schema_nine()

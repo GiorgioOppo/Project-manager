@@ -26,7 +26,9 @@ static void job_overview_read(DbInt job_id, DbInt actor_id, bool manager,
     int found = job_snapshot(job_id, &job);
     if (found < 0) goto failure;
     if (!found) { free(job.data); error(response, 404, "Commessa non trovata."); return; }
-    int permission = manager ? 3 : organization_job_access(database, job_id, actor_id, today, NULL);
+    int management = manager ? access_policy_can_manage_job(database,actor_id,job_id) : 0;
+    if (management < 0) goto failure;
+    int permission = management == 1 ? 3 : organization_job_access(database, job_id, actor_id, today, NULL);
     if (permission < 0) goto failure;
     if (!(permission & 1)) { free(job.data); error(response, 403, "Non hai accesso a questa commessa."); return; }
     if (!policy.sales && !policy.finance) {
@@ -163,7 +165,9 @@ static void job_access_read(DbInt job_id, const char *query, WorkspaceResponse *
     if (result == DB_DONE) { db_finalize(statement); error(response, 404, "Utente non trovato."); return; }
     if (result != DB_ROW) goto failure;
     bool active = db_column_int(statement, 3) != 0;
-    bool global_manager = strcmp(column_text(statement, 2), "manager") == 0;
+    int management = active ? access_policy_can_manage_job(database, user_id, job_id) : 0;
+    if (management < 0) goto failure;
+    bool global_manager = management == 1;
     append(&json, "{\"job_id\":"); append_integer(&json, job_id);
     append(&json, ",\"user\":{\"id\":"); append_integer(&json, user_id);
     append(&json, ",\"name\":"); append_string(&json, column_text(statement, 0));

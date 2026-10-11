@@ -1,3 +1,4 @@
+#include "improvements_integrations.h"
 /* Personal weekly timesheets and atomic, idempotent multi-row insertion.
    Included in workspace.c to share its validators and transaction connection. */
 static struct json_object *workflow_json(const char *text) {
@@ -52,7 +53,9 @@ static int workflow_job_permission(DbInt job_id,DbInt actor_id,bool manager,cons
     if(result==DB_DONE)return 0;
     if(result!=DB_ROW)return -1;
     if(closed)return 1;
-    return manager?3:organization_job_access(database,job_id,actor_id,today,date);
+    if(!improvements_integrations_time_open(database,job_id,date))return 1;
+    if(manager){int managed=access_policy_can_manage_job(database,actor_id,job_id);if(managed<0)return -1;if(managed==1)return 3;}
+    return organization_job_access(database,job_id,actor_id,today,date);
 }
 
 static void week_entries(const char *query,DbInt actor_id,bool manager,WorkspaceResponse *response) {
@@ -93,6 +96,20 @@ failure:db_finalize(st);server_error(response);
 
 typedef struct {DbInt job_id,minutes,task_id;const char *date,*note;} WorkflowEntry;
 
+static void workflow_row_error(WorkspaceResponse *response, int status, const char *message,
+                               size_t row, const char *date) {
+    Json json = {0};
+    append(&json, "{\"ok\":false,\"error\":");
+    append_string(&json, message);
+    append(&json, ",\"row\":");
+    append_integer(&json, (DbInt)row);
+    append(&json, ",\"date\":");
+    if (date) append_string(&json, date);
+    else append(&json, "null");
+    append(&json, "}");
+    finish_json(response, status, &json);
+}
+
 static void batch_entries(const char *body,DbInt actor_id,const char *owner,bool manager,WorkspaceResponse *response) {
     Field fields[]={{"request_key",NULL},{"entries",NULL}};
     if(!parse_fields(body,fields,2,response))return;
@@ -130,15 +147,15 @@ static void batch_entries(const char *body,DbInt actor_id,const char *owner,bool
     for(size_t i=0;i<count;i++){
         int permission=workflow_job_permission(entries[i].job_id,actor_id,manager,today,entries[i].date);
         if(permission<0)goto failure;
-        if(!(permission&2)){rollback();error(response,403,"Una riga usa una commessa chiusa, archiviata o non autorizzata nella data lavorata. Nessuna ora salvata.");goto done;}
+        if(!(permission&2)){rollback();workflow_row_error(response,403,"Una riga usa una commessa chiusa, archiviata o non autorizzata nella data lavorata. Nessuna ora salvata.",i+1,entries[i].date);goto done;}
         if(entries[i].task_id){
             if(!prepare(&st,"SELECT 1 FROM job_tasks WHERE id=? AND job_id=?")||!bind_id(st,1,entries[i].task_id)||!bind_id(st,2,entries[i].job_id))goto failure;
             result=db_step(st);db_finalize(st);st=NULL;
-            if(result==DB_DONE){rollback();error(response,400,"Una attività non appartiene alla commessa. Nessuna ora salvata.");goto done;}if(result!=DB_ROW)goto failure;
+            if(result==DB_DONE){rollback();workflow_row_error(response,400,"Una attività non appartiene alla commessa. Nessuna ora salvata.",i+1,entries[i].date);goto done;}if(result!=DB_ROW)goto failure;
         }
         if(!prepare(&st,"SELECT COALESCE(SUM(minutes),0),COUNT(*) FROM time_entries WHERE user_id=? AND date=?")||!bind_id(st,1,actor_id)||!bind_text(st,2,entries[i].date)||db_step(st)!=DB_ROW)goto failure;
         DbInt total=db_column_int64(st,0),rows=db_column_int64(st,1);db_finalize(st);st=NULL;
-        if(total>1440-entries[i].minutes||rows>=1000){rollback();error(response,409,"Il totale supera 24 ore o 1000 registrazioni in una giornata. Nessuna ora salvata.");goto done;}
+        if(total>1440-entries[i].minutes||rows>=1000){rollback();workflow_row_error(response,409,"Il totale supera 24 ore o 1000 registrazioni in una giornata. Nessuna ora salvata.",i+1,entries[i].date);goto done;}
         if(!prepare(&st,"INSERT INTO time_entries(job_id,user_id,owner,date,minutes,note,task_id) VALUES(?,?,?,?,?,?,?)")||
            !bind_id(st,1,entries[i].job_id)||!bind_id(st,2,actor_id)||!bind_text(st,3,owner)||!bind_text(st,4,entries[i].date)||!bind_id(st,5,entries[i].minutes)||!bind_text(st,6,entries[i].note)||
            (entries[i].task_id?!bind_id(st,7,entries[i].task_id):db_bind_null(st,7)!=DB_OK)||db_step(st)!=DB_DONE)goto failure;

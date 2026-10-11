@@ -717,7 +717,7 @@ fail:
 #include "inventory_operations.inc"
 
 static bool page_query(const char *query, bool history, Form *form, int *limit, sqlite3_int64 *after) {
-    static const char *const allowed[] = {"limit", "after_id", "q", "status", "asset_type", "assignee_user_id", "site_id", "department_id", "attention", "verification_days", "today", "person_id", "identity_id"};
+    static const char *const allowed[] = {"limit", "after_id", "q", "status", "asset_type", "assignee_user_id", "site_id", "department_id", "attention", "verification_days", "today", "person_id", "identity_id", "mapped_person_id"};
     if (!form_parse(query, form)) return false;
     bool ok = only_fields(form, allowed, history ? 2 : sizeof(allowed)/sizeof(allowed[0]));
     *limit = 30;

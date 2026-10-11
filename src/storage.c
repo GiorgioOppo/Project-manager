@@ -1,5 +1,6 @@
 #include "storage.h"
 #include "access_control.h"
+#include "improvements.h"
 #include <json-c/json.h>
 #ifdef PUNTO_MYSQL
 #include "mysql_schema.h"
@@ -12,7 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 13
+#define SCHEMA_VERSION 14
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -581,6 +582,11 @@ static bool migrate(void) {
         NULL,NULL,NULL) != DB_OK) goto failure;
     if (!prepare(database, &statement, "PRAGMA foreign_key_check") || db_step(statement) != DB_DONE) goto failure;
     db_finalize(statement); statement = NULL;
+    if (version <= 13 && (!improvements_schema(database) ||
+        !storage_audit(database,0,"system.migration","system",14,NULL,"{\"schema_version\":14}") ||
+        db_exec(database,"PRAGMA user_version=14",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (!prepare(database, &statement, "PRAGMA foreign_key_check") || db_step(statement) != DB_DONE) goto failure;
+    db_finalize(statement); statement = NULL;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) {
         return db_exec(database, "PRAGMA foreign_keys=ON", NULL, NULL, NULL) == DB_OK;
     }
@@ -645,6 +651,9 @@ static bool migrate(void) {
                           "('sales','Commerciali',1),('finance','Finance',1)",NULL,NULL,NULL) != DB_OK ||
          !storage_audit(database,0,"system.migration","system",13,NULL,"{\"schema_version\":13}") ||
          db_exec(database,"UPDATE schema_metadata SET version=13 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 13 &&
+        (!storage_audit(database,0,"system.migration","system",14,NULL,"{\"schema_version\":14}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=14 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -775,7 +784,7 @@ static void audit_redact(struct json_object *obj, const AccessPolicy *policy, bo
             for (size_t i=0;i<sizeof(keys)/sizeof(keys[0]);i++) json_object_object_del(obj,keys[i]);
         }
         if (!policy->finance) {
-            const char *keys[] = {"hourly_cents","cost_cents","estimated_cost_cents","known_value_cents"};
+            const char *keys[] = {"hourly_cents","cost_cents","estimated_cost_cents","known_value_cents","budget_cents","remaining_cents","actual_cents","forecast_cents","delta_cents","snapshot_json"};
             for (size_t i=0;i<sizeof(keys)/sizeof(keys[0]);i++) json_object_object_del(obj,keys[i]);
         }
         if (!time_record) {
@@ -818,12 +827,16 @@ static void list_audit(const char *query, DbInt actor, const AccessPolicy *polic
         if (scanned++ == limit) { more = true; break; }
         last_id = db_column_int64(statement, 0);
         const char *entity = column(statement,6);
-        bool time_record = !strcmp(entity,"time_entry") || !strcmp(entity,"time_correction");
+        bool draft_record = !strcmp(entity,"time_draft");
+        bool time_record = !strcmp(entity,"time_entry") || !strcmp(entity,"time_correction") || !strcmp(entity,"work_schedule") || !strcmp(entity,"work_exception") || draft_record;
         if ((!strcmp(entity,"contract") || !strcmp(entity,"supplier") || !strcmp(entity,"contract_document")) && !policy->sales && !policy->finance) continue;
         if (!strcmp(entity,"labor_rate") && !policy->finance) continue;
+        if (!strcmp(entity,"economic_period") && !policy->finance) continue;
+        if (!policy->admin && (!strcmp(entity,"alert_email") || !strcmp(entity,"access_profile") || !strcmp(entity,"governance_delegation") || !strncmp(column(statement,5),"governance.",11))) continue;
         if (time_record) {
             DbInt subject=audit_subject(column(statement,9));
             if (!subject) subject=audit_subject(column(statement,8));
+            if (!subject && draft_record) subject=db_column_int64(statement,2);
             int visible=subject ? access_policy_can_view_time(database,actor,subject,policy->manager) : 0;
             if (visible < 0) { db_finalize(statement);free(json.text);error(response,500,"Impossibile leggere lo storico. Riprova.");return; }
             if (!visible) continue;

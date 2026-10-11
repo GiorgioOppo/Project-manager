@@ -2,6 +2,7 @@
 #include "storage.h"
 #include "organization.h"
 #include "access_control.h"
+#include "improvements_integrations.h"
 #include "alerts.h"
 
 #include <limits.h>
@@ -527,7 +528,7 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
     char today[11];
     if (!today_date(today)) { server_error(response); return; }
     OrganizationAccess access = {0};
-    if (!manager && !organization_access_list(database, actor_id, today, NULL, &access)) {
+    if (!policy.admin && !organization_access_list(database, actor_id, today, NULL, &access)) {
         server_error(response); return;
     }
     DbStmt *statement = NULL;
@@ -551,8 +552,11 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
     int result, count = 0, scanned = 0;
     while ((result = db_step(statement)) == DB_ROW) {
         if (++scanned > RESULT_LIMIT) break;
-        int permission = manager ? 3 : 0;
-        if (!manager) {
+        int permission = policy.admin ? 3 : 0;
+        int management = manager ? access_policy_can_manage_job(database,actor_id,db_column_int64(statement,0)) : 0;
+        if (management < 0) { db_finalize(statement); free(json.data); server_error(response); return; }
+        if (management == 1) permission = 3;
+        if (!permission) {
             DbInt id = db_column_int64(statement, 0);
             for (size_t i = 0; i < access.count; i++) {
                 if (access.job_ids[i] == id) { permission = access.permissions[i]; break; }
@@ -571,6 +575,7 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
         append(&json, ",\"assigned_users\":"); append_integer(&json, db_column_int64(statement, 7));
         append(&json, ",\"assigned_groups\":"); append_integer(&json, db_column_int64(statement, 12));
         append(&json, ",\"can_log_time\":"); append(&json, (permission & 2) && !db_column_int(statement,14) && !db_column_int(statement,15) ? "true" : "false");
+        append(&json, ",\"can_manage\":"); append(&json,management == 1 ? "true" : "false");
         append(&json, "}");
     }
     db_finalize(statement);
@@ -587,6 +592,13 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
 
 static void write_job(const char *body, DbInt actor_id, DbInt id,
                       WorkspaceResponse *response) {
+    int management = access_policy_can_manage_job(database,actor_id,id);
+    if (management != 1) { error(response,management < 0 ? 503 : 403,"La commessa non appartiene al tuo ambito di gestione."); return; }
+    if (!id) {
+        AccessPolicy policy;
+        if (!workspace_policy(actor_id,&policy)) { server_error(response); return; }
+        if (!policy.admin) { error(response,403,"Crea la commessa con la procedura guidata e seleziona un gruppo della tua area."); return; }
+    }
     Field fields[] = {{"code", NULL}, {"name", NULL}, {"client", NULL},
                       {"description", NULL}, {"status", NULL}, {"contract_id", NULL},
                       {"is_common", NULL}};
@@ -691,6 +703,9 @@ database_failure:
 
 static void delete_job(const char *body, DbInt actor_id, DbInt id,
                        WorkspaceResponse *response) {
+    AccessPolicy deletion_policy;
+    if (!workspace_policy(actor_id,&deletion_policy)) { server_error(response); return; }
+    if (!deletion_policy.admin) { error(response,403,"La cancellazione definitiva è riservata agli amministratori. Usa chiusura e archivio."); return; }
     if (*body) { error(response,400,"La richiesta di eliminazione non deve contenere campi."); return; }
     if (!begin_transaction(response)) return;
     Json before = {0};
@@ -700,6 +715,19 @@ static void delete_job(const char *body, DbInt actor_id, DbInt id,
     if (!found) {
         rollback(); error(response,404,"Commessa non trovata."); return;
     }
+    if (!prepare(&statement,
+        "SELECT 1 FROM time_entries t JOIN ii_economic_periods p ON t.date>=p.starts_on AND t.date<=p.ends_on WHERE t.job_id=? "
+        "UNION ALL SELECT 1 FROM ii_economic_corrections WHERE job_id=? "
+        "UNION ALL SELECT 1 FROM ii_job_budgets WHERE job_id=? "
+        "UNION ALL SELECT 1 FROM ii_job_contract_revisions WHERE job_id=? LIMIT 1") ||
+        !bind_id(statement,1,id) || !bind_id(statement,2,id) || !bind_id(statement,3,id) || !bind_id(statement,4,id)) goto database_failure;
+    int protected_result = db_step(statement);
+    db_finalize(statement); statement = NULL;
+    if (protected_result == DB_ROW) {
+        rollback(); free(before.data);
+        error(response,409,"La commessa conserva riferimenti economici o contrattuali consolidati. Usa l'archivio."); return;
+    }
+    if (protected_result != DB_DONE) goto database_failure;
     if (!prepare(&statement,
         "SELECT COUNT(*),COALESCE(SUM(minutes),0),"
         "(SELECT COUNT(*) FROM job_assignments WHERE job_id=?),"
@@ -1151,7 +1179,13 @@ static void write_entry(const char *body, DbInt actor_id, const char *owner,
             rollback(); error(response, 404, "Registrazione delle ore non trovata.");
             free_fields(fields, count); return;
         }
+        if (!prepare(&statement,"SELECT job_id,date FROM time_entries WHERE id=? AND user_id=?") ||
+            !bind_id(statement,1,id) || !bind_id(statement,2,actor_id) || db_step(statement)!=DB_ROW) goto database_failure;
+        bool source_open=improvements_integrations_time_open(database,db_column_int64(statement,0),column_text(statement,1));
+        db_finalize(statement);statement=NULL;
+        if (!source_open) { rollback();free(before.data);free_fields(fields,count);error(response,409,"Il periodo economico originale è chiuso: usa una rettifica economica esplicita.");return; }
     }
+    if (!improvements_integrations_time_open(database,job_id,date)) { rollback();free(before.data);free_fields(fields,count);error(response,409,"Il periodo economico è chiuso: usa una rettifica economica esplicita.");return; }
     if (id && revision) {
         if (!prepare(&statement,"SELECT revision FROM time_entries WHERE id=? AND user_id=?") || !bind_id(statement,1,id) || !bind_id(statement,2,actor_id) || db_step(statement)!=DB_ROW) goto database_failure;
         bool stale=db_column_int64(statement,0)!=revision;db_finalize(statement);statement=NULL;
@@ -1163,7 +1197,9 @@ static void write_entry(const char *body, DbInt actor_id, const char *owner,
         db_finalize(statement);statement=NULL;
     }
     int permission;
-    if (manager) {
+    int management = manager ? access_policy_can_manage_job(database,actor_id,job_id) : 0;
+    if (management < 0) goto database_failure;
+    if (management == 1) {
         if (!prepare(&statement, "SELECT 1 FROM jobs WHERE id=?") ||
             !bind_id(statement, 1, job_id)) goto database_failure;
         result = db_step(statement);
@@ -1251,6 +1287,11 @@ static void delete_entry(const char *body, DbInt actor_id, DbInt id,
     if (!found) {
         rollback(); error(response, 404, "Registrazione delle ore non trovata."); return;
     }
+    if (!prepare(&statement,"SELECT job_id,date FROM time_entries WHERE id=? AND user_id=?") ||
+        !bind_id(statement,1,id) || !bind_id(statement,2,actor_id) || db_step(statement)!=DB_ROW) goto database_failure;
+    bool period_open = improvements_integrations_time_open(database,db_column_int64(statement,0),column_text(statement,1));
+    db_finalize(statement); statement=NULL;
+    if (!period_open) { rollback(); free(before.data); error(response,409,"Il periodo economico è chiuso: usa una rettifica economica esplicita."); return; }
     if (!prepare(&statement, "DELETE FROM time_entries WHERE id=? AND user_id=?") ||
         !bind_id(statement, 1, id) || !bind_id(statement, 2, actor_id) ||
         db_step(statement) != DB_DONE) goto database_failure;
@@ -1410,6 +1451,11 @@ static void write_labor_rate(const char *body, DbInt actor_id, DbInt id,
     if (!begin_transaction(response)) { free_fields(fields, count); return; }
     DbStmt *statement = NULL;
     Json before = {0}, after = {0};
+    int management = access_policy_can_manage_user(database, actor_id, user_id);
+    if (management != 1) {
+        rollback(); error(response, management < 0 ? 500 : 403, "L'utente non appartiene al tuo ambito di gestione.");
+        goto cleanup;
+    }
     if (id) {
         DbInt existing_user_id = 0;
         int found = labor_rate_snapshot(id, &before, &existing_user_id);
@@ -1495,6 +1541,11 @@ static void write_assignment(const char *body, DbInt actor_id,
     if (!begin_transaction(response)) { free_fields(fields, count); return; }
     Json before = {0}, after = {0};
     DbStmt *statement = NULL;
+    int management = access_policy_can_manage_user(database, actor_id, user_id);
+    if (management != 1) {
+        rollback(); error(response, management < 0 ? 500 : 403, "L'utente non appartiene al tuo ambito di gestione.");
+        free_fields(fields, count); return;
+    }
     int found = job_exists(job_id);
     if (found < 0) goto database_failure;
     if (!found) {
@@ -1656,6 +1707,14 @@ bool workspace_handle(const char *method, const char *target, const char *query,
     if (!resolved) { error(response,403,"Il tuo ruolo non consente questa operazione."); return true; }
     bool manager = actor_policy.manager;
     bool worker = !manager;
+    if (manager && !actor_policy.admin && job_item && target[10]>='0' && target[10]<='9' &&
+        (strcmp(method,"POST")==0 || strcmp(method,"DELETE")==0 || strstr(target,"/access-explanation"))) {
+        char *end=NULL; DbInt scoped_job=(DbInt)strtoll(target+10,&end,10);
+        if (scoped_job>0 && end && (*end=='/' || !*end)) {
+            int allowed=access_policy_can_manage_job(database,actor_id,scoped_job);
+            if (allowed!=1) { error(response,allowed<0 ? 503 : 403,"La commessa non appartiene al tuo ambito di gestione."); return true; }
+        }
+    }
     if(!query) query="";
     if(!body) body="";
     if (!strcmp(target, "/api/time-team")) {
@@ -1707,6 +1766,9 @@ bool workspace_handle(const char *method, const char *target, const char *query,
     }
     if (assignments && !manager) {
         error(response, 403, "Il tuo ruolo non consente questa operazione."); return true;
+    }
+    if (assignments && access_policy_can_manage_job(database,actor_id,id)!=1) {
+        error(response,403,"La squadra della commessa non appartiene al tuo ambito di gestione."); return true;
     }
     if (*query && !(entries && strcmp(method, "GET") == 0)) {
         error(response, 400, "Parametri della richiesta non validi."); return true;

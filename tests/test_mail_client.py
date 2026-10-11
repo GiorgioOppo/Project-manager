@@ -388,7 +388,7 @@ class MailOutboxIntegrationTests(unittest.TestCase):
         self.assertEqual(self.mail_api.posts(), [])
         self.assertEqual(self.outbox()[0][2], "pending_configuration")
 
-    def test_delivery_audit_failure_keeps_queue_and_retry_uses_the_same_service_key(self):
+    def test_delivery_audit_failure_recovers_unknown_without_resending(self):
         self.mail_api.smtp_configured = True
         with closing(sqlite3.connect(self.db_path)) as db:
             db.execute("CREATE TRIGGER reject_email_audit BEFORE INSERT ON audit_events "
@@ -399,14 +399,19 @@ class MailOutboxIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.mail_api.posts()), 1)
         with closing(sqlite3.connect(self.db_path)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='alert_emails.delivery'").fetchone(), (0,))
+            self.assertEqual(db.execute("SELECT state FROM ii_email_controls").fetchone(), ("sending",))
             db.execute("DROP TRIGGER reject_email_audit")
             db.commit()
+        # SMTP may already have accepted the message while the local audit
+        # transaction rolled back. Restarting preserves the uncertainty and
+        # requires provider review instead of submitting another delivery.
         self.mail_api.delivery_body = {"status": "sent", "replayed": True}
         self.tick("2035-03-25T09:00:00")
-        self.assertEqual(self.outbox()[0][2], "sent")
-        self.assertEqual(self.mail_api.posts()[0]["fields"], self.mail_api.posts()[1]["fields"])
+        self.assertEqual(self.outbox()[0][2], "delivery_unknown")
+        self.assertEqual(len(self.mail_api.posts()), 1)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='alert_emails.delivery'").fetchone(), (1,))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='alert_emails.delivery'").fetchone(), (0,))
+            self.assertEqual(db.execute("SELECT state FROM ii_email_controls").fetchone(), ("normal",))
 
     def test_schema_six_upgrade_preserves_outbox_ids_sequence_business_records_and_audit(self):
         with closing(sqlite3.connect(self.db_path)) as db:
@@ -425,7 +430,7 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (7,8,9,10,12,13)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (7,8,9,10,12,13,14)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=6")
             db.commit()
@@ -446,12 +451,12 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             self.start_server()
         self.stop_server()
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (14,))
             for table, rows in old.items():
                 self.assertEqual(db.execute('SELECT ' + projections.get(table, '*') + ' FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(db.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_email_outbox'").fetchone(), (77,))
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (7,8,9,10,12,13,14)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=7").fetchone(), (1,))
             db.execute("UPDATE alert_email_outbox SET status='retrying'")

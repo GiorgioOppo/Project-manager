@@ -18,7 +18,8 @@ static struct json_object *features_row(DbStmt *st,const char **names,int count)
 static void personal_work(DbInt actor_id,bool manager,WorkspaceResponse *response){
     char today[11];if(!today_date(today)){server_error(response);return;}
     OrganizationAccess access={0};
-    if(!manager&&!organization_access_list(database,actor_id,today,NULL,&access)){server_error(response);return;}
+    (void)manager;
+    if(!organization_access_list(database,actor_id,today,NULL,&access)){server_error(response);return;}
     struct json_object *out=json_object_new_object(),*tasks=json_object_new_array(),*blocks=json_object_new_array();DbStmt *st=NULL;
     if(!out||!tasks||!blocks)goto failure;
     json_object_object_add(out,"today",json_object_new_string(today));
@@ -30,7 +31,7 @@ static void personal_work(DbInt actor_id,bool manager,WorkspaceResponse *respons
         const char *names[]={"id","job_id","job_code","job_name","title","status",kind?"impact":"priority","due_date",kind?"next_action":"revision"};
         int result,count=0;
         while((result=db_step(st))==DB_ROW){
-            DbInt job_id=db_column_int64(st,1);bool allowed=manager;
+            DbInt job_id=db_column_int64(st,1);int managed=access_policy_can_manage_job(database,actor_id,job_id);if(managed<0)goto failure;bool allowed=managed==1;
             for(size_t i=0;!allowed&&i<access.count;i++)if(access.job_ids[i]==job_id&&(access.permissions[i]&1))allowed=true;
             if(!allowed) continue;
             count++;
@@ -59,13 +60,13 @@ static void job_templates(const char *method,const char *body,DbInt actor_id,Wor
     if(!workspace_policy(actor_id,&policy)){server_error(response);return;}
     DbStmt *st=NULL;
     if(!strcmp(method,"GET")){
-        if(!prepare(&st,"SELECT id,name,definition_json,created_by,created_at FROM job_templates ORDER BY name LIMIT 201"))goto failure;
+        if(!prepare(&st,"SELECT id,name,definition_json,created_by,created_at,revision,archived FROM job_templates WHERE archived=0 AND (?=1 OR created_by=?) ORDER BY name LIMIT 201")||!bind_id(st,1,policy.admin?1:0)||!bind_id(st,2,actor_id))goto failure;
         struct json_object *out=json_object_new_object(),*items=json_object_new_array();int result,count=0;
         if(!out||!items){if(out)json_object_put(out);if(items)json_object_put(items);goto failure;}
-        const char *names[]={"id","name","definition_json","created_by","created_at"};
+        const char *names[]={"id","name","definition_json","created_by","created_at","revision","archived"};
         while((result=db_step(st))==DB_ROW){
             if(++count>200)break;
-            struct json_object *row=features_row(st,names,5);
+            struct json_object *row=features_row(st,names,7);
             if(row&&!policy.sales&&!policy.finance){
                 struct json_object *definition=workflow_json(column_text(st,2));
                 if(!definition){json_object_put(row);json_object_put(out);json_object_put(items);goto failure;}
@@ -128,6 +129,7 @@ static void guided_job(const char *body,DbInt actor_id,WorkspaceResponse *respon
     (void)snprintf(receipt,sizeof(receipt),"wizard:%s",request_key);
     if(!begin_transaction(response))goto cleanup;
     DbStmt *st=NULL;Json snapshot={0};
+    if(access_policy_can_manage_job(database,actor_id,0)!=1){rollback();error(response,403,"Operazione riservata ai gestori delegati.");goto cleanup;}
 #ifdef PUNTO_MYSQL
     if(!prepare(&st,"SELECT id FROM users WHERE id=? FOR UPDATE")||!bind_id(st,1,actor_id)||db_step(st)!=DB_ROW)goto failure;
     db_finalize(st);st=NULL;
@@ -152,6 +154,9 @@ static void guided_job(const char *body,DbInt actor_id,WorkspaceResponse *respon
         for(size_t i=0;i<json_object_array_length(array);i++){
             struct json_object *item=json_object_array_get_idx(array,i);DbInt subject,role_id;const char *start,*end;
             if(!json_object_is_type(item,json_type_object)||!workflow_integer(item,kind?"group_id":"user_id",&subject,false)||subject<1||!workflow_integer(item,"role_id",&role_id,false)||role_id<1||!features_dates(item,&start,&end))goto transaction_invalid;
+            int managed=kind?access_policy_can_manage_group(database,actor_id,subject):access_policy_can_manage_user(database,actor_id,subject);
+            if(managed<0)goto failure;
+            if(managed!=1){rollback();error(response,403,"La squadra selezionata non rientra nella tua delega.");goto cleanup;}
             if(!prepare(&st,kind?"SELECT 1 FROM organization_groups WHERE id=?":"SELECT 1 FROM users WHERE id=? AND active=1")||!bind_id(st,1,subject))goto failure;
             result=db_step(st);db_finalize(st);st=NULL;if(result==DB_DONE)goto transaction_invalid;if(result!=DB_ROW)goto failure;
             if(!prepare(&st,"SELECT 1 FROM job_roles WHERE id=?")||!bind_id(st,1,role_id))goto failure;
@@ -162,6 +167,9 @@ static void guided_job(const char *body,DbInt actor_id,WorkspaceResponse *respon
             if(!storage_audit(database,actor_id,kind?"group_grants.create":"assignments.create",kind?"group_grant":"assignment",job_id,NULL,details))goto failure;
         }
     }
+    int scoped=access_policy_can_manage_job(database,actor_id,job_id);
+    if(scoped<0)goto failure;
+    if(scoped!=1){rollback();error(response,403,"La squadra della commessa non appartiene al tuo ambito di gestione.");goto cleanup;}
     char today[11],utc[21];time_t now=time(NULL);struct tm tm;
     if(!today_date(today)||!gmtime_r(&now,&tm)||!strftime(utc,sizeof(utc),"%Y-%m-%dT%H:%M:%SZ",&tm))goto failure;
     for(size_t i=0;i<json_object_array_length(tasks);i++){
@@ -176,7 +184,8 @@ static void guided_job(const char *body,DbInt actor_id,WorkspaceResponse *respon
             result=db_step(st);bool active=result==DB_ROW&&db_column_int(st,0),is_manager=result==DB_ROW&&!strcmp(column_text(st,1),"manager");db_finalize(st);st=NULL;
             if(result!=DB_ROW&&result!=DB_DONE) goto failure;
             if(!active) goto transaction_invalid;
-            if(!is_manager){int permission=organization_job_access(database,job_id,assignee,today,NULL);if(permission<0)goto failure;if(!(permission&2))goto transaction_invalid;}
+            int managed=is_manager?access_policy_can_manage_job(database,assignee,job_id):0;if(managed<0)goto failure;
+            if(managed!=1){int permission=organization_job_access(database,job_id,assignee,today,NULL);if(permission<0)goto failure;if(!(permission&2))goto transaction_invalid;}
         }
         if(!prepare(&st,"INSERT INTO job_tasks(job_id,assigned_user_id,title,priority,due_date,created_at,updated_at) VALUES(?,?,?,?,?,?,?)")||!bind_id(st,1,job_id)||(assignee?!bind_id(st,2,assignee):db_bind_null(st,2)!=DB_OK)||!bind_text(st,3,title)||!bind_text(st,4,priority)||!bind_date(st,5,due)||!bind_text(st,6,utc)||!bind_text(st,7,utc)||db_step(st)!=DB_DONE)goto failure;
         DbInt task_id=db_last_insert_rowid(database);db_finalize(st);st=NULL;
@@ -206,7 +215,8 @@ static bool workspace_features_handle(const char *method,const char *target,cons
     if(!mine&&!wizard&&!templates)return false;
     if(*query){error(response,400,"Parametri non validi.");return true;}
     if(mine){if(!strcmp(method,"GET"))personal_work(actor_id,manager,response);else error(response,405,"Metodo non consentito.");return true;}
-    if(!manager){error(response,403,"Operazione riservata ai gestori.");return true;}
+    int manage=access_policy_can_manage_job(database,actor_id,0);
+    if(manage!=1){if(manage<0)server_error(response);else error(response,403,"Operazione riservata ai gestori delegati.");return true;}
     if(templates)job_templates(method,body,actor_id,response);
     else if(!strcmp(method,"POST"))guided_job(body,actor_id,response);else error(response,405,"Metodo non consentito.");
     return true;

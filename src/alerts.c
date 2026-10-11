@@ -398,6 +398,15 @@ static void next_run_json(Json *json, time_t now, const char *run_time,
     append_string(json,value);
 }
 
+bool alerts_outbox_controls_schema(Db *db) {
+    return db_exec(db,
+        "CREATE TABLE IF NOT EXISTS ii_email_controls(outbox_id BIGINT PRIMARY KEY,state VARCHAR(16) NOT NULL,revision BIGINT NOT NULL DEFAULT 1,review_outcome VARCHAR(32) NOT NULL DEFAULT '',reason VARCHAR(1000) NOT NULL DEFAULT '',updated_by BIGINT NOT NULL DEFAULT 0,updated_at VARCHAR(20) NOT NULL DEFAULT '')"
+#ifdef PUNTO_MYSQL
+        " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+#endif
+        ,NULL,NULL,NULL)==DB_OK;
+}
+
 bool alerts_open(const char *db_path) {
     alerts_close();
     if (setenv("TZ","Europe/Rome",1)!=0) return false;
@@ -408,7 +417,9 @@ bool alerts_open(const char *db_path) {
         || db_exec(database,"PRAGMA foreign_keys=ON",NULL,NULL,NULL)!=DB_OK
 #endif
     ) { alerts_close(); return false; }
-    if (!mail_client_open()) {
+    if (!alerts_outbox_controls_schema(database) ||
+        db_exec(database,"UPDATE alert_email_outbox SET status='delivery_unknown' WHERE id IN (SELECT outbox_id FROM ii_email_controls WHERE state='sending') AND status IN ('pending_configuration','retrying')",NULL,NULL,NULL)!=DB_OK ||
+        db_exec(database,"UPDATE ii_email_controls SET state='normal',revision=revision+1 WHERE state='sending'",NULL,NULL,NULL)!=DB_OK || !mail_client_open()) {
         fprintf(stderr,"Configurazione add-on email non valida. Controlla URL interno, CA e file del token.\n");
         alerts_close();
         return false;
@@ -1069,7 +1080,6 @@ source_failure:
 
 static void update_email_status(DbInt id, DbInt rule, const char *previous,
                                 const char *status) {
-    if (strcmp(previous,status)==0) return;
     WorkspaceResponse response={0};
     if (!begin_transaction(&response)) goto done;
     DbStmt *statement=NULL;
@@ -1079,6 +1089,11 @@ static void update_email_status(DbInt id, DbInt rule, const char *previous,
     int changed=updated ? db_changes(database) : 0;
     db_finalize(statement);
     if (!updated) { rollback(); server_error(&response); goto done; }
+    if (!prepare(&statement,"UPDATE ii_email_controls SET state='normal',revision=revision+1 WHERE outbox_id=? AND state='sending'") ||
+        !bind_id(statement,1,id) || db_step(statement)!=DB_DONE) {
+        db_finalize(statement); rollback(); server_error(&response); goto done;
+    }
+    db_finalize(statement);statement=NULL;
     if (changed) {
         Json details={0};
         append(&details,"{\"outbox_id\":"); append_integer(&details,id);
@@ -1094,8 +1109,68 @@ done:
     workspace_response_free(&response);
 }
 
+static bool claim_email(DbInt id, const char *previous) {
+    WorkspaceResponse response = {0};
+    DbStmt *statement = NULL;
+    bool claimed = false;
+    if (!begin_transaction(&response))
+        goto done;
+    if (!prepare(&statement,
+                 "SELECT "
+                 "e.status,COALESCE(c.state,'normal'),r.owner_id,e.subject_user_id,r.type,u.active,u.role,e."
+                 "email,EXISTS(SELECT 1 FROM alert_rule_emails a WHERE a.rule_id=e.rule_id AND "
+                 "a.email=e.email) FROM alert_email_outbox e JOIN alert_rules r ON r.id=e.rule_id JOIN users "
+                 "u ON u.id=r.owner_id LEFT JOIN ii_email_controls c ON c.outbox_id=e.id WHERE e.id=?") ||
+        !bind_id(statement, 1, id) || db_step(statement) != DB_ROW)
+        goto rollback_claim;
+    bool eligible = !strcmp(column_text(statement, 0), previous) &&
+                    !strcmp(column_text(statement, 1), "normal") && db_column_int(statement, 5) == 1 &&
+                    !strcmp(column_text(statement, 6), "manager") && db_column_int(statement, 8) == 1;
+    if (eligible && !inventory_rule_type(column_text(statement, 4)))
+        eligible = access_policy_can_view_time(database, db_column_int64(statement, 2),
+                                               db_column_int64(statement, 3), true) == 1 &&
+                   email_time_access(column_text(statement, 7), db_column_int64(statement, 3)) == 1;
+    db_finalize(statement);
+    statement = NULL;
+    if (!eligible) {
+        rollback();
+        goto done;
+    }
+    if (!prepare(&statement, "SELECT outbox_id FROM ii_email_controls WHERE outbox_id=?") ||
+        !bind_id(statement, 1, id))
+        goto rollback_claim;
+    int step = db_step(statement);
+    db_finalize(statement);
+    statement = NULL;
+    if (step == DB_ROW) {
+        if (!prepare(&statement, "UPDATE ii_email_controls SET state='sending',revision=revision+1 WHERE "
+                                 "outbox_id=? AND state='normal'") ||
+            !bind_id(statement, 1, id) || db_step(statement) != DB_DONE || db_changes(database) != 1)
+            goto rollback_claim;
+    } else if (step == DB_DONE) {
+        if (!prepare(&statement,
+                     "INSERT INTO ii_email_controls(outbox_id,state,revision) VALUES(?,'sending',1)") ||
+            !bind_id(statement, 1, id) || db_step(statement) != DB_DONE)
+            goto rollback_claim;
+    } else
+        goto rollback_claim;
+    db_finalize(statement);
+    statement = NULL;
+    claimed = commit_transaction(&response);
+    goto done;
+rollback_claim:
+    db_finalize(statement);
+    statement = NULL;
+    rollback();
+done:
+    db_finalize(statement);
+    workspace_response_free(&response);
+    return claimed;
+}
+
 static void dispatch_email(time_t now) {
-    if (!mail_client_enabled()) return;
+    if (!mail_client_enabled())
+        return;
     /* All network I/O happens outside the database write transaction and its
        cluster guard. The API ledger makes retries with the same key safe. */
     mail_client_refresh(now);
@@ -1107,7 +1182,7 @@ static void dispatch_email(time_t now) {
             "FROM alert_email_outbox e JOIN alert_rules r ON r.id=e.rule_id JOIN users u ON u.id=r.owner_id "
             "JOIN alert_rule_emails recipients ON recipients.rule_id=e.rule_id AND recipients.email=e.email "
             "WHERE e.status IN ('pending_configuration','retrying') AND e.id>? AND u.active=1 "
-            "AND u.role='manager' ORDER BY e.id LIMIT 1") || !bind_id(statement,1,last_delivery_id)) {
+            "AND u.role='manager' AND NOT EXISTS (SELECT 1 FROM ii_email_controls c WHERE c.outbox_id=e.id AND c.state IN ('cancelled','sending')) ORDER BY e.id LIMIT 1") || !bind_id(statement,1,last_delivery_id)) {
             db_finalize(statement); return;
         }
         result=db_step(statement);
@@ -1139,6 +1214,7 @@ static void dispatch_email(time_t now) {
     char key[128];
     int length=snprintf(key,sizeof(key),"%s:outbox:%lld",mail_client_namespace(),(long long)id);
     if (length<0 || (size_t)length>=sizeof(key)) goto done;
+    if(!claim_email(id,previous))goto done;
     MailDelivery delivery=mail_client_send(key,email,title,message);
     const char *status=delivery==MAIL_DELIVERY_SENT ? "sent" :
         delivery==MAIL_DELIVERY_UNKNOWN ? "delivery_unknown" :

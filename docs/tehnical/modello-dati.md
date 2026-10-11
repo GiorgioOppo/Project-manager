@@ -2,7 +2,7 @@
 
 **Italiano** | [English](../en/tehnical/modello-dati.md)
 
-Verificato sul codice del repository l’**11 ottobre 2026**. Schema applicativo **10**; schema del calendario SQLite **1** e schema inventory SQLite **5**. Questo documento descrive l'implementazione presente, non le proposte finanziarie o crittografiche della roadmap.
+Verificato sul codice del repository l’**11 ottobre 2026**. Schema applicativo **14**; schema del calendario SQLite **2** e schema inventory SQLite **6**. Questo documento descrive l'implementazione presente, non le proposte finanziarie o crittografiche della roadmap.
 
 Fonti: [DDL MySQL](../../src/mysql_schema.c), [migrazioni](../../src/storage.c), [utenti](../../src/accounts.c), [commesse e ore](../../src/workspace.c), [organizzazione](../../src/organization.c), [attività e blocchi](../../src/work_board.c), [contratti](../../src/procurement.c), [documenti](../../src/documents.c), [alert](../../src/alerts.c), [mailer](../../addon/src/mailer.c), [calendario](../../calendar-addon/src/calendar.c) e [Compose](../../compose.yaml).
 
@@ -10,7 +10,7 @@ Fonti: [DDL MySQL](../../src/mysql_schema.c), [migrazioni](../../src/storage.c),
 
 | Archivio | Nome/percorso predefinito | Contenuto e proprietario |
 | --- | --- | --- |
-| MySQL InnoDB, tre repliche Group Replication | `punto`, configurabile con `MYSQL_DATABASE`/`DB_NAME` | Le 25 tabelle applicative sotto descritte. Tre nodi replicano lo stesso database logico: non sono tre database business diversi. |
+| MySQL InnoDB, tre repliche Group Replication | `punto`, configurabile con `MYSQL_DATABASE`/`DB_NAME` | Le tabelle applicative descritte di seguito e le estensioni dello schema 14. Tre nodi replicano lo stesso database logico: non sono tre database business diversi. |
 | SQLite applicativo, sviluppo nativo | `DB_PATH`, predefinito `data/punto.db` | Alternativa a MySQL per le stesse funzioni; versione con `PRAGMA user_version`. |
 | MongoDB GridFS | `punto_documents`, configurabile con `DOC_DB_NAME` | Originali PDF e metadati GridFS, gestiti dall'app tramite account documentale. |
 | SQLite Nginx Proxy Manager | `nginx-proxy-manager/data/database.sqlite` sull'host, `/data/database.sqlite` nel container | Configurazione NPM, utenti amministrativi NPM, host proxy e riferimenti ai certificati. Schema di competenza di NPM 2.16.0, non delle migrazioni applicative. |
@@ -71,13 +71,13 @@ erDiagram
 
 `alert_events.job_id` è intenzionalmente privo di FK: registra tentativi relativi a una commessa inesistente. `audit_events.entity_id` è un riferimento polimorfico storico, non una FK: lo storico sopravvive alla cancellazione dell'entità.
 
-## Catalogo funzionale delle 25 tabelle MySQL
+## Catalogo funzionale delle tabelle di base MySQL
 
-Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, indice, chiave e CHECK**. Qui sono spiegate le responsabilità e le regole che il solo DDL non esprime.
+Il DDL di base in fondo conserva lo schema 10. Le estensioni successive sono descritte sotto; i sorgenti di migrazione rimangono il riferimento completo per colonne e vincoli attuali.
 
 | Tabella | Responsabilità e interpretazione |
 | --- | --- |
-| `schema_metadata` | Una riga `id=1`; `version=10` dopo le migrazioni. Una versione futura sconosciuta impedisce l'avvio. |
+| `schema_metadata` | Una riga `id=1`; `version=14` dopo le migrazioni. Una versione futura sconosciuta impedisce l'avvio. |
 | `cluster_write_guard` | Una riga `id=1`, `generation>=0`; aggiornata all'inizio delle scritture applicative per far certificare sul cluster i conflitti fra transazioni, incluse regole dipendenti da aggregati. Non è un dato utente. |
 | `users` | Identità applicativa: email univoca, nome, ruolo globale `manager`/`worker`, abilitazione, hash password e salt. L'API non espone hash/salt. Creazione attiva; disabilitazione reversibile; nessuna cancellazione utente esposta. |
 | `oidc_identities` | Collegamento persistente della coppia esatta `(issuer,subject)` al `user_id` locale, anch’esso univoco e FK verso `users`. Identifica l’utente indipendentemente da cambi di email e impedisce che due identità reclamino lo stesso profilo. Non contiene password o token. |
@@ -103,9 +103,26 @@ Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, 
 | `alert_email_outbox` | Richiesta email persistente in SQL con destinatario e contenuto. Unicità `(rule_id,email,event_key)`; stati `pending_configuration`, `retrying`, `sent`, `delivery_unknown`, `delivery_failed`. |
 | `audit_events` | Storico append-only: attore con nome/email fotografati, azione, tipo/ID entità, JSON prima/dopo. `actor_id=NULL` per operazioni di sistema. L'audit può contenere dati personali e copie di valori business. |
 
+### Estensioni correnti, schema 14
+
+| Tabelle o colonne | Responsabilità |
+| --- | --- |
+| `access_governance_state`, `access_space_admins` | Migrazione una tantum degli amministratori e nomine esplicite successive; il ruolo manager resta distinto. |
+| `access_area_delegations` | Ambito organizzativo, quattro facoltà separate, date, revisione e revoca. |
+| `access_profile_revisions`, `access_profile_requests` | Revisioni dei profili Sales/Finance, richieste, approvatore distinto e modalità iniziale tracciata. |
+| `operations_absences` | Intervalli richiesti, decisioni e revisione; l’approvazione genera eccezioni giornaliere. |
+| `operations_template_versions`, `operations_checklist` | Versioni dei modelli e riferimenti espliciti ticket/asset per la chiusura. |
+| `job_tasks.estimated_minutes`, `user_work_schedules.revision`, `job_templates.revision/archived` | Stime di lavoro, protezione degli aggiornamenti concorrenti e ciclo di vita dei modelli. |
+| `ii_contract_revisions`, `ii_job_contract_revisions` | Revisioni pubblicate immutabili e versione selezionata per commessa. |
+| `ii_economic_periods`, `ii_economic_corrections`, `ii_job_budgets` | Fotografie immutabili dei costi, periodi globali chiusi, rettifiche separate e budget con previsione. |
+| `ii_time_drafts`, `ii_inventory_person_accounts` | Proposte ore con conferma personale/idempotenza e collegamento verificato persona–account. |
+| `ii_email_controls` | Claim degli invii, annullamento e revisione esplicita degli esiti incerti, senza modificare il CHECK storico della coda. |
+
+Il DDL delle estensioni è in [governance](../../src/improvements_governance.c), [operazioni](../../src/improvements_operations.c), [integrazioni](../../src/improvements_integrations.c) e [alert](../../src/alerts.c). Le bozze dei moduli salvate esplicitamente sul dispositivo usano localStorage e non la tabella delle proposte server. La cancellazione definitiva della commessa restituisce conflitto se deve conservare ore consolidate, rettifiche economiche, budget o riferimenti contrattuali pubblicati.
+
 ### Integrità, cancellazione e concorrenza
 
-Le FK MySQL non dichiarano `ON DELETE CASCADE`: la cancellazione è normalmente restrittiva. L'API di cancellazione commessa elimina esplicitamente blocchi, relazioni padre fra attività, attività, ore, assegnazioni dirette e grant di gruppo, poi la commessa, nella stessa transazione con l'audit. L'audit conserva identità e conteggi aggregati eliminati, non costituisce un backup integrale delle ore. Contratto, fornitore e PDF non sono cancellati da questa operazione.
+Le FK delle tabelle di base MySQL non dichiarano `ON DELETE CASCADE`: la cancellazione è normalmente restrittiva. L'API di cancellazione commessa elimina esplicitamente blocchi, relazioni padre fra attività, attività, ore, assegnazioni dirette e grant di gruppo, poi la commessa, nella stessa transazione con l'audit. L'audit conserva identità e conteggi aggregati eliminati, non costituisce un backup integrale delle ore. Contratto, fornitore e PDF non sono cancellati da questa operazione.
 
 La cancellazione di un’attività è rifiutata se ha figli. Altrimenti scollega i blocchi senza eliminarli, incrementa le loro revisioni e conserva l’audit della rimozione e degli scollegamenti. Le FK composte `(job_id,parent_id)` e `(job_id,task_id)` impediscono legami fra commesse differenti. Il controllo dei cicli e delle profondità resta applicativo. Aggiornamento ed eliminazione richiedono la revisione corrente, a differenza delle commesse prive di versione ottimistica.
 
@@ -120,7 +137,7 @@ Trigger MySQL aggiuntivi:
 
 `time_entries.user_id` rimane nullable per compatibilità con dati precedenti alla migrazione delle identità. SQLite tenta il collegamento tramite email; righe non riconciliabili restano storiche e non diventano ore personali di un altro utente.
 
-I controlli di 24 ore giornaliere, ultimo gestore attivo, massimo numero di entità, sovrapposizioni tariffarie, validità delle assegnazioni, cicli dei gruppi e gerarchie delle attività richiedono l'applicazione. Scrivere direttamente in SQL può violare regole business anche quando tutti i CHECK passano. Le scritture applicative aggiornano `cluster_write_guard` prima di verificare le regole; contese e indisponibilità possono restituire un errore temporaneo. Le API business non hanno una chiave di idempotenza universale: dopo una risposta ambigua rileggere lo stato prima di creare una seconda entità.
+I controlli di 24 ore giornaliere, ultimo amministratore attivo, massimo numero di entità, sovrapposizioni tariffarie, validità delle assegnazioni, cicli dei gruppi e gerarchie delle attività richiedono l'applicazione. Scrivere direttamente in SQL può violare regole business anche quando tutti i CHECK passano. Le scritture applicative aggiornano `cluster_write_guard` prima di verificare le regole; contese e indisponibilità possono restituire un errore temporaneo. Le API business non hanno una chiave di idempotenza universale: dopo una risposta ambigua rileggere lo stato prima di creare una seconda entità.
 
 ## SQLite applicativo e migrazioni
 
@@ -138,10 +155,14 @@ In modalità nativa, `users`, `jobs` e `time_entries` vengono inizializzate dai 
 | 8 | Attività e sottoattività, stati Kanban e blocchi con revisioni, FK nella stessa commessa e audit delle nuove operazioni. |
 | 9 | Regole alert `inventory_due` e anticipo `days_before` sulle scadenze inventory; nessuna nuova tabella applicativa. |
 | 10 | Regole `inventory_return` e `inventory_verification`, intervallo `verification_days` 1–365 (default 90). Conserva ID, sequenza, FK, destinatari e storico delle consegne; nessuna nuova tabella applicativa. |
+| 11 | Versione compatibile accettata dal passo 12; nessun evento di migrazione 11 autonomo. |
+| 12 | Registro settimanale e multiplo, rettifiche, ore collegate alle attività, orari, modelli e ciclo di vita commessa. |
+| 13 | Profili sensibili espliciti e visibilità delle ore per squadra organizzativa. |
+| 14 | Amministratori e deleghe, approvazione distinta dei profili, capacità e assenze, modelli versionati, revisioni contrattuali, periodi economici immutabili, budget, proposte personali e controlli integrazioni. |
 
-SQLite non possiede `schema_metadata` né `cluster_write_guard`: usa `PRAGMA user_version` e transazioni `BEGIN IMMEDIATE`. Il suo schema business comprende le altre 23 tabelle; `sqlite_sequence` è una tabella interna SQLite. Non si devono copiare i DDL MySQL sul file SQLite. Le migrazioni sono eseguite dall'app, senza un endpoint HTTP di migrazione.
+SQLite non possiede `schema_metadata` né `cluster_write_guard`: usa `PRAGMA user_version` e transazioni `BEGIN IMMEDIATE`. Il suo schema business comprende le tabelle business e le estensioni dello schema 14; `sqlite_sequence` è una tabella interna SQLite. Non si devono copiare i DDL MySQL sul file SQLite. Le migrazioni sono eseguite dall'app, senza un endpoint HTTP di migrazione.
 
-La tabella `oidc_identities` viene creata idempotentemente dall’inizializzazione degli account SQLite e dalla preparazione dello schema MySQL, anche con autenticazione locale, senza incrementare la versione 10. In SQLite `issuer` e `subject` sono `TEXT COLLATE BINARY`, con PK composta, mentre `user_id` è `INTEGER NOT NULL UNIQUE REFERENCES users(id)`; in MySQL le chiavi del provider sono `VARBINARY`, come nel DDL seguente.
+La tabella `oidc_identities` viene creata idempotentemente dall’inizializzazione degli account SQLite e dalla preparazione dello schema MySQL, anche con autenticazione locale, senza incrementare la versione 14. In SQLite `issuer` e `subject` sono `TEXT COLLATE BINARY`, con PK composta, mentre `user_id` è `INTEGER NOT NULL UNIQUE REFERENCES users(id)`; in MySQL le chiavi del provider sono `VARBINARY`, come nel DDL seguente.
 
 In modalità nativa i PDF sono file locali nella directory `DOC_FILES_DIR`, oppure nella sottocartella `documents` accanto al file `DB_PATH` (per default `data/documents`), con chiavi validate ed esclusione di symlink. In Docker il backend documentale è MongoDB.
 
@@ -174,7 +195,7 @@ WAL e `synchronous=FULL`; lo stato `sending` viene confermato su disco prima del
 
 ## Archivio calendar
 
-SQLite usa FK, WAL, `synchronous=FULL`, `user_version=1`, timeout di contesa 3 secondi e connessioni distinte per API e worker. Le cinque tabelle sono:
+SQLite usa FK, WAL, `synchronous=FULL`, `user_version=2`, timeout di contesa 3 secondi e connessioni distinte per API e worker. Le cinque tabelle sono:
 
 | Tabella | Colonne e vincoli |
 | --- | --- |
@@ -221,7 +242,7 @@ Non sono implementati FHE/calcolo omomorfico, vault con chiavi per utente o camp
 
 Per procedure coerenti di backup e ripristino vedere [operazioni](operazioni-backup-ripristino.md). Per i vincoli esposti ai chiamanti vedere [API app](api-app.md) e [API addon](api-addon.md).
 
-## DDL MySQL completo, schema 10
+## DDL MySQL di base, schema storico 10
 
 Le definizioni seguenti sono estratte dalle stringhe DDL di `mysql_schema_prepare()` e formattate senza modificarne il contenuto. Sono un riferimento dello schema atteso, **non uno script da lanciare per aggiornare manualmente un database esistente**: le migrazioni includono anche verifiche, trigger, dati iniziali e audit.
 

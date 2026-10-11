@@ -5,6 +5,7 @@ CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c src/organization.c src/alerts.c src/mail_client.c src/calendar_client.c src/work_board.c src/inventory_client.c
 SOURCES += auth/oidc.c src/ticket_bridge.c src/access_control.c
+SOURCES += src/improvements.c src/improvements_governance.c src/improvements_operations.c src/improvements_integrations.c
 CPPFLAGS += $(shell pkg-config --cflags openssl)
 LDLIBS += $(shell pkg-config --libs openssl)
 CPPFLAGS += $(shell pkg-config --cflags json-c)

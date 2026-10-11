@@ -61,8 +61,9 @@ The current application has a single operational workspace. Separate companies a
 | Notifications | Implemented | Personal alerts, counter and marking as read |
 | History | Implemented | Change events with actor, date and before/after details, restricted to managers |
 | Email delivery | Partial in operational use | Addon and queue implemented; SMTP still needs configuration, so no actual delivery |
-| Google Calendar | Partial in operational use | C addon and bidirectional synchronization APIs implemented; OAuth needs configuration; calendar screen and linking to hours still to be developed |
-| Full financial module | Planned | Multiple companies and currencies, budgets, invoices, receipts, payments, open items and financial reporting |
+| Google Calendar | Requires provider configuration | C addon, personal interface, synchronization and time proposals requiring confirmation are implemented; OAuth and individual consent are necessary |
+| EUR economic control | Implemented | Finance accesses budgets, forecasts and costs, approves immutable period snapshots and reasoned adjustments |
+| Full financial module | Planned | Multiple companies and currencies, invoices, receipts, payments, open items and accounting reports |
 
 “Implemented” describes a feature present in the code and interface, where applicable. “Partial” means a technical component is available but the operational path still needs configuration or an interface. “Planned” indicates a plan, not an already usable feature.
 

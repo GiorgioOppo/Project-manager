@@ -118,7 +118,7 @@ class ProcurementIntegrationTests(unittest.TestCase):
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         self.assertEqual(self.records("contracts"), [contract])
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (14,))
 
     def test_duplicate_codes_case_insensitive_and_invalid_form_fields(self):
         supplier_id = self.supplier()

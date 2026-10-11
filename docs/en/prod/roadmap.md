@@ -2,7 +2,7 @@
 
 [Italiano](../../prod/roadmap.md) | **English**
 
-This page updates how the plans should be read against the application baseline documented on **11 October 2026**, schema **12**. The [twenty-feature plan](roadmap-20-funzionalita.md) and [financial module plan](piano-modulo-finanziario.md) retain the original detailed design, written when the baseline was schema 3. Schema numbers, counts, and descriptions of the “current baseline” in those plans are historical references, not the current state.
+This page updates how the plans should be read against the application baseline documented on **11 October 2026**, schema **14**. The [twenty-feature plan](roadmap-20-funzionalita.md) and [financial module plan](piano-modulo-finanziario.md) retain the original detailed design, written when the baseline was schema 3. Schema numbers, counts, and descriptions of the “current baseline” in those plans are historical references, not the current state.
 
 The statuses used here are:
 
@@ -10,13 +10,13 @@ The statuses used here are:
 - **Partial**: a useful part of the feature or infrastructure exists, but a component of the described workflow is missing.
 - **Planned**: the requested behavior is not yet available as a complete feature.
 
-A table, similar component, or addon alone does not complete a product feature. For current operational availability, see the [overview](panoramica.md). For the workflows delivered in schema 12, see the [improved operational workflows](flussi-operativi.md). A global access matrix, copying a single day and duplicate detection remain separate extensions.
+A table, similar component, or addon alone does not complete a product feature. For current operational availability, see the [overview](panoramica.md). The **twenty improvements from the workflow review**, delivered in schema 14 and described in the [improved operational workflows](flussi-operativi.md), use separate numbering from the **twenty features in the historical plan** below. Delivering the review improvements does not automatically complete every requirement in the original plans; a global access matrix and assisted duplicate detection remain future extensions.
 
 ## Baseline already available
 
-Implemented features include login, Manager/Operator profiles, projects and states, direct and hierarchical-group access, operational roles, shared projects, personal time logs, suppliers, contracts/PDFs, and history. Five Analysis views, EUR cost rates, permanent deletion of projects with linked hours, daily alerts, and notifications have been added. The first Tasks module delivery adds tasks and subtasks, Kanban, and a blocker register; project deletion now includes these items too.
+Implemented features include login, workspace administration and delegated Area Managers, Sales/Finance functional profiles, projects and states, direct and hierarchical-group access, operational roles, shared projects, personal time logs, suppliers, contracts/PDFs, and history. Five Analysis views, EUR cost rates, daily alerts, and notifications are available. Tasks includes tasks and subtasks, Kanban, a blocker register, estimates, and personal capacity comparison. Closure and archiving retain data; separate permanent deletion is blocked when a project contains consolidated data or protected economic references.
 
-The email and Google Calendar addons are implemented as separate C services. Email awaits SMTP configuration. Calendar already exposes bidirectional synchronization APIs, but awaits OAuth and the connection/viewing interface. Both are therefore **partial as operational user workflows**, although their technical services are implemented.
+The email and Google Calendar addons are implemented as separate C services with available UI workflows. Email needs a configured SMTP provider to send: authorized administrators and managers can inspect the queue, cancel pending deliveries, and review uncertain outcomes. Calendar provides connection, viewing, and synchronization; operational use requires provider OAuth configuration and individual consent. Personal event time proposals pass through a draft and explicit confirmation.
 
 ## New track: tasks and collaboration
 
@@ -30,27 +30,27 @@ This track adds to the original twenty improvements without replacing their numb
 | Kanban board | Implemented | Further view preferences and automation only if defined in a later release |
 | Risk and blocker register | Partial | Blockers implemented; future risks with probability and preventive measures still to develop |
 | Dependencies and schedule | Planned | Time relationships, delay impacts, and Gantt |
-| Team workload | Planned | Work estimates and workload comparison with already-configurable schedules and absences |
+| Team workload | Partial | Task estimates and personal capacity comparison implemented; aggregate team planning, dependencies, and workload leveling still to develop |
 | Discussions and decisions | Planned | Comments, mentions, and reasoned decisions with project-scoped visibility |
 | Change requests | Planned | Assessment and approval of impacts on work, deadlines, and budget |
 | Deliverables and acceptance | Planned | Versions, review, observations, and approval of results |
 | Customer portal | Planned | External access restricted to explicitly shared content and requests |
 | Overview of all projects | Partial | Personal cross-project view and project overview implemented; overall portfolio still to develop |
 | Personal timer | Planned | Start/pause, proposal requiring confirmation, and overlap checking |
-| Guided project closure | Implemented | Open-work summary, blocking new hours, archiving and reopening with a reason |
+| Guided project closure | Implemented | Open-work summary, checklist with manually verified ticket/equipment references, blocking new hours, archiving and reopening with a reason |
 
 The current board uses status selections with confirmation, accessible by keyboard. States of tasks, parents, children, and blockers remain independent; calculated percentage progress and formal task approvals are absent. Operational assignment and due-date notices are available. Revisions protect concurrent task and blocker edits without automatically extending that mechanism to every historical API.
 
-Recommended next steps are workload planning and dependencies, after defining work estimates and capacity comparison; individual schedules and absences are already configurable. Hour–task linking is available as an optional reference in the time log and project overview; the note remains descriptive.
+Recommended next steps are dependencies, scheduling, and aggregate team planning. Estimates, personal capacity, individual schedules, and approved absence requests are already available. Hour–task linking is available as an optional reference in the time log and project overview; the note remains descriptive.
 
-## The twenty operational improvements
+## The twenty features in the historical plan
 
-Numbering remains that of the original plan so priorities and requirements can be compared.
+This table retains the original plan numbering so priorities and requirements can be compared. For the twenty improvements from the later review, use the separate [operational workflows](flussi-operativi.md) table.
 
 | No. | Feature | Current status | What remains to complete it |
 | --- | --- | --- | --- |
 | 1 | Weekly grid timesheet | Implemented | Seven days, entry details, atomic multiple insertions and consistent totals |
-| 2 | Copy previous day or week | Partial | Previous-week copying implemented with an editable preview; single-day copying still to develop |
+| 2 | Copy previous day or week | Implemented | Previous-week and selective entry/day copying with explicit destinations, editable preview, and atomic confirmation; no automatic saving |
 | 3 | Favorite and recent projects | Planned | Persistent personal preferences and selector ordering, always subject to current access |
 | 4 | Time correction request | Implemented | Reasoned request, approval/rejection/cancellation, history and conflicts |
 | 5 | Time-log anomaly checks | Partial | Versioned individual schedules, absences and holidays implemented; possible-duplicate warnings still to develop |
@@ -58,14 +58,14 @@ Numbering remains that of the original plan so priorities and requirements can b
 | 7 | Global search | Planned | A single search across authorized resources; local Projects, Suppliers, and Contracts searches already exist |
 | 8 | Keyboard quick commands | Planned | Ctrl/Cmd+K bar with action catalog and subsequent record search; ordinary UI keyboard controls remain available |
 | 9 | Customizable and accessible interface | Partial | Responsive UI, labels, and keyboard navigation present; theme/density, contrast review, and complete workflow checks remain |
-| 10 | Installable app with offline drafts | Planned | PWA installation, personal drafts with explicit retention and online confirmation, idempotency, and account-change handling |
+| 10 | Installable app with offline drafts | Partial | Personal on-device drafts for hours, batch entry, and guided creation implemented with seven-day expiry, logout/account-change cleanup, and explicit recovery; PWA installation and complete offline availability still to develop |
 | 11 | Guided CSV import | Planned | Column mapping, preview, row errors, confirmation, and subsequent user onboarding without passwords in CSV |
 | 12 | Bulk operations | Planned | Multiple selection, preview of states/grants/revocations, and confirmation with revision checks |
-| 13 | Guided project creation and templates | Implemented | Data, contract, team, tasks and summary; atomic confirmation and explicit templates |
+| 13 | Guided project creation and templates | Implemented | Data, contract, team, tasks and summary; atomic confirmation, versioned templates with archiving and explicit restoration |
 | 14 | Effective-access matrix | Partial | Per-person, per-project explanation implemented with direct/inherited sources and dates; global matrix still to develop |
-| 15 | Area managers with limited delegation | Planned | Administration scoped to groups/resources, without granting the current Manager's global powers |
+| 15 | Area managers with limited delegation | Implemented | Workspace Administrator distinct from Area Manager; group/subgroup delegations, explicit capabilities, inclusive dates, and revocation effective on subsequent requests; hours retain team scope |
 | 16 | Duplicate detection | Partial | Unique codes and PDF hashes already exist; assisted comparison, VAT-number/content warnings, and reasoned decisions are missing |
-| 17 | Contract versions and amendments | Planned | Immutable published revisions and explicit project links to the version; multiple PDFs on a contract do not constitute this workflow |
+| 17 | Contract versions and amendments | Implemented | Sales prepares and publishes immutable data/PDF-reference revisions; explicit project link to a published version of its own contract |
 | 18 | Assisted PDF reading and form filling | Planned | Local extraction/OCR, proposals with source pages, and manager confirmation, without modifying originals |
 | 19 | Contractual obligation register | Planned | Obligations, responsibilities, deadlines, evidence, and internal agenda; existing time alerts do not already monitor contract deadlines |
 | 20 | Supplier qualification | Planned | Versioned checklists, requirements, evidence, deadlines, and informational qualification status |
@@ -85,7 +85,7 @@ Numbering remains that of the original plan so priorities and requirements can b
 | R6 | Mobility: 10 | Personal offline drafts and confirmed saving when back online |
 | R7 | Documents: 18 | Assisted PDF reading with human review |
 
-This is a dependency sequence, not a committed calendar. R6 and R7 can proceed separately when their foundations are ready. Existing alert and addon checks must be integrated into the design, not duplicated with a second equivalent engine.
+This is the historical dependency sequence, not a committed calendar or a list of features all still to build. Delivered parts are identified in the status tables. R6 and R7 can proceed separately when their foundations are ready. Existing alert and addon checks must be integrated into the design, not duplicated with a second equivalent engine.
 
 R0's practical priority is preventing grid, copy, CSV, offline, and bulk operations from producing different behavior for the same data. Repeated submission of the same operation must have only one effect; an edit against a revision that has changed must return a visible conflict.
 
@@ -93,7 +93,7 @@ R0's practical priority is preventing grid, copy, CSV, offline, and bulk operati
 
 The agreed requirement for the **first financial release F1** already includes invoicing and receipts, multiple companies, multiple currencies, and companies with tax residence in different countries. Delivering only an estimated labor cost does not complete F1.
 
-Current EUR reports are the informational starting point. Company isolation, customer tax records, sales rates, invoices, money movements, open items, and financial closes are absent.
+EUR reports and internal economic control are available to Finance: project budgets, forecast remaining cost, open-period actuals, immutable approved snapshots, and separate reasoned economic corrections. Approval of a global period blocks underlying time edits; changing rates never recalculates old snapshots. These capabilities **do not complete F1**: company isolation, customer tax records, sales rates, invoices, money movements, open items, and multi-company accounting closes remain absent.
 
 | Code | Planned feature | Current status / target |
 | --- | --- | --- |
@@ -101,10 +101,10 @@ Current EUR reports are the informational starting point. Company isolation, cus
 | FIN02 | Currencies and exchange rates | Planned F1: document currency, functional currency, historical rates, and settlement differences |
 | FIN03 | Customers and suppliers | Partial: operational suppliers exist; counterparties and versioned tax data in F1 |
 | FIN04 | Commercial contracts | Partial: supplier contracts exist; purchase/sale distinction and time-based, fixed-price, or milestone models in F1 |
-| FIN05 | Project budgets | Planned F1: approved versions, expected revenue, and planned costs |
+| FIN05 | Project budgets | Partial: internal EUR budget, remaining cost, and estimate at completion available; approved budget versions, expected revenue, and multi-company context remain for F1 |
 | FIN06 | Rates and resource costs | Partial: per-user EUR cost and validity already available; sales, currency, scopes, and precedence in F1 |
-| FIN07 | Time valuation | Partial: recalculated estimates available; approved snapshots, billable sources, and adjustments in F1 |
-| FIN08 | Revenue and progress | Planned F1: management revenue distinct from invoice and receipt; estimate at completion in F2 |
+| FIN07 | Time valuation | Partial: live estimates, immutable approved cost snapshots, frozen hours, and explicit economic corrections available; billable sources, sales rates, and company/tax context remain for F1 |
+| FIN08 | Revenue and progress | Planned F1 for management revenue and progress, distinct from invoices and receipts; existing internal cost forecasts do not recognize revenue or cash flows |
 | FIN09 | Purchases and direct costs | Planned F1 for costs and invoices; orders and commitments in F2 |
 | FIN10 | Expense claims and reimbursements | Planned: manual expenses in F1, contributor workflow and structured reimbursements in F2 |
 | FIN11 | Customer invoices | Planned F1: draft, lines, taxes, approval, and documents |
@@ -115,7 +115,7 @@ Current EUR reports are the informational starting point. Company isolation, cus
 | FIN16 | Receipts and payments | Planned F1: manual recording, partial allocations, advances, and reversals |
 | FIN17 | Bank reconciliation | Planned F3: statement imports, deduplication, and proposed matches |
 | FIN18 | Margins and cash flows | Planned F1 for current position, scenarios in F2 |
-| FIN19 | Ledger and closes | Planned F1 for management ledger, balancing, periods, and export; extensions in F4 |
+| FIN19 | Ledger and closes | Partial: approved internal cost periods and corrections available; multi-company management ledger, balancing, accounting closes, and export remain for F1, extensions in F4 |
 | FIN20 | Group and intercompany | Planned: summaries by currency in F1; intercompany, conversion, and eliminations in F4 |
 
 Current application History is not the financial ledger planned by FIN19. A total of contract values is not recognized revenue; an estimated hourly cost is not a payment; a converted company total is not already consolidation with eliminations.
@@ -141,11 +141,11 @@ Company isolation precedes activation of the second company. The operational pro
 
 ## Calendar and email: completing the user workflow
 
-For email, the next operational step is SMTP provider configuration, checking queue, outcomes, and recipients. The addon does not require a new user identity in the interface.
+Email still requires SMTP provider configuration in the deployment. The queue UI supports outcome inspection, cancellation of still-pending deliveries, and recording provider verification for uncertain outcomes. Recording a review does not resend the message; a delivery already in progress cannot be cancelled. The addon does not require a new user identity in the interface.
 
-Google Calendar requires OAuth configuration and individual consent, then a screen to connect/disconnect the account, select the calendar, view status, and address conflicts. The ready API baseline avoids placing Google transport directly in the UI.
+Google Calendar already has a screen for connection/disconnection, calendar selection, status viewing, and operations requiring review. Provider OAuth configuration and individual consent remain operational prerequisites. Google transport and tokens stay in the addon.
 
-The event–project workflow must allow selection of authorized projects only, propose a duration, and require confirmation before creating hours. It must distinguish planned time from actual work, handle modified or deleted events, and prevent duplicate entries. This transformation does not happen automatically today.
+The event–project workflow is available through time drafts: it verifies the event in the personal calendar, normalizes dates and duration, checks current access, and requires confirmation before recording hours. All-day or cancelled events are not converted into hours; review the proposal again if the event has changed. A Ticket reference may be entered as a proposal to check and never grants permissions. Confirming the same draft is idempotent. Planned time remains separate from confirmed work: there is no automatic conversion or subsequent synchronization of saved hours with the event.
 
 ## Cross-cutting completion conditions
 
