@@ -4,7 +4,7 @@
 
 La documentazione descrive la web app per commesse e registrazione delle ore, i servizi che la eseguono e i processi di lavoro. È organizzata in **`tehnical/`** per chi sviluppa o amministra il sistema e **`prod/`** per chi lo configura e lo utilizza. Il nome della cartella `tehnical` è mantenuto come richiesto dal progetto.
 
-**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo 10, 25 tabelle MySQL, 11 servizi Docker (12 con Ticket) e 8 reti. La modalità nativa usa 23 tabelle funzionali SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.md) conserva le istruzioni generali di avvio.
+**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo 10, 25 tabelle MySQL, 11 servizi Docker (12 con Ticket) e 8 reti. La modalità nativa usa 23 tabelle funzionali SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.it.md) conserva le istruzioni generali di avvio.
 
 ## Percorsi di lettura
 

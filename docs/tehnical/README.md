@@ -2,7 +2,7 @@
 
 **Italiano** | [English](../en/tehnical/README.md)
 
-[Indice generale](../README.md) · [Documentazione di prodotto](../prod/README.md) · [README del progetto](../../README.md)
+[Indice generale](../README.md) · [Documentazione di prodotto](../prod/README.md) · [README del progetto](../../README.it.md)
 
 Queste guide descrivono il sistema implementato all’**11 ottobre 2026**: server C, interfaccia HTML/CSS/JavaScript, schema applicativo 10, deployment Docker con tre membri MySQL e tre addon C. Le configurazioni native e Docker sono ambienti distinti.
 
