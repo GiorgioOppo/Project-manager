@@ -612,7 +612,7 @@ class WorkBoardIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (8,9)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (8,9,10)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=7")
             db.commit()
@@ -629,11 +629,11 @@ class WorkBoardIntegrationTests(unittest.TestCase):
         history = self.get("/api/time-entries?date=" + self.today(), worker)
         self.assertEqual((history["total_minutes"], history["entries"][0]["id"]), (35, entry))
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (9,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
             for table, rows in preserved.items():
                 self.assertEqual(db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (8,9)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (8,9,10)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=8").fetchone(), (1,))
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])

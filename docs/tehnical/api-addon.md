@@ -1,5 +1,7 @@
 # API private degli addon mail e calendario
 
+**Italiano** | [English](../en/tehnical/api-addon.md)
+
 Verificato sul codice il **10 ottobre 2026**. I servizi sono programmi C separati dall'applicazione, eseguiti in container dedicati. SMTP e credenziali Google sono predisposti, ma **la configurazione dei fornitori reali è rinviata**: i test usano servizi simulati.
 
 Fonti: [mailer.c](../../addon/src/mailer.c), [mail_client.c](../../src/mail_client.c), [calendar.c](../../calendar-addon/src/calendar.c), [calendar_client.c](../../src/calendar_client.c), [scheduler alert](../../src/alerts.c), [Compose](../../compose.yaml). Guide dei componenti: [mail](../../addon/README.md) e [Calendar](../../calendar-addon/README.md).

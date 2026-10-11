@@ -1,5 +1,7 @@
 # Frontend: struttura, stato e interazione
 
+**Italiano** | [English](../en/tehnical/frontend-e-interfaccia.md)
+
 Riferimento: codice dell’**11 ottobre 2026**. Questa guida è destinata a chi modifica l’interfaccia. Le istruzioni per usare il prodotto sono nelle guide [utente](../prod/guida-utente.md) e [gestore](../prod/guida-gestore.md); il contratto delle richieste è in [API app](api-app.md).
 
 ## File e dipendenze
@@ -14,11 +16,23 @@ Riferimento: codice dell’**11 ottobre 2026**. Questa guida è destinata a chi 
 | [workspace.css](../../public/workspace.css) | Area di lavoro, tabelle, dialog, organizzazione, contratti e notifiche |
 | [reports.css](../../public/reports.css) | Filtri, schede, tabelle e tariffe delle analisi |
 | [work-board.css](../../public/work-board.css) | Colonne Kanban, elenco gerarchico, filtri, schede dei blocchi e layout responsive della nuova sezione |
+| [i18n.js](../../public/i18n.js), [i18n.css](../../public/i18n.css) | Scelta lingua, cataloghi locali, testi statici marcati e selettore accessibile |
+| `public/locales/{en,zh,es,fr,de}.json` | Traduzioni complete dell’interfaccia e degli errori riconosciuti |
 | [favicon.svg](../../public/favicon.svg) | Identità grafica del browser |
 
 Non ci sono un framework UI, un bundler o un processo npm per generare le pagine. Gli script sono IIFE in modalità strict; funzioni e stato non sono pubblicati come API globali. Gli ID HTML costituiscono un contratto diretto con `getElementById`: rinominare un campo richiede di aggiornare il JavaScript che lo usa.
 
 L’interfaccia richiede JavaScript e API browser moderne, fra cui `fetch`, `AbortController`, `URLSearchParams`, `BigInt`, `dialog.showModal()` e `matchMedia`. Il repository non definisce una matrice certificata di versioni browser né un insieme di polyfill. Una nuova dipendenza va quindi valutata e collaudata sui browser scelti per la distribuzione.
+
+## Localizzazione
+
+`i18n.js` viene caricato prima degli script applicativi. `PuntoI18n.ready` attende il catalogo della lingua selezionata prima di inizializzare etichette, formati `Intl` e dati; l’italiano usa direttamente i messaggi sorgente. La selezione segue `lang` valido nell’URL, preferenza `punto.language` del browser, lingue supportate di `navigator.languages`, quindi italiano. Il caricamento fallito rende esplicito il ripiego sull’italiano e conserva utilizzabile l’accesso. Storage indisponibile e parametri sconosciuti non bloccano la pagina.
+
+Nell’HTML `data-i18n` traduce soltanto i nodi di testo diretti dell’elemento marcato; `data-i18n-attrs` elenca gli attributi traducibili (`placeholder`, `aria-label`, `title`, descrizione meta). Nel JavaScript `t("Messaggio", [valore0, valore1])` sostituisce i placeholder `{0}`, `{1}` tramite callback, senza interpretare HTML o sequenze di sostituzione dei valori. Conservare gli spazi esterni dei frammenti concatenati. Non passare a `t` nomi o note utente, classi CSS, percorsi API, enum, filtri, identificativi o formati CSV. I nomi dei ruoli predefiniti possono essere tradotti; quelli dei ruoli personalizzati restano originali.
+
+Gli errori API sono localizzati al confine del client, conservando `sourceMessage` quando una regola preesistente deve ancora distinguere una risposta tramite il testo originale. La preferenza della lingua non modifica autorizzazioni o payload. `PuntoI18n.url` aggiunge la lingua ai collegamenti tra app; i QR mantengono un URL canonico indipendente dalla lingua. `Intl` presenta date e importi nella lingua attiva, conservando valuta EUR, date ISO e fusi orari delle regole applicative.
+
+Punto Ticket distribuisce una copia autonoma del runtime e dei cataloghi. Dopo le modifiche eseguire `python3 scripts/sync_locales.py`; `python3 scripts/sync_locales.py --check` e `python3 -m unittest discover -s tests -p test_i18n.py -v` verificano cataloghi, placeholder, copertura dei testi marcati e copie. Il test browser facoltativo documentato nel README verifica le sei lingue su server temporanei, accesso locale/SSO, moduli, dati utente, cambio lingua, ripiego e layout mobile.
 
 ## Avvio e durata dello stato
 
@@ -115,7 +129,7 @@ Le funzioni `node()` e i renderer costruiscono elementi DOM e usano `textContent
 | Tipo | Conversione / presentazione |
 | --- | --- |
 | Ore | `hoursToMinutes()` converte durate con virgola, punto o `H:MM` in minuti interi; usa `BigInt` per rifiutare frazioni di minuto |
-| Importi | `valueToCents()` converte il testo del modulo in centesimi; la visualizzazione EUR usa formattazione italiana |
+| Importi | `valueToCents()` converte il testo del modulo in centesimi; la visualizzazione EUR segue la lingua attiva dell’interfaccia |
 | Giornata | Stringa `YYYY-MM-DD`; validazione calendario esplicita, senza affidarsi alla normalizzazione permissiva di `Date` |
 | Report | Periodo inclusivo massimo 366 giorni; gli ID dei filtri devono essere interi JavaScript sicuri |
 | Date alert | Formattazione in `Europe/Rome` |

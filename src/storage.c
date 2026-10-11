@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 9
+#define SCHEMA_VERSION 10
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -462,6 +462,28 @@ static bool migrate(void) {
             !storage_audit(database,0,"system.migration","system",9,NULL,"{\"schema_version\":9}") ||
             db_exec(database,"PRAGMA user_version=9",NULL,NULL,NULL) != DB_OK) goto failure;
     }
+    if (version <= 9) {
+        if (db_exec(database,
+            "CREATE TABLE alert_rules_v10 (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "owner_id INTEGER NOT NULL REFERENCES users(id),name TEXT NOT NULL,"
+            "type TEXT NOT NULL CHECK(type IN ('invalid_job','missing_hours','inventory_due','inventory_return','inventory_verification')),"
+            "run_time TEXT NOT NULL CHECK(length(run_time)=5),enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),"
+            "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_run_at TEXT,last_run_on TEXT,"
+            "last_event_id INTEGER NOT NULL DEFAULT 0 CHECK(last_event_id>=0),"
+            "days_before INTEGER NOT NULL DEFAULT 30 CHECK(days_before BETWEEN 1 AND 365),"
+            "verification_days INTEGER NOT NULL DEFAULT 90 CHECK(verification_days BETWEEN 1 AND 365));"
+            "INSERT INTO alert_rules_v10(id,owner_id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,last_event_id,days_before) "
+            "SELECT id,owner_id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,last_event_id,days_before FROM alert_rules;"
+            "UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='alert_rules'),0)) "
+            "WHERE name='alert_rules_v10';"
+            "INSERT INTO sqlite_sequence(name,seq) SELECT 'alert_rules_v10',COALESCE((SELECT seq FROM sqlite_sequence "
+            "WHERE name='alert_rules'),0) WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='alert_rules_v10');"
+            "DROP TABLE alert_rules;ALTER TABLE alert_rules_v10 RENAME TO alert_rules;"
+            "CREATE INDEX alert_rules_owner ON alert_rules(owner_id,id);",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",10,NULL,"{\"schema_version\":10}") ||
+            db_exec(database,"PRAGMA user_version=10",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
     if (!prepare(database, &statement, "PRAGMA foreign_key_check") || db_step(statement) != DB_DONE) goto failure;
     db_finalize(statement); statement = NULL;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) {
@@ -516,6 +538,9 @@ static bool migrate(void) {
     if (version <= 8 &&
         (!storage_audit(database,0,"system.migration","system",9,NULL,"{\"schema_version\":9}") ||
          db_exec(database,"UPDATE schema_metadata SET version=9 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 9 &&
+        (!storage_audit(database,0,"system.migration","system",10,NULL,"{\"schema_version\":10}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=10 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);

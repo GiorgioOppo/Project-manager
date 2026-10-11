@@ -9,6 +9,7 @@ __pycache__/
 .env*
 !.env.example
 !.env.docker.example
+!.env.keycloak.example
 /.agents/
 /.codex/
 *-preview.jpg

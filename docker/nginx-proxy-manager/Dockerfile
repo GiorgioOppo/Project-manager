@@ -4,6 +4,10 @@ FROM jc21/nginx-proxy-manager:2.16.0
 # management API local to Nginx; fail the build if that source changes.
 RUN node --input-type=module -e 'import fs from "node:fs"; const path="/app/index.js"; const source=fs.readFileSync(path,"utf8"); const before="app.listen(3000, () =>"; if(source.split(before).length!==2) throw new Error("Unexpected NPM API entrypoint"); fs.writeFileSync(path,source.replace(before,"app.listen(3000, \"127.0.0.1\", () =>"));'
 
+# The custom certificate object contains its private key. Log only the ID.
+# Keep this guard tied to the pinned upstream version so upgrades fail closed.
+RUN node --input-type=module -e 'import fs from "node:fs"; const path="/app/internal/certificate.js"; const source=fs.readFileSync(path,"utf8"); const before="logger.info(\"Writing Custom Certificate:\", certificate);"; if(source.split(before).length!==2) throw new Error("Unexpected NPM certificate logger"); fs.writeFileSync(path,source.replace(before,"logger.info(\"Writing Custom Certificate:\", certificate.id);"));'
+
 COPY admin.conf /etc/nginx/conf.d/production.conf
 # The upstream prepare hook recreates production.conf from this template.
 COPY admin.conf /etc/nginx/conf.d/production.conf.template

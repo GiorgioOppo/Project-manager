@@ -25,10 +25,14 @@ class PagedPrivateAPI(FakeCalendarAPI):
 
     def __init__(self, certificate, key):
         self.replies = []
+        self.reply_hook = None
         super().__init__(certificate, key)
 
     @property
     def reply_value(self):
+        if self.reply_hook:
+            hook, self.reply_hook = self.reply_hook, None
+            hook()
         if self.replies:
             self.reply_status, value = self.replies.pop(0)
             return value
@@ -97,6 +101,9 @@ class InventoryAlertTests(unittest.TestCase):
     def inventory_rule(self, **changes):
         return self.create_rule(type="inventory_due", **changes)
 
+    def operational_due(self, asset_id=17, kind="return", remaining=-1, source_id=71, **changes):
+        return self.due(asset_id, kind + "_due", remaining, source_id=source_id, **changes)
+
     def state(self, rule_id):
         with closing(sqlite3.connect(self.db_path)) as db:
             return (db.execute("SELECT last_run_at,last_run_on FROM alert_rules WHERE id=?", (rule_id,)).fetchone(),
@@ -111,6 +118,142 @@ class InventoryAlertTests(unittest.TestCase):
         for value in ("", "0", "366", "-1", "1.5", "30x"):
             self.assert_error(400, "POST", "/api/alert-rules", self.rule_fields(type="inventory_due", days_before=value),
                               cookie=self.manager_cookie)
+
+    def test_operational_rule_types_and_verification_interval_validation(self):
+        for rule_type in ("inventory_return", "inventory_verification"):
+            rule = self.create_rule(type=rule_type)
+            saved = next(item for item in self.rules()["rules"] if item["id"] == rule)
+            self.assertEqual((saved["type"], saved["verification_days"], saved["days_before"]), (rule_type, 90, 30))
+            self.update_rule(rule, type=rule_type, verification_days="365")
+            self.assertEqual(next(item for item in self.rules()["rules"] if item["id"] == rule)["verification_days"], 365)
+            for value in ("", "0", "366", "-1", "1.5", "90x"):
+                self.assert_error(400, "POST", "/api/alert-rules", self.rule_fields(type=rule_type, verification_days=value),
+                                  cookie=self.manager_cookie)
+
+    def test_return_notifications_are_shared_and_each_checkout_has_its_own_deduplication(self):
+        worker_id, worker = self.worker()
+        rule = self.create_rule(type="inventory_return", recipient_user_ids="%d,%d" % (self.manager_id, worker_id),
+                                recipient_emails="assets@example.test")
+        self.source(self.operational_due())
+        result = self.run_rule(rule)
+        self.assertEqual((result["notifications_created"], result["emails_queued"]), (2, 1))
+        for cookie in (self.manager_cookie, worker):
+            notification = self.notifications(cookie)["notifications"][0]
+            self.assertEqual((notification["event_kind"], notification["due_kind"], notification["source_id"]),
+                             ("inventory_return", "return_due", 71))
+            self.assertEqual(notification["asset_id"], 17)
+            self.assertIn("in ritardo da 1 giorni", notification["message"])
+            self.assertNotIn("days_before", notification)
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 0)
+        self.source(self.operational_due(source_id=72))
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 2)
+        self.assertEqual(self.state(rule)[1:], (4, 2))
+        request = urlsplit(self.service.requests[-1]["path"])
+        self.assertEqual(request.path, "/v1/operational-due")
+        self.assertEqual(parse_qs(request.query)["kind"], ["return"])
+
+    def test_verification_notifications_include_never_verified_and_interval_boundary(self):
+        rule = self.create_rule(type="inventory_verification", recipient_emails="assets@example.test")
+        self.source(self.operational_due(17, "verification", -100, 0), self.operational_due(18, "verification", 0, 41))
+        result = self.run_rule(rule)
+        self.assertEqual((result["notifications_created"], result["emails_queued"]), (2, 2))
+        notifications = {item["asset_id"]: item for item in self.notifications()["notifications"]}
+        self.assertIn("non è mai stato verificato", notifications[17]["message"])
+        self.assertIn("raggiunto oggi", notifications[18]["message"])
+        for item in notifications.values():
+            self.assertEqual((item["event_kind"], item["due_kind"], item["verification_days"]),
+                             ("inventory_verification", "verification_due", 90))
+        query = parse_qs(urlsplit(self.service.requests[-1]["path"]).query)
+        self.assertEqual((query["kind"], query["verification_days"]), (["verification"], ["90"]))
+
+    def test_verification_deduplication_tracks_new_verbal_and_changed_interval(self):
+        rule = self.create_rule(type="inventory_verification")
+        self.source(self.operational_due(kind="verification", source_id=41))
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 1)
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 0)
+        self.source(self.operational_due(kind="verification", source_id=42))
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 1)
+        self.update_rule(rule, type="inventory_verification", verification_days="91")
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 1)
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 0)
+
+    def test_operational_source_failure_after_first_page_is_atomic(self):
+        for kind in ("return", "verification"):
+            with self.subTest(kind=kind):
+                rule = self.create_rule(type="inventory_" + kind, recipient_emails="assets@example.test")
+                before = self.state(rule)
+                self.service.replies = [
+                    (200, {"ok": True, "items": [self.operational_due(200, kind)], "next_after_id": 200}),
+                    (503, {"ok": False, "error": "Temporary source failure"}),
+                ]
+                self.assert_error(503, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+                self.assertEqual(self.state(rule), before)
+                self.service.replies = [
+                    (200, {"ok": True, "items": [self.operational_due(200, kind)], "next_after_id": 200}),
+                    (200, {"ok": True, "items": [self.operational_due(199, kind)], "next_after_id": None}),
+                ]
+                self.assertEqual(self.run_rule(rule)["notifications_created"], 2)
+
+    def test_operational_source_rejects_invalid_dates_records_types_and_future_deadlines(self):
+        for kind in ("return", "verification"):
+            rule = self.create_rule(type="inventory_" + kind)
+            before = self.state(rule)
+            for changes in ({"source_id": -1}, {"source_id": "71"}, {"days_remaining": 0},
+                            {"due_on": "2026-02-30"}, {"asset_type": "license"}, {"due_kind": "warranty_until"},
+                            {"remaining": 1 if kind == "verification" else 0}):
+                with self.subTest(kind=kind, changes=changes):
+                    self.source(self.operational_due(kind=kind, **changes))
+                    self.assert_error(503, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+                    self.assertEqual(self.state(rule), before)
+        self.source(self.operational_due(source_id=0))
+        rule = self.create_rule(type="inventory_return")
+        self.assert_error(503, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+
+    def test_changed_verification_policy_during_fetch_does_not_consume_the_run(self):
+        rule = self.create_rule(type="inventory_verification", recipient_emails="assets@example.test")
+        self.source(self.operational_due(kind="verification"))
+
+        def change_policy():
+            with closing(sqlite3.connect(self.db_path)) as database:
+                database.execute("UPDATE alert_rules SET verification_days=91 WHERE id=?", (rule,))
+                database.commit()
+
+        self.service.reply_hook = change_policy
+        self.assert_error(409, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+        self.assertEqual(self.state(rule)[1:], (0, 0))
+        self.assertEqual(self.run_rule(rule)["notifications_created"], 1)
+
+    def test_changed_inventory_rule_type_during_fetch_creates_no_notifications(self):
+        rule = self.create_rule(type="inventory_return", recipient_emails="assets@example.test")
+        self.source(self.operational_due())
+        before = self.state(rule)
+
+        def change_type():
+            with closing(sqlite3.connect(self.db_path)) as database:
+                database.execute("UPDATE alert_rules SET type='invalid_job' WHERE id=?", (rule,))
+                database.commit()
+
+        self.service.reply_hook = change_type
+        self.assert_error(409, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+        self.assertEqual(self.state(rule), before)
+
+    def test_operational_delivery_sql_failure_rolls_back_all_channels(self):
+        for kind in ("return", "verification"):
+            with self.subTest(kind=kind):
+                rule = self.create_rule(type="inventory_" + kind, recipient_emails="assets@example.test")
+                self.source(self.operational_due(17, kind), self.operational_due(18, kind))
+                before = self.state(rule)
+                with closing(sqlite3.connect(self.db_path)) as database:
+                    database.execute("CREATE TRIGGER reject_operational_alert BEFORE INSERT ON alert_notifications "
+                                     "WHEN NEW.event_key LIKE 'inventory_" + kind + ":17:%' "
+                                     "BEGIN SELECT RAISE(ABORT,'fixture failure'); END")
+                    database.commit()
+                self.assert_error(500, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+                self.assertEqual(self.state(rule), before)
+                with closing(sqlite3.connect(self.db_path)) as database:
+                    database.execute("DROP TRIGGER reject_operational_alert")
+                    database.commit()
+                self.assertEqual(self.run_rule(rule)["notifications_created"], 2)
 
     def test_four_due_kinds_include_overdue_and_all_selected_active_users(self):
         worker_id, worker = self.worker()
@@ -184,6 +327,27 @@ class InventoryAlertTests(unittest.TestCase):
         self.assert_error(503, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
         self.assertEqual(len(self.service.requests), 2)
         self.assertEqual(self.state(rule), before)
+
+    def test_source_cursor_must_equal_last_asset_to_prevent_skipped_pages(self):
+        for rule_type in ("inventory_due", "inventory_return", "inventory_verification"):
+            with self.subTest(rule_type=rule_type):
+                rule = self.create_rule(type=rule_type, recipient_emails="assets@example.test")
+                before = self.state(rule)
+                if rule_type == "inventory_due":
+                    first, second = self.due(200), self.due(99)
+                else:
+                    kind = rule_type.removeprefix("inventory_")
+                    first, second = self.operational_due(200, kind), self.operational_due(99, kind)
+                requests_before = len(self.service.requests)
+                self.service.replies = [
+                    (200, {"ok": True, "items": [first], "next_after_id": 100}),
+                    (200, {"ok": True, "items": [second], "next_after_id": None}),
+                ]
+                self.assert_error(503, "POST", "/api/alert-rules/%d/run" % rule, {}, cookie=self.manager_cookie)
+                self.assertEqual(self.state(rule), before)
+                self.assertEqual(len(self.service.requests), requests_before + 1,
+                                 "A corrupt cursor must be rejected before fetching its next page.")
+                self.service.replies.clear()
 
     def test_unavailable_and_invalid_source_do_not_consume_run_or_deliver(self):
         rule = self.inventory_rule(recipient_emails="assets@example.test")

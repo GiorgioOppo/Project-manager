@@ -1,5 +1,7 @@
 # Nomi dei servizi e delle immagini Docker
 
+**Italiano** | [English](../en/tehnical/nomi-servizi-e-immagini.md)
+
 [Indice tecnico](README.md) · [Architettura](architettura.md) · [Rilascio](rilascio-e-compatibilita.md)
 
 La nomenclatura usa nomi di servizio brevi e immagini costruite dal progetto nel formato `punto/<servizio>:<tag>`. Lo stack principale contiene **11 servizi**, compresi i tre addon C; l’overlay Ticket aggiunge il dodicesimo. Questa modifica aggiorna configurazione, script e documentazione. **Non applica automaticamente una migrazione o un deployment dell’installazione esistente.** L’esecuzione successiva sul progetto locale è registrata nel [rapporto di migrazione dell’11 ottobre](migrazione-container-2026-10-11.md), che registra la migrazione completata e i controlli eseguiti sul deployment.

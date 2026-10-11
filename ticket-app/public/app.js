@@ -1,25 +1,33 @@
 "use strict";
 
-(() => {
+(async () => {
+  if (window.PuntoI18n) await window.PuntoI18n.ready;
+  const { t, locale } = window.PuntoI18n || { t: (source, values = []) => source.replace(/\{(\d+)\}/g, (_, index) => values[index]), locale: "it-IT" };
   const $ = (id) => document.getElementById(id);
-  const statuses = { open: "Aperto", in_progress: "In corso", waiting: "In attesa", resolved: "Risolto", closed: "Chiuso" };
-  const priorities = { low: "Bassa", normal: "Normale", high: "Alta", urgent: "Urgente" };
-  const queues = { all: "Tutti i ticket", active: "Da lavorare", mine: "I miei ticket", unassigned: "Non assegnati", overdue: "Scaduti", due_soon: "In scadenza" };
-  const queueDescriptions = { all: "Tutte le richieste, comprese quelle risolte e chiuse.", active: "Ticket aperti, in corso o in attesa.", mine: "Ticket da lavorare assegnati a te.", unassigned: "Ticket da lavorare che aspettano un assegnatario.", overdue: "Ticket da lavorare con una scadenza già passata.", due_soon: "Ticket da lavorare in scadenza da oggi ai prossimi 7 giorni." };
+  const statuses = { open: t("Aperto"), in_progress: t("In corso"), waiting: t("In attesa"), resolved: t("Risolto"), closed: t("Chiuso") };
+  const priorities = { low: t("Bassa"), normal: t("Normale"), high: t("Alta"), urgent: t("Urgente") };
+  const queues = { all: t("Tutti i ticket"), active: t("Da lavorare"), mine: t("I miei ticket"), unassigned: t("Non assegnati"), overdue: t("Scaduti"), due_soon: t("In scadenza") };
+  const queueDescriptions = { all: t("Tutte le richieste, comprese quelle risolte e chiuse."), active: t("Ticket aperti, in corso o in attesa."), mine: t("Ticket da lavorare assegnati a te."), unassigned: t("Ticket da lavorare che aspettano un assegnatario."), overdue: t("Ticket da lavorare con una scadenza già passata."), due_soon: t("Ticket da lavorare in scadenza da oggi ai prossimi 7 giorni.") };
   const historyActions = {
-    created: "ha aperto il ticket", create: "ha aperto il ticket", updated: "ha aggiornato il ticket",
-    update: "ha aggiornato il ticket", commented: "ha aggiunto un commento", comment: "ha aggiunto un commento",
-    status_changed: "ha cambiato lo stato", assigned: "ha aggiornato l’assegnazione"
+    created: t("ha aperto il ticket"), create: t("ha aperto il ticket"), updated: t("ha aggiornato il ticket"),
+    update: t("ha aggiornato il ticket"), commented: t("ha aggiunto un commento"), comment: t("ha aggiunto un commento"),
+    status_changed: t("ha cambiato lo stato"), assigned: t("ha aggiornato l’assegnazione")
   };
   const state = {
-    user: null, csrf: "", users: [], offset: 0, total: 0, limit: 50,
+    user: null, csrf: "", auth: null, users: [], offset: 0, total: 0, limit: 50,
     listRequest: null, detailRequest: null, detailId: null, detail: null,
     editorTicket: null, editorUser: null, searchTimer: null, toastTimer: null, generation: 0,
     view: "board", queue: "active", listCycle: 0, boardCycle: 0, boardParams: "", listControllers: [], board: new Map(), items: [], routeSync: false, suppressDetailClose: false
   };
-  const dateTimeFormat = new Intl.DateTimeFormat("it-IT", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome" });
-  const shortDateFormat = new Intl.DateTimeFormat("it-IT", { day: "numeric", month: "short", timeZone: "UTC" });
-  const fullDateFormat = new Intl.DateTimeFormat("it-IT", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+  Object.assign(state, { punto: { configured: false, connected: false }, resources: { job: null, asset: null }, resourceFilters: { job: null, asset: null }, picker: null, pickerRequest: 0, resourceRouteVersion: 0 });
+  const callbackParams = new URLSearchParams(location.hash.slice(1));
+  if (callbackParams.has("punto_grant")) {
+    state.puntoCallback = { grant: callbackParams.get("punto_grant"), state: callbackParams.get("state") };
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  const dateTimeFormat = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome" });
+  const shortDateFormat = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", timeZone: "UTC" });
+  const fullDateFormat = new Intl.DateTimeFormat(locale, { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
   const romeDateFormat = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "Europe/Rome" });
 
   function element(tag, className, text) {
@@ -43,13 +51,13 @@
   }
 
   function initials(name) {
-    return String(name || "?").trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => Array.from(part)[0]).join("").toLocaleUpperCase("it-IT");
+    return String(name || "?").trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => Array.from(part)[0]).join("").toLocaleUpperCase(locale);
   }
 
   function time(value, short = false) {
     const date = new Date(value);
     if (!value || !Number.isFinite(date.getTime())) return "—";
-    return short ? new Intl.DateTimeFormat("it-IT", { day: "numeric", month: "short", timeZone: "Europe/Rome" }).format(date) : dateTimeFormat.format(date);
+    return short ? new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", timeZone: "Europe/Rome" }).format(date) : dateTimeFormat.format(date);
   }
 
   function calendarDate(value, full = false) {
@@ -66,19 +74,19 @@
     if (!ticket.due_date) return null;
     const days = Math.round((Date.parse(`${ticket.due_date}T12:00:00Z`) - Date.parse(`${todayInRome()}T12:00:00Z`)) / 86400000);
     if (["resolved", "closed"].includes(ticket.status)) return { label: calendarDate(ticket.due_date), kind: "complete" };
-    if (days < 0) return { label: `Scaduto · ${calendarDate(ticket.due_date)}`, kind: "overdue" };
-    if (days === 0) return { label: "Oggi", kind: "today" };
-    if (days === 1) return { label: "Domani", kind: "soon" };
-    if (days <= 7) return { label: `Tra ${days} giorni`, kind: "soon" };
+    if (days < 0) return { label: t("Scaduto · {0}", [calendarDate(ticket.due_date)]), kind: "overdue" };
+    if (days === 0) return { label: t("Oggi"), kind: "today" };
+    if (days === 1) return { label: t("Domani"), kind: "soon" };
+    if (days <= 7) return { label: t("Tra {0} giorni", [days]), kind: "soon" };
     return { label: calendarDate(ticket.due_date), kind: "future" };
   }
 
   function deadlineNode(ticket) {
     const info = deadline(ticket);
-    if (!info) return element("span", "no-deadline", "Nessuna scadenza");
+    if (!info) return element("span", "no-deadline", t("Nessuna scadenza"));
     const node = element("span", `deadline-badge deadline-${info.kind}`, info.label);
-    node.title = `Scadenza: ${calendarDate(ticket.due_date, true)}`;
-    node.setAttribute("aria-label", `Scadenza: ${info.label}, ${calendarDate(ticket.due_date, true)}`);
+    node.title = t("Scadenza: {0}", [calendarDate(ticket.due_date, true)]);
+    node.setAttribute("aria-label", t("Scadenza: {0}, {1}", [info.label, calendarDate(ticket.due_date, true)]));
     return node;
   }
 
@@ -94,7 +102,7 @@
     $("priority-filter").value = Object.hasOwn(priorities, saved.priority) ? saved.priority : "";
     $("sort-filter").value = ["updated", "priority", "due"].includes(saved.sort) ? saved.sort : "updated";
     if (typeof saved.assignee === "string" && /^(?:unassigned|[1-9]\d*)$/.test(saved.assignee)) {
-      if (!Array.from($("assignee-filter").options).some((option) => option.value === saved.assignee)) addOption($("assignee-filter"), saved.assignee, `Utente #${saved.assignee} (non disponibile)`);
+      if (!Array.from($("assignee-filter").options).some((option) => option.value === saved.assignee)) addOption($("assignee-filter"), saved.assignee, t("Utente #{0} (non disponibile)", [saved.assignee]));
       $("assignee-filter").value = saved.assignee;
     }
     if (["resolved", "closed"].includes($("status-filter").value)) state.queue = "all";
@@ -122,13 +130,179 @@
   function ticketLink(ticket, className) {
     const link = element("a", className, ticket.title);
     link.href = ticketURL(ticket.id).href;
-    link.setAttribute("aria-label", `Apri ticket #${ticket.id}: ${ticket.title}`);
+    link.setAttribute("aria-label", t("Apri ticket #{0}: {1}", [ticket.id, ticket.title]));
     link.addEventListener("click", (event) => {
       if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
       event.preventDefault();
       openDetail(ticket.id);
     });
     return link;
+  }
+
+  function resourceLabel(kind, item) {
+    if (!item) return kind === "job" ? t("Nessuna commessa") : t("Nessun asset");
+    return `${kind === "job" ? item.code || `#${item.id}` : item.asset_tag || `#${item.id}`} · ${item.name || ""}`;
+  }
+
+  function ticketResource(ticket, kind) {
+    return ticket[`${kind}_id`] ? { id: ticket[`${kind}_id`], name: ticket[`${kind}_name`], ...(kind === "job" ? { code: ticket.job_code } : { asset_tag: ticket.asset_tag }) } : null;
+  }
+
+  function resourceBadges(ticket, links = false) {
+    const content = element("div", links ? "detail-resources" : "resource-badges");
+    for (const kind of ["job", "asset"]) {
+      const item = ticketResource(ticket, kind);
+      if (!item) continue;
+      const label = `${kind === "job" ? t("Commessa") : t("Asset")}: ${resourceLabel(kind, item)}`;
+      const badge = element(links && state.punto.origin ? "a" : "span", "resource-badge", label + (links && state.punto.origin ? " ↗" : ""));
+      badge.title = label;
+      if (badge.tagName === "A") {
+        const url = new URL(state.punto.origin);
+        url.pathname = "/app";
+        url.hash = kind === "job" ? `jobs?job_id=${item.id}` : `inventory?asset_id=${item.id}`;
+        badge.href = window.PuntoI18n ? window.PuntoI18n.url(url.href) : url.href;
+      }
+      content.append(badge);
+    }
+    return content;
+  }
+
+  function renderPuntoStatus() {
+    const punto = state.punto;
+    $("punto-integration").hidden = !punto.configured;
+    $("punto-status").textContent = punto.connected ? t("Punto collegato · {0}", [punto.user_name]) : t("Commesse e asset di Punto");
+    $("punto-status-description").textContent = punto.connected ? t("Vedi i ticket delle commesse abilitate per il tuo account Punto e dell’inventario.") : t("Collega la tua sessione Punto per vedere i ticket associati e scegliere commesse e asset.");
+    $("connect-punto").hidden = punto.connected;
+    $("disconnect-punto").hidden = !punto.connected;
+    $("open-punto").hidden = !punto.origin;
+    if (punto.origin) $("open-punto").href = window.PuntoI18n ? window.PuntoI18n.url(new URL("/app", punto.origin).href) : new URL("/app", punto.origin).href;
+    $("resource-filters").hidden = !punto.configured;
+    for (const kind of ["job", "asset"]) $("filter-" + kind).disabled = !punto.connected;
+    renderResourceChoices();
+  }
+
+  async function loadPuntoStatus() {
+    const generation = state.generation;
+    try {
+      const punto = await api("/api/integrations/punto/status");
+      if (generation !== state.generation || !state.user) return;
+      state.punto = punto;
+      renderPuntoStatus();
+    } catch (error) { if (generation === state.generation && state.user) showError("integration-error", error.message); }
+  }
+
+  async function finishPuntoConnection() {
+    if (!state.puntoCallback || !state.user) return;
+    const generation = state.generation;
+    const callback = state.puntoCallback; state.puntoCallback = null;
+    try {
+      if (!/^[a-f0-9]{64}$/.test(callback.grant || "") || !/^[a-f0-9]{64}$/.test(callback.state || "")) throw new Error(t("Il collegamento ricevuto non è valido. Ripeti Collega Punto."));
+      const punto = await api("/api/integrations/punto/connect", { method: "POST", body: callback });
+      if (generation !== state.generation || !state.user) return;
+      state.punto = punto;
+      renderPuntoStatus();
+      toast(t("Punto collegato come {0}.", [state.punto.user_name]));
+      try {
+        const intent = JSON.parse(sessionStorage.getItem("ticket.punto.intent") || "null");
+        sessionStorage.removeItem("ticket.punto.intent");
+        if (intent?.userId === state.user.id && typeof intent.query === "string") {
+          const params = new URLSearchParams(intent.query), restored = new URL(location.href);
+          for (const key of ["job_id", "asset_id", "new", "ticket"]) if (params.has(key)) restored.searchParams.set(key, params.get(key));
+          history.replaceState(null, "", restored);
+        }
+      } catch { /* I collegamenti funzionano anche senza ripristinare il filtro. */ }
+    } catch (error) { if (generation === state.generation && state.user) showError("integration-error", error.message); }
+  }
+
+  function renderResourceChoices() {
+    $("ticket-resources").hidden = !state.punto.configured && !state.resources.job && !state.resources.asset;
+    $("editor-resource-hint").textContent = state.punto.connected ? t("Scegli una commessa e un asset, anche separatamente.") : t("Collega Punto dalla pagina iniziale per scegliere commesse e asset.");
+    for (const kind of ["job", "asset"]) {
+      $("editor-" + kind + "-label").textContent = resourceLabel(kind, state.resources[kind]);
+      $("choose-" + kind).disabled = !state.punto.connected;
+      $("clear-" + kind).hidden = !state.resources[kind];
+      $("filter-" + kind).textContent = state.resourceFilters[kind] ? resourceLabel(kind, state.resourceFilters[kind]) : kind === "job" ? t("Tutte le commesse") : t("Tutti gli asset");
+    }
+    $("clear-resource-filters").hidden = !state.resourceFilters.job && !state.resourceFilters.asset;
+  }
+
+  function setResourceFilter(kind, item) {
+    state.resourceRouteVersion += 1;
+    state.resourceFilters[kind] = item;
+    const url = new URL(location.href);
+    if (item) url.searchParams.set(kind + "_id", String(item.id)); else url.searchParams.delete(kind + "_id");
+    history.replaceState(null, "", url);
+    renderResourceChoices(); state.offset = 0; loadTickets();
+  }
+
+  async function applyResourceRoute() {
+    if (!state.user) return;
+    const generation = state.generation;
+    const version = state.resourceRouteVersion;
+    const url = new URL(location.href), params = new URLSearchParams();
+    for (const kind of ["job", "asset"]) {
+      const id = url.searchParams.get(kind + "_id");
+      if (id && /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id))) params.set(kind + "_id", id);
+    }
+    if (!params.size) return;
+    state.queue = "all"; $("status-filter").value = "";
+    for (const kind of ["job", "asset"]) state.resourceFilters[kind] = params.has(kind + "_id") ? { id: Number(params.get(kind + "_id")), name: "" } : null;
+    if (!state.punto.connected) {
+      showError("integration-error", t("Collega Punto per consultare i ticket di questa commessa o di questo asset."));
+      renderResourceChoices(); return;
+    }
+    try {
+      const data = await api(`/api/integrations/punto/validate?${params}`);
+      if (generation !== state.generation || version !== state.resourceRouteVersion || !state.user) return;
+      state.resourceFilters = { job: data.job, asset: data.asset };
+      if (url.searchParams.get("new") === "1") {
+        openEditor(); state.resources = { job: data.job, asset: data.asset }; renderResourceChoices();
+        url.searchParams.delete("new"); history.replaceState(null, "", url);
+      }
+    } catch (error) { if (generation === state.generation && version === state.resourceRouteVersion && state.user) showError("integration-error", error.message); }
+    if (generation === state.generation && version === state.resourceRouteVersion && state.user) renderResourceChoices();
+  }
+
+  function openResourcePicker(kind, target) {
+    state.picker = { kind, target, offset: 0, cursor: null, count: 0, query: "" };
+    $("resource-picker-title").textContent = kind === "job" ? t("Scegli la commessa") : t("Scegli l’asset");
+    $("resource-search").value = "";
+    $("resource-none").textContent = target === "filter" ? kind === "job" ? t("Tutte le commesse") : t("Tutti gli asset") : t("Nessun collegamento");
+    $("resource-picker").showModal(); searchResources();
+  }
+
+  function chooseResource(item) {
+    const { kind, target } = state.picker;
+    $("resource-picker").close();
+    if (target === "filter") setResourceFilter(kind, item);
+    else { state.resources[kind] = item; renderResourceChoices(); }
+  }
+
+  async function searchResources(more = false) {
+    const picker = state.picker, request = ++state.pickerRequest;
+    if (!picker) return;
+    if (more && picker.query !== $("resource-search").value.trim()) return;
+    if (!more) { picker.query = $("resource-search").value.trim(); picker.offset = 0; picker.cursor = null; picker.count = 0; $("resource-results").replaceChildren(); }
+    if (picker.kind === "asset" && new TextEncoder().encode(picker.query).length > 200) { showError("resource-error", t("La ricerca asset è troppo lunga. Usa un codice o un nome più breve.")); $("resource-loading").hidden = true; $("resource-more").hidden = true; return; }
+    const query = new URLSearchParams({ limit: "30" });
+    query.set(picker.kind === "job" ? "search" : "q", picker.query);
+    if (picker.kind === "job") query.set("offset", String(picker.offset));
+    else if (picker.cursor) query.set("after_id", String(picker.cursor));
+    $("resource-loading").hidden = false; $("resource-more").disabled = true; showError("resource-error", "");
+    try {
+      const data = await api(`/api/integrations/punto/${picker.kind === "job" ? "jobs" : "assets"}?${query}`);
+      if (request !== state.pickerRequest || picker !== state.picker || !$("resource-picker").open) return;
+      for (const item of data.items || []) {
+        const button = element("button", "resource-result"); button.type = "button";
+        const catalogStatuses = picker.kind === "job" ? { planned: t("Da avviare"), active: t("In corso"), paused: t("In pausa"), completed: t("Completata"), cancelled: t("Annullata") } : { available: t("Disponibile"), assigned: t("Assegnato"), maintenance: t("In manutenzione"), retired: t("Dismesso"), lost: t("Smarrito") };
+        button.append(element("strong", "", resourceLabel(picker.kind, item)), element("span", "", catalogStatuses[item.status] || item.status || ""));
+        button.addEventListener("click", () => chooseResource(item)); $("resource-results").append(button);
+      }
+      picker.count += (data.items || []).length; picker.offset = picker.count; picker.cursor = data.next_after_id;
+      $("resource-more").hidden = picker.kind === "job" ? picker.count >= data.total : !picker.cursor;
+      if (!picker.count) $("resource-results").append(element("p", "muted", t("Nessun risultato. Prova un altro codice o nome.")));
+    } catch (error) { if (request === state.pickerRequest) { showError("resource-error", error.message); $("resource-more").hidden = true; } }
+    finally { if (request === state.pickerRequest) { $("resource-loading").hidden = true; $("resource-more").disabled = picker.query !== $("resource-search").value.trim(); } }
   }
 
   class ApiError extends Error {
@@ -145,13 +319,13 @@
       response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options, headers: { ...headers, ...options.headers }, body: options.body === undefined ? undefined : JSON.stringify(options.body) });
     } catch (error) {
       if (error.name === "AbortError") throw error;
-      throw new ApiError("Connessione non disponibile. Controlla la rete e riprova.", 0);
+      throw new ApiError(t("Connessione non disponibile. Controlla la rete e riprova."), 0);
     }
     let data;
     try { data = await response.json(); } catch { data = {}; }
     if (!response.ok) {
-      if (response.status === 401 && state.user && generation === state.generation) showLogin("La sessione è scaduta. Accedi di nuovo per continuare.");
-      throw new ApiError(data.error || "Non è stato possibile completare l’operazione. Riprova.", response.status);
+      if (response.status === 401 && state.user && generation === state.generation) showLogin(t("La sessione è scaduta. Accedi di nuovo per continuare."));
+      throw new ApiError((data.error ? t(data.error) : "") || t("Non è stato possibile completare l’operazione. Riprova."), response.status);
     }
     return data;
   }
@@ -188,6 +362,10 @@
     state.users = [];
     state.detail = null;
     state.detailId = null;
+    state.punto = { configured: false, connected: false };
+    state.resources = { job: null, asset: null };
+    state.resourceFilters = { job: null, asset: null };
+    state.pickerRequest += 1;
     state.listRequest?.abort();
     for (const controller of state.listControllers) controller.abort();
     state.listCycle += 1;
@@ -212,12 +390,15 @@
     $("session-actions").hidden = true;
     $("login-header-note").hidden = false;
     $("login-view").hidden = false;
-    document.title = "Ticket. · Gestione richieste";
+    $("login-form").hidden = state.auth?.local !== true;
+    $("sso-login").hidden = state.auth?.sso !== true;
+    $("login-description").textContent = !state.auth ? t("Le modalità di accesso non sono disponibili. Ricarica la pagina per riprovare.") : state.auth.managed_users && state.auth.local ? t("Usa l’account aziendale. L’accesso locale è riservato all’amministratore di emergenza.") : state.auth.sso ? (state.auth.local ? t("Usa l’account aziendale oppure le credenziali Ticket.") : t("Usa il tuo account aziendale.")) : t("Usa le credenziali del tuo account Ticket.");
+    document.title = t("Ticket. · Gestione richieste");
     $("login-password").value = "";
     showError("login-error", "");
     $("login-notice").textContent = notice;
     $("login-notice").hidden = !notice;
-    if (notice) $("login-email").focus();
+    if (notice) (state.auth?.local ? $("login-email") : $("sso-login").querySelector("a")).focus();
   }
 
   function updateSession(data) {
@@ -225,9 +406,13 @@
     state.csrf = data.csrf_token;
     $("session-name").textContent = state.user.name;
     $("session-avatar").textContent = initials(state.user.name);
-    $("session-role").textContent = state.user.role === "admin" ? "Amministratore" : "Operatore";
-    $("manage-users").hidden = state.user.role !== "admin";
-    if (state.user.role !== "admin") {
+    $("session-role").textContent = state.user.role === "admin" ? t("Amministratore") : t("Operatore");
+    const managed = state.auth?.managed_users === true;
+    $("manage-users").hidden = state.user.role !== "admin" || managed;
+    $("manage-central-users").hidden = state.user.role !== "admin" || !managed || !state.auth.users_admin_url;
+    if (managed && state.auth.users_admin_url) $("manage-central-users").href = state.auth.users_admin_url;
+    $("new-user").hidden = managed;
+    if (state.user.role !== "admin" || managed) {
       $("users-dialog").close();
       $("user-editor").close();
     }
@@ -244,10 +429,17 @@
     $("login-header-note").hidden = true;
     $("session-actions").hidden = false;
     $("app-view").hidden = false;
-    document.title = "Le richieste · Ticket.";
+    document.title = t("Le richieste · Ticket.");
     try { await loadUsers(); } catch { /* L’elenco resta utilizzabile quando il team non è disponibile. */ }
     if (!state.user || generation !== state.generation) return;
     restorePreferences();
+    showError("integration-error", "");
+    await loadPuntoStatus();
+    if (!state.user || generation !== state.generation) return;
+    await finishPuntoConnection();
+    if (!state.user || generation !== state.generation) return;
+    await applyResourceRoute();
+    if (!state.user || generation !== state.generation) return;
     await loadTickets();
     const requestedTicket = ticketRoute();
     if (requestedTicket && state.user && generation === state.generation) await openDetail(requestedTicket, false);
@@ -262,11 +454,11 @@
 
   function populateAssignees(select, value = "", existingName = "") {
     select.replaceChildren();
-    addOption(select, "", "Non assegnato");
+    addOption(select, "", t("Non assegnato"));
     for (const user of state.users.filter((item) => item.active)) addOption(select, user.id, user.name);
     if (value !== "" && value !== null && !state.users.some((item) => item.active && String(item.id) === String(value))) {
       const user = state.users.find((item) => String(item.id) === String(value));
-      addOption(select, value, `${user?.name || existingName || "Utente"} (disattivato)`, true);
+      addOption(select, value, t("{0} (disattivato)", [user?.name || existingName || t("Utente")]), true);
     }
     select.value = value === null ? "" : String(value);
   }
@@ -280,23 +472,23 @@
       const filter = $("assignee-filter");
       const selected = filter.value;
       filter.replaceChildren();
-      addOption(filter, "", "Tutti gli assegnatari");
-      addOption(filter, "unassigned", "Non assegnati");
-      for (const user of state.users) addOption(filter, user.id, user.active ? user.name : `${user.name} (disattivato)`);
-      if (selected && !Array.from(filter.options).some((option) => option.value === selected)) addOption(filter, selected, `Utente #${selected} (non disponibile)`);
+      addOption(filter, "", t("Tutti gli assegnatari"));
+      addOption(filter, "unassigned", t("Non assegnati"));
+      for (const user of state.users) addOption(filter, user.id, user.active ? user.name : t("{0} (disattivato)", [user.name]));
+      if (selected && !Array.from(filter.options).some((option) => option.value === selected)) addOption(filter, selected, t("Utente #{0} (non disponibile)", [selected]));
       filter.value = selected;
       renderUsers();
     } catch (error) {
       if (state.user && generation === state.generation) {
         showError("users-error", error.message);
-        toast("Non è stato possibile caricare il team. Riprova con Aggiorna.", true);
+        toast(t("Non è stato possibile caricare il team. Riprova con Aggiorna."), true);
       }
       throw error;
     }
   }
 
   function filtersActive() {
-    return Boolean(state.queue !== "all" || $("search-input").value.trim() || $("status-filter").value || $("priority-filter").value || $("assignee-filter").value || $("sort-filter").value !== "updated");
+    return Boolean(state.resourceFilters.job || state.resourceFilters.asset || state.queue !== "all" || $("search-input").value.trim() || $("status-filter").value || $("priority-filter").value || $("assignee-filter").value || $("sort-filter").value !== "updated");
   }
 
   function syncFilterDisplay() {
@@ -317,14 +509,15 @@
       const value = $(id).value.trim();
       if (value) params.set(key, value);
     }
+    for (const kind of ["job", "asset"]) if (state.resourceFilters[kind]) params.set(kind + "_id", String(state.resourceFilters[kind].id));
     return params;
   }
 
   function updateCounts(data) {
-    for (const status of Object.keys(statuses)) $("stat-" + status).textContent = (Number(data.stats?.[status]) || 0).toLocaleString("it-IT");
+    for (const status of Object.keys(statuses)) $("stat-" + status).textContent = (Number(data.stats?.[status]) || 0).toLocaleString(locale);
     for (const queue of Object.keys(queues)) {
       const total = queue === "all" ? Object.keys(statuses).reduce((sum, key) => sum + (Number(data.stats?.[key]) || 0), 0) : Number(data.queues?.[queue]) || 0;
-      $("queue-count-" + queue).textContent = total.toLocaleString("it-IT");
+      $("queue-count-" + queue).textContent = total.toLocaleString(locale);
     }
   }
 
@@ -377,12 +570,18 @@
         updateCounts(data);
         renderTickets(state.items);
       }
-      $("ticket-total").textContent = state.total.toLocaleString("it-IT");
-      $("list-announcement").textContent = state.total === 1 ? "1 ticket trovato." : `${state.total} ticket trovati.`;
+      $("ticket-total").textContent = state.total.toLocaleString(locale);
+      $("list-announcement").textContent = state.total === 1 ? t("1 ticket trovato.") : t("{0} ticket trovati.", [state.total]);
     } catch (error) {
       if (error.name !== "AbortError" && cycle === state.listCycle && generation === state.generation && state.user) {
-        showError("list-error", error.message + " I risultati precedenti restano visibili. Usa Aggiorna per riprovare.");
-        $("list-announcement").textContent = "Caricamento non riuscito.";
+        if (state.punto.configured) {
+          state.board.clear(); state.items = []; $("ticket-board").replaceChildren(); $("ticket-rows").replaceChildren();
+          $("ticket-total").textContent = "—"; $("pagination").hidden = true;
+          for (const status of Object.keys(statuses)) $("stat-" + status).textContent = "—";
+          for (const queue of Object.keys(queues)) $("queue-count-" + queue).textContent = "—";
+        }
+        showError("list-error", error.message + t(" Usa Aggiorna per riprovare."));
+        $("list-announcement").textContent = t("Caricamento non riuscito.");
       }
     } finally {
       if (cycle === state.listCycle) {
@@ -401,8 +600,9 @@
     top.append(element("span", "ticket-id", `#${ticket.id}`), element("span", `board-priority priority-${ticket.priority}`, priorities[ticket.priority] || ticket.priority));
     card.append(top, ticketLink(ticket, "board-ticket-title"));
     if (ticket.requester) card.append(element("p", "board-requester", ticket.requester));
+    card.append(resourceBadges(ticket));
     const footer = element("div", "board-card-footer");
-    const person = element("span", "board-person", ticket.assignee_name || "Non assegnato");
+    const person = element("span", "board-person", ticket.assignee_name || t("Non assegnato"));
     if (ticket.assignee_name) {
       const avatar = element("span", "avatar", initials(ticket.assignee_name));
       avatar.setAttribute("aria-hidden", "true");
@@ -420,11 +620,11 @@
     const title = element("h3", "", statuses[column.status]);
     title.id = `column-title-${column.status}`;
     section.setAttribute("aria-labelledby", title.id);
-    heading.append(title, element("span", "count-pill", column.total.toLocaleString("it-IT")));
+    heading.append(title, element("span", "count-pill", column.total.toLocaleString(locale)));
     section.append(heading);
     const content = element("div", "board-column-cards");
     for (const ticket of column.items) content.append(boardCard(ticket));
-    if (!column.items.length) content.append(element("p", "column-empty", "Nessun ticket in questa colonna."));
+    if (!column.items.length) content.append(element("p", "column-empty", t("Nessun ticket in questa colonna.")));
     section.append(content);
     const footer = element("div", "board-column-footer");
     footer.append(element("span", "column-progress", `${column.items.length} di ${column.total}`));
@@ -433,9 +633,9 @@
       error.setAttribute("role", "alert"); footer.append(error);
     }
     if (column.offset < column.total) {
-      const button = element("button", "button button-secondary load-column", column.loading ? "Caricamento…" : column.error ? "Riprova" : "Mostra altri");
+      const button = element("button", "button button-secondary load-column", column.loading ? t("Caricamento…") : column.error ? t("Riprova") : t("Mostra altri"));
       button.type = "button"; button.disabled = column.loading || state.boardCycle !== state.listCycle;
-      button.setAttribute("aria-label", `Mostra altri ticket: ${statuses[column.status]}`);
+      button.setAttribute("aria-label", t("Mostra altri ticket: {0}", [statuses[column.status]]));
       button.addEventListener("click", () => loadMore(column.status));
       footer.append(button);
     }
@@ -492,9 +692,9 @@
       column.total = Number(data.total) || 0;
       if (!data.items?.length) column.offset = column.total;
       state.total = Array.from(state.board.values()).reduce((sum, item) => sum + item.total, 0);
-      $("ticket-total").textContent = state.total.toLocaleString("it-IT");
+      $("ticket-total").textContent = state.total.toLocaleString(locale);
       updateCounts(data);
-      $("list-announcement").textContent = `${column.items.length} ticket visualizzati nella colonna ${statuses[status]}.`;
+      $("list-announcement").textContent = t("{0} ticket visualizzati nella colonna {1}.", [column.items.length, statuses[status]]);
     } catch (error) {
       if (error.name !== "AbortError" && cycle === state.listCycle && generation === state.generation) column.error = error.message;
     } finally {
@@ -510,9 +710,10 @@
       row.append(element("td", "ticket-id-cell ticket-id", `#${ticket.id}`));
       const titleCell = element("td", "ticket-title-cell");
       const title = ticketLink(ticket, "ticket-title-button");
-      titleCell.append(title, element("span", "ticket-requester", ticket.requester || "Nessun richiedente indicato"));
+      titleCell.append(title, element("span", "ticket-requester", ticket.requester || t("Nessun richiedente indicato")));
+      titleCell.append(resourceBadges(ticket));
       const mobileMeta = element("div", "ticket-mobile-meta");
-      mobileMeta.append(element("span", "ticket-id", `#${ticket.id}`), deadlineNode(ticket), element("span", "mobile-assignee", ticket.assignee_name || "Non assegnato"));
+      mobileMeta.append(element("span", "ticket-id", `#${ticket.id}`), deadlineNode(ticket), element("span", "mobile-assignee", ticket.assignee_name || t("Non assegnato")));
       titleCell.append(mobileMeta);
       row.append(titleCell);
       const statusCell = element("td");
@@ -532,7 +733,7 @@
         avatar.setAttribute("aria-hidden", "true");
         person.append(avatar, document.createTextNode(ticket.assignee_name));
         assignee.append(person);
-      } else assignee.append(element("span", "unassigned", "Non assegnato"));
+      } else assignee.append(element("span", "unassigned", t("Non assegnato")));
       row.append(assignee);
       const due = element("td", "due-cell");
       due.append(deadlineNode(ticket));
@@ -551,19 +752,23 @@
     $("ticket-table-container").hidden = items.length === 0;
     $("list-empty").hidden = items.length !== 0;
     const filtered = filtersActive();
-    $("empty-heading").textContent = filtered ? "Nessun ticket corrisponde ai filtri" : "Nessun ticket, per ora";
-    $("empty-description").textContent = filtered ? "Prova un’altra ricerca o reimposta i filtri." : "Crea il primo ticket e dai il via al lavoro.";
-    $("empty-action").textContent = filtered ? "Reimposta i filtri" : "Crea un ticket";
+    $("empty-heading").textContent = filtered ? t("Nessun ticket corrisponde ai filtri") : t("Nessun ticket, per ora");
+    $("empty-description").textContent = filtered ? t("Prova un’altra ricerca o reimposta i filtri.") : t("Crea il primo ticket e dai il via al lavoro.");
+    $("empty-action").textContent = filtered ? t("Reimposta i filtri") : t("Crea un ticket");
     $("pagination").hidden = items.length === 0;
-    $("page-description").textContent = `${state.offset + 1}–${Math.min(state.offset + items.length, state.total)} di ${state.total.toLocaleString("it-IT")} ticket`;
+    $("page-description").textContent = t("{0}–{1} di {2} ticket", [state.offset + 1, Math.min(state.offset + items.length, state.total), state.total.toLocaleString(locale)]);
     $("previous-page").disabled = state.offset === 0;
     $("next-page").disabled = state.offset + state.limit >= state.total;
   }
 
   function resetFilters() {
+    state.resourceRouteVersion += 1;
     clearTimeout(state.searchTimer);
     $("filter-form").reset();
     state.queue = "all";
+    state.resourceFilters = { job: null, asset: null };
+    const url = new URL(location.href); url.searchParams.delete("job_id"); url.searchParams.delete("asset_id"); history.replaceState(null, "", url);
+    renderResourceChoices();
     state.offset = 0;
     loadTickets();
   }
@@ -575,8 +780,8 @@
     $("comment-form").reset();
     showError("comment-error", "");
     showError("properties-error", "");
-    $("detail-title").textContent = "Apertura del ticket…";
-    $("detail-number").textContent = `TICKET #${id}`;
+    $("detail-title").textContent = t("Apertura del ticket…");
+    $("detail-number").textContent = t("TICKET #{0}", [id]);
     $("detail-tools").hidden = true;
     if (!$("ticket-detail").open) $("ticket-detail").showModal();
     await loadDetail(id);
@@ -589,6 +794,7 @@
     $("detail-loading").hidden = false;
     $("detail-content").hidden = true;
     $("detail-error-area").hidden = true;
+    $("detail-connect-punto").hidden = true;
     try {
       const data = await api(`/api/tickets/${id}`, { signal: controller.signal });
       if (controller.signal.aborted || state.detailId !== id || !$("ticket-detail").open) return null;
@@ -597,7 +803,9 @@
       return data;
     } catch (error) {
       if (error.name !== "AbortError" && state.user && state.detailId === id && $("ticket-detail").open) {
-        $("detail-load-error").textContent = error.message;
+        const canConnect = state.punto.configured && [403, 404].includes(error.status);
+        $("detail-load-error").textContent = error.message + (canConnect ? " " + t("Se il ticket è associato a Punto, collega la tua sessione per verificare l’accesso.") : "");
+        $("detail-connect-punto").hidden = !canConnect;
         $("detail-error-area").hidden = false;
       }
       return null;
@@ -609,25 +817,27 @@
   function renderDetail(data) {
     const ticket = data.ticket;
     $("detail-title").textContent = ticket.title;
-    $("detail-number").textContent = `TICKET #${ticket.id}`;
-    $("detail-description").textContent = ticket.description || "Non è stata aggiunta una descrizione.";
+    $("detail-number").textContent = t("TICKET #{0}", [ticket.id]);
+    $("detail-description").textContent = ticket.description || t("Non è stata aggiunta una descrizione.");
     $("detail-description").classList.toggle("muted", !ticket.description);
-    $("detail-requester").textContent = ticket.requester || "Non indicato";
+    $("detail-requester").textContent = ticket.requester || t("Non indicato");
     $("detail-creator").textContent = ticket.creator_name || "—";
     $("detail-created").textContent = time(ticket.created_at);
     $("detail-updated").textContent = time(ticket.updated_at);
+    $("detail-resources-section").hidden = !ticket.job_id && !ticket.asset_id;
+    $("detail-resources").replaceChildren(resourceBadges(ticket, true));
     $("detail-status").value = ticket.status;
     $("detail-priority").value = ticket.priority;
     $("detail-due-date").value = ticket.due_date || "";
     $("detail-tools").hidden = false;
     $("take-ticket").hidden = ["resolved", "closed"].includes(ticket.status);
     $("take-ticket").disabled = ticket.assignee_id === state.user.id && ticket.status === "in_progress";
-    $("take-ticket").textContent = $("take-ticket").disabled ? "In carico a te" : "Prendi in carico";
+    $("take-ticket").textContent = $("take-ticket").disabled ? t("In carico a te") : t("Prendi in carico");
     populateAssignees($("detail-assignee"), ticket.assignee_id, ticket.assignee_name);
     const comments = data.comments || [];
     $("comment-count").textContent = comments.length;
     const commentNodes = document.createDocumentFragment();
-    if (!comments.length) commentNodes.append(element("p", "comments-empty", "La conversazione inizia qui. Aggiungi il primo aggiornamento."));
+    if (!comments.length) commentNodes.append(element("p", "comments-empty", t("La conversazione inizia qui. Aggiungi il primo aggiornamento.")));
     for (const comment of comments) {
       const item = element("article", "comment");
       const avatar = element("span", "avatar", initials(comment.author_name));
@@ -646,7 +856,7 @@
     for (const event of [...(data.history || [])].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || b.id - a.id)) {
       const item = element("li", "history-item");
       const description = element("p", "history-text");
-      description.append(element("strong", "", event.actor_name || "Sistema"), document.createTextNode(" " + (historyActions[event.action] || event.action || "ha aggiornato il ticket")));
+      description.append(element("strong", "", event.actor_name || t("Sistema")), document.createTextNode(" " + (historyActions[event.action] || event.action || t("ha aggiornato il ticket"))));
       item.append(description);
       if (event.detail) item.append(element("p", "history-detail", typeof event.detail === "string" ? event.detail : JSON.stringify(event.detail)));
       const date = element("time", "history-time", time(event.created_at));
@@ -654,17 +864,18 @@
       item.append(date);
       history.append(item);
     }
-    if (!data.history?.length) history.append(element("li", "comments-empty", "Nessuna attività registrata."));
+    if (!data.history?.length) history.append(element("li", "comments-empty", t("Nessuna attività registrata.")));
     $("history-list").replaceChildren(history);
     $("detail-content").hidden = false;
   }
 
   function populateEditor(ticket = null) {
     state.editorTicket = ticket ? { ...ticket } : null;
+    state.resources = ticket ? { job: ticketResource(ticket, "job"), asset: ticketResource(ticket, "asset") } : { ...state.resourceFilters };
     $("ticket-form").reset();
-    $("editor-title").textContent = ticket ? "Modifica ticket" : "Nuovo ticket";
-    $("editor-kicker").textContent = ticket ? `TICKET #${ticket.id}` : "UNA NUOVA RICHIESTA";
-    $("save-ticket").textContent = ticket ? "Salva modifiche" : "Crea ticket";
+    $("editor-title").textContent = ticket ? t("Modifica ticket") : t("Nuovo ticket");
+    $("editor-kicker").textContent = ticket ? t("TICKET #{0}", [ticket.id]) : t("UNA NUOVA RICHIESTA");
+    $("save-ticket").textContent = ticket ? t("Salva modifiche") : t("Crea ticket");
     $("ticket-status-field").hidden = !ticket;
     $("ticket-title").value = ticket?.title || "";
     $("ticket-description").value = ticket?.description || "";
@@ -675,6 +886,7 @@
     populateAssignees($("ticket-assignee"), ticket?.assignee_id ?? "", ticket?.assignee_name);
     showError("editor-error", "");
     $("reload-editor").hidden = true;
+    renderResourceChoices();
   }
 
   function openEditor(ticket = null) {
@@ -696,7 +908,8 @@
     return {
       title: $("ticket-title").value.trim(), description: $("ticket-description").value.trim(), requester: $("ticket-requester").value.trim(),
       priority: $("ticket-priority").value, assignee_id: $("ticket-assignee").value ? Number($("ticket-assignee").value) : null,
-      due_date: $("ticket-due-date").value || null
+      due_date: $("ticket-due-date").value || null,
+      job_id: state.resources.job?.id || null, asset_id: state.resources.asset?.id || null
     };
   }
 
@@ -705,7 +918,7 @@
     const form = $("ticket-form");
     const original = state.editorTicket;
     const values = editorValues();
-    if (!values.title) { showError("editor-error", "Aggiungi un titolo per il ticket."); $("ticket-title").focus(); return; }
+    if (!values.title) { showError("editor-error", t("Aggiungi un titolo per il ticket.")); $("ticket-title").focus(); return; }
     let body = values;
     if (original) {
       values.status = $("ticket-status").value;
@@ -714,17 +927,17 @@
       body.revision = original.revision;
     }
     showError("editor-error", "");
-    busy(form, $("save-ticket"), true, "Salvataggio…");
+    busy(form, $("save-ticket"), true, t("Salvataggio…"));
     try {
       const data = await api(original ? `/api/tickets/${original.id}` : "/api/tickets", { method: original ? "PUT" : "POST", body });
       $("ticket-editor").close();
-      toast(original ? "Ticket aggiornato." : `Ticket #${data.ticket.id} creato.`);
+      toast(original ? t("Ticket aggiornato.") : t("Ticket #{0} creato.", [data.ticket.id]));
       await loadTickets();
       if (original && $("ticket-detail").open) await loadDetail(original.id);
       else if (!original) await openDetail(data.ticket.id);
     } catch (error) {
       if (state.user) {
-        showError("editor-error", error.status === 409 ? "Un’altra persona ha aggiornato il ticket. Ricarica l’ultima versione prima di modificarlo; il contenuto di questo modulo sarà sostituito." : error.message);
+        showError("editor-error", error.status === 409 ? t("Un’altra persona ha aggiornato il ticket. Ricarica l’ultima versione prima di modificarlo; il contenuto di questo modulo sarà sostituito.") : error.message);
         $("reload-editor").hidden = error.status !== 409;
       }
     } finally { busy(form, $("save-ticket"), false); }
@@ -735,19 +948,20 @@
     if (!state.detail) return;
     const ticket = state.detail.ticket;
     const body = changes({ status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null }, ticket);
-    if (!Object.keys(body).length) { toast("Non ci sono modifiche da salvare."); return; }
+    if (!Object.keys(body).length) { toast(t("Non ci sono modifiche da salvare.")); return; }
     body.revision = ticket.revision;
     showError("properties-error", "");
-    busy($("detail-properties-form"), $("save-properties"), true, "Salvataggio…");
+    busy($("detail-properties-form"), $("save-properties"), true, t("Salvataggio…"));
     try {
       await api(`/api/tickets/${ticket.id}`, { method: "PUT", body });
+      window.PuntoI18n?.markSaved($("detail-properties-form"));
       await loadDetail(ticket.id);
       loadTickets();
-      toast("Ticket aggiornato.");
+      toast(t("Ticket aggiornato."));
     } catch (error) {
       if (state.user) {
         if (error.status === 409) await loadDetail(ticket.id);
-        showError("properties-error", error.status === 409 ? "Il ticket era stato aggiornato da un’altra persona. Abbiamo caricato l’ultima versione: verifica e ripeti le modifiche." : error.message);
+        showError("properties-error", error.status === 409 ? t("Il ticket era stato aggiornato da un’altra persona. Abbiamo caricato l’ultima versione: verifica e ripeti le modifiche.") : error.message);
       }
     } finally { busy($("detail-properties-form"), $("save-properties"), false); }
   }
@@ -760,9 +974,9 @@
     const draftProperties = { status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null };
     const hasDraftProperties = Object.keys(changes(draftProperties, state.detail.ticket)).length > 0;
     const body = $("comment-body").value.trim();
-    if (!body) { showError("comment-error", "Scrivi un commento prima di inviarlo."); $("comment-body").focus(); return; }
+    if (!body) { showError("comment-error", t("Scrivi un commento prima di inviarlo.")); $("comment-body").focus(); return; }
     showError("comment-error", "");
-    busy($("comment-form"), $("send-comment"), true, "Invio…");
+    busy($("comment-form"), $("send-comment"), true, t("Invio…"));
     try {
       await api(`/api/tickets/${id}/comments`, { method: "POST", body: { body } });
       $("comment-body").value = "";
@@ -773,10 +987,10 @@
           $("detail-priority").value = draftProperties.priority;
           $("detail-assignee").value = draftProperties.assignee_id === null ? "" : String(draftProperties.assignee_id);
           $("detail-due-date").value = draftProperties.due_date || "";
-        } else showError("properties-error", "Le proprietà sono state aggiornate da un’altra persona. Verifica l’ultima versione e ripeti le modifiche non salvate.");
+        } else showError("properties-error", t("Le proprietà sono state aggiornate da un’altra persona. Verifica l’ultima versione e ripeti le modifiche non salvate."));
       }
       loadTickets();
-      toast("Commento aggiunto.");
+      toast(t("Commento aggiunto."));
     } catch (error) { if (state.user) showError("comment-error", error.message); }
     finally { busy($("comment-form"), $("send-comment"), false); }
   }
@@ -796,9 +1010,9 @@
           $("detail-priority").value = draft.priority;
           $("detail-assignee").value = draft.assignee_id === null ? "" : String(draft.assignee_id);
           $("detail-due-date").value = draft.due_date || "";
-        } else showError("properties-error", "Il ticket è cambiato. Abbiamo caricato l’ultima versione: verifica e ripeti le modifiche non salvate.");
+        } else showError("properties-error", t("Il ticket è cambiato. Abbiamo caricato l’ultima versione: verifica e ripeti le modifiche non salvate."));
       }
-      if (data) toast("Ticket aggiornato all’ultima versione.");
+      if (data) toast(t("Ticket aggiornato all’ultima versione."));
     } finally { $("refresh-detail").disabled = false; }
   }
 
@@ -807,7 +1021,7 @@
     const ticket = state.detail.ticket, generation = state.generation;
     const draft = { status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null };
     if (Object.keys(changes(draft, ticket)).length) {
-      showError("properties-error", "Hai modifiche non salvate alle proprietà. Salvale prima di prendere in carico il ticket.");
+      showError("properties-error", t("Hai modifiche non salvate alle proprietà. Salvale prima di prendere in carico il ticket."));
       $("save-properties").focus();
       return;
     }
@@ -819,11 +1033,11 @@
       if (generation !== state.generation) return;
       if (state.detailId === ticket.id) await loadDetail(ticket.id);
       loadTickets();
-      toast("Ticket preso in carico. Buon lavoro!");
+      toast(t("Ticket preso in carico. Buon lavoro!"));
     } catch (error) {
       if (generation !== state.generation || !state.user) return;
       if (error.status === 409) await loadDetail(ticket.id);
-      showError("properties-error", error.status === 409 ? "Un’altra persona ha aggiornato il ticket. Verifica l’ultima versione prima di prenderlo in carico." : error.message);
+      showError("properties-error", error.status === 409 ? t("Un’altra persona ha aggiornato il ticket. Verifica l’ultima versione prima di prenderlo in carico.") : error.message);
     } finally {
       button.removeAttribute("aria-busy");
       if (state.detail?.ticket.id === ticket.id) button.disabled = state.detail.ticket.assignee_id === state.user?.id && state.detail.ticket.status === "in_progress";
@@ -832,6 +1046,7 @@
   }
 
   function renderUsers() {
+    if (state.auth?.managed_users === true) { $("users-rows").replaceChildren(); return; }
     const rows = document.createDocumentFragment();
     for (const user of state.users) {
       const row = element("tr");
@@ -843,14 +1058,14 @@
       info.append(element("strong", "", user.name), element("small", "", user.email));
       person.append(avatar, info);
       personCell.append(person);
-      row.append(personCell, element("td", "", user.role === "admin" ? "Amministratore" : "Operatore"));
+      row.append(personCell, element("td", "", user.role === "admin" ? t("Amministratore") : t("Operatore")));
       const status = element("td");
-      status.append(element("span", `user-status${user.active ? "" : " inactive"}`, user.active ? "Attivo" : "Disattivato"));
+      status.append(element("span", `user-status${user.active ? "" : " inactive"}`, user.active ? t("Attivo") : t("Disattivato")));
       row.append(status);
       const action = element("td");
-      const edit = element("button", "button button-secondary", "Modifica");
+      const edit = element("button", "button button-secondary", t("Modifica"));
       edit.type = "button";
-      edit.setAttribute("aria-label", `Modifica l’utente ${user.name}`);
+      edit.setAttribute("aria-label", t("Modifica l’utente {0}", [user.name]));
       edit.addEventListener("click", () => openUserEditor(user));
       action.append(edit);
       row.append(action);
@@ -860,10 +1075,11 @@
   }
 
   function openUserEditor(user = null) {
+    if (state.auth?.managed_users === true) return;
     state.editorUser = user ? { ...user } : null;
     $("user-form").reset();
-    $("user-editor-title").textContent = user ? "Modifica utente" : "Nuovo utente";
-    $("save-user").textContent = user ? "Salva modifiche" : "Crea utente";
+    $("user-editor-title").textContent = user ? t("Modifica utente") : t("Nuovo utente");
+    $("save-user").textContent = user ? t("Salva modifiche") : t("Crea utente");
     $("user-name").value = user?.name || "";
     $("user-email").value = user?.email || "";
     $("user-email").readOnly = Boolean(user);
@@ -872,8 +1088,8 @@
     $("user-active-field").hidden = !user;
     $("user-active").value = user ? String(Boolean(user.active)) : "true";
     $("user-password").required = !user;
-    $("user-password-label").textContent = user ? "Reimposta password" : "Password iniziale";
-    $("user-password-hint").textContent = user ? "Lascia vuoto per mantenere la password attuale, oppure inserisci almeno 12 caratteri." : "Almeno 12 caratteri.";
+    $("user-password-label").textContent = user ? t("Reimposta password") : t("Password iniziale");
+    $("user-password-hint").textContent = user ? t("Lascia vuoto per mantenere la password attuale, oppure inserisci almeno 12 caratteri.") : t("Almeno 12 caratteri.");
     showError("user-editor-error", "");
     $("user-editor").showModal();
     $("user-name").focus();
@@ -881,14 +1097,15 @@
 
   async function saveUser(event) {
     event.preventDefault();
+    if (state.auth?.managed_users === true) return;
     const original = state.editorUser;
     const body = { name: $("user-name").value.trim(), role: $("user-role").value };
-    if (!body.name) { showError("user-editor-error", "Inserisci il nome dell’utente."); $("user-name").focus(); return; }
+    if (!body.name) { showError("user-editor-error", t("Inserisci il nome dell’utente.")); $("user-name").focus(); return; }
     if (original) body.active = $("user-active").value === "true";
     else body.email = $("user-email").value.trim();
     if ($("user-password").value) body.password = $("user-password").value;
     showError("user-editor-error", "");
-    busy($("user-form"), $("save-user"), true, "Salvataggio…");
+    busy($("user-form"), $("save-user"), true, t("Salvataggio…"));
     try {
       await api(original ? `/api/users/${original.id}` : "/api/users", { method: original ? "PUT" : "POST", body });
       $("user-editor").close();
@@ -897,7 +1114,7 @@
       await loadUsers();
       await loadTickets();
       if ($("ticket-detail").open && state.detailId) await loadDetail(state.detailId);
-      toast(original ? "Utente aggiornato." : "Utente creato.");
+      toast(original ? t("Utente aggiornato.") : t("Utente creato."));
     } catch (error) {
       if (state.user) {
         if ($("user-editor").open) showError("user-editor-error", error.message);
@@ -918,11 +1135,12 @@
   $("user-editor").addEventListener("close", () => { $("user-password").value = ""; });
   $("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (state.auth?.local !== true) return;
     showError("login-error", "");
     $("login-notice").hidden = true;
     const body = { email: $("login-email").value.trim(), password: $("login-password").value };
     const button = $("login-form").querySelector('[type="submit"]');
-    busy($("login-form"), button, true, "Accesso…");
+    busy($("login-form"), button, true, t("Accesso…"));
     try {
       const data = await api("/api/login", { method: "POST", body });
       $("login-password").value = "";
@@ -932,7 +1150,7 @@
   });
   $("logout-button").addEventListener("click", async () => {
     $("logout-button").disabled = true;
-    try { await api("/api/logout", { method: "POST", body: {} }); showLogin(); document.title = "Ticket. · Gestione richieste"; $("login-email").focus(); }
+    try { await api("/api/logout", { method: "POST", body: {} }); showLogin(); document.title = t("Ticket. · Gestione richieste"); (state.auth?.local ? $("login-email") : $("sso-login").querySelector("a")).focus(); }
     catch (error) { if (state.user) toast(error.message, true); }
     finally { $("logout-button").disabled = false; }
   });
@@ -964,19 +1182,63 @@
   });
   $("reset-filters").addEventListener("click", resetFilters);
   $("empty-action").addEventListener("click", () => { if (filtersActive()) resetFilters(); else openEditor(); });
-  $("refresh-tickets").addEventListener("click", () => { clearTimeout(state.searchTimer); Promise.allSettled([loadUsers(), loadTickets()]); });
+  $("refresh-tickets").addEventListener("click", async () => { clearTimeout(state.searchTimer); await loadPuntoStatus(); Promise.allSettled([loadUsers(), loadTickets()]); });
   $("previous-page").addEventListener("click", () => { state.offset = Math.max(0, state.offset - state.limit); loadTickets(); });
   $("next-page").addEventListener("click", () => { state.offset += state.limit; loadTickets(); });
-  $("new-ticket").addEventListener("click", () => openEditor());
+  $("new-ticket").addEventListener("click", () => { state.resourceRouteVersion += 1; openEditor(); });
+  $("connect-punto").addEventListener("click", async () => {
+    const generation = state.generation;
+    const intentQuery = state.puntoIntentQuery ?? location.search;
+    state.puntoIntentQuery = null;
+    $("connect-punto").disabled = true; showError("integration-error", "");
+    try {
+      const data = await api("/api/integrations/punto/start", { method: "POST", body: {} });
+      if (generation !== state.generation || !state.user) return;
+      const target = new URL(data.url);
+      if (target.origin !== new URL(state.punto.origin).origin || !/^#ticket-connect\?state=[a-f0-9]{64}$/.test(target.hash)) throw new Error(t("Il collegamento a Punto non è valido."));
+      try { sessionStorage.setItem("ticket.punto.intent", JSON.stringify({ userId: state.user.id, query: intentQuery })); } catch { /* Ripristino facoltativo. */ }
+      location.assign(window.PuntoI18n ? window.PuntoI18n.url(target.href) : target.href);
+    } catch (error) { if (generation === state.generation && state.user) showError("integration-error", error.message); }
+    finally { if (generation === state.generation) $("connect-punto").disabled = false; }
+  });
+  $("disconnect-punto").addEventListener("click", async () => {
+    const generation = state.generation;
+    $("disconnect-punto").disabled = true;
+    try {
+      const punto = await api("/api/integrations/punto/disconnect", { method: "POST", body: {} });
+      if (generation !== state.generation || !state.user) return;
+      state.punto = punto;
+      for (const id of ["ticket-detail", "ticket-editor", "resource-picker"]) $(id).close();
+      renderPuntoStatus(); resetFilters(); toast(t("Sessione Punto scollegata."));
+    } catch (error) { if (generation === state.generation && state.user) showError("integration-error", error.message); }
+    finally { if (generation === state.generation) $("disconnect-punto").disabled = false; }
+  });
+  for (const kind of ["job", "asset"]) {
+    $("choose-" + kind).addEventListener("click", () => openResourcePicker(kind, "editor"));
+    $("filter-" + kind).addEventListener("click", () => openResourcePicker(kind, "filter"));
+    $("clear-" + kind).addEventListener("click", () => { state.resources[kind] = null; renderResourceChoices(); });
+  }
+  $("clear-resource-filters").addEventListener("click", () => {
+    state.resourceRouteVersion += 1;
+    state.resourceFilters = { job: null, asset: null };
+    const url = new URL(location.href); url.searchParams.delete("job_id"); url.searchParams.delete("asset_id"); history.replaceState(null, "", url);
+    renderResourceChoices(); state.offset = 0; loadTickets();
+  });
+  $("resource-search-form").addEventListener("submit", (event) => { event.preventDefault(); searchResources(); });
+  $("resource-search").addEventListener("input", () => { $("resource-more").disabled = !state.picker || state.picker.query !== $("resource-search").value.trim(); });
+  $("resource-more").addEventListener("click", () => searchResources(true));
+  $("resource-none").addEventListener("click", () => chooseResource(null));
+  $("resource-picker").addEventListener("close", () => { state.pickerRequest += 1; state.picker = null; });
   $("ticket-form").addEventListener("submit", saveTicket);
-  $("edit-ticket").addEventListener("click", () => { if (state.detail) openEditor(state.detail.ticket); });
+  $("edit-ticket").addEventListener("click", () => { if (state.detail) { state.resourceRouteVersion += 1; openEditor(state.detail.ticket); } });
   $("retry-detail").addEventListener("click", () => { if (state.detailId) loadDetail(state.detailId); });
+  $("detail-connect-punto").addEventListener("click", () => { state.puntoIntentQuery = location.search; $("ticket-detail").close(); $("connect-punto").click(); });
   $("refresh-detail").addEventListener("click", refreshCurrentDetail);
   $("take-ticket").addEventListener("click", takeTicket);
   $("copy-ticket-link").addEventListener("click", async () => {
     if (!state.detailId) return;
-    try { await navigator.clipboard.writeText(ticketURL(state.detailId).href); toast("Link al ticket copiato."); }
-    catch { toast("Il link è nella barra degli indirizzi: puoi copiarlo da lì.", true); }
+    try { await navigator.clipboard.writeText(ticketURL(state.detailId).href); toast(t("Link al ticket copiato.")); }
+    catch { toast(t("Il link è nella barra degli indirizzi: puoi copiarlo da lì."), true); }
   });
   window.addEventListener("popstate", () => {
     if (!state.user) return;
@@ -993,18 +1255,26 @@
       const data = await api(`/api/tickets/${state.editorTicket.id}`);
       populateEditor(data.ticket);
       if (state.detailId === data.ticket.id) { state.detail = data; renderDetail(data); }
-      toast("Ultima versione caricata. Puoi ripetere le modifiche.");
+      toast(t("Ultima versione caricata. Puoi ripetere le modifiche."));
     } catch (error) { if (state.user) showError("editor-error", error.message); }
     finally { $("reload-editor").disabled = false; }
   });
   $("detail-properties-form").addEventListener("submit", saveProperties);
   $("comment-form").addEventListener("submit", sendComment);
-  $("manage-users").addEventListener("click", () => { showError("users-error", ""); $("users-dialog").showModal(); loadUsers().catch(() => {}); });
+  $("manage-users").addEventListener("click", () => { if (state.auth?.managed_users === true) return; showError("users-error", ""); $("users-dialog").showModal(); loadUsers().catch(() => {}); });
   $("new-user").addEventListener("click", () => openUserEditor());
   $("user-form").addEventListener("submit", saveUser);
 
-  api("/api/session").then(openApp).catch((error) => {
+  api("/api/auth/config", { signal: AbortSignal.timeout(10000) }).then((config) => {
+    if (typeof config.sso !== "boolean" || typeof config.local !== "boolean" || (!config.sso && !config.local)) throw new ApiError(t("Configurazione di accesso non disponibile."), 0);
+    if (config.managed_users === true && config.users_admin_url) {
+      const url = new URL(config.users_admin_url);
+      if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new ApiError(t("Configurazione di accesso non disponibile."), 0);
+    }
+    state.auth = config;
+    return api("/api/session");
+  }).then(openApp).catch((error) => {
     showLogin();
-    if (error.status !== 401) showError("login-error", error.message);
+    if (error.status !== 401) showError("login-error", state.auth ? error.message : t("Impossibile caricare le modalità di accesso. Ricarica la pagina per riprovare."));
   });
 })();

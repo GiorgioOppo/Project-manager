@@ -1,5 +1,7 @@
 # Domande frequenti
 
+**Italiano** | [English](../en/prod/faq.md)
+
 [Indice prodotto](README.md) · [Guida utente](guida-utente.md) · [Guida gestore](guida-gestore.md)
 
 Le risposte descrivono il prodotto attuale all’11 ottobre 2026. Per le regole complete vedere [Processi e regole](processi-e-regole.md).

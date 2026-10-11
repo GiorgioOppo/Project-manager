@@ -309,14 +309,89 @@ static char *decode(const char *start, size_t length) {
     return value;
 }
 
+static bool due_date(const char *value);
+
 static bool allowed_field(InventoryOperation operation, const char *name, const char *value) {
     size_t maximum = 0;
-    bool catalog = operation == INVENTORY_ASSETS || operation == INVENTORY_EXPORT;
+    bool catalog = operation == INVENTORY_ASSETS || operation == INVENTORY_EXPORT || operation == INVENTORY_DASHBOARD;
+    bool person_write = operation == INVENTORY_PERSON_CREATE || operation == INVENTORY_PERSON_UPDATE;
+    bool identity_write = operation == INVENTORY_IDENTITY_CREATE || operation == INVENTORY_IDENTITY_UPDATE;
+    bool people_list = operation == INVENTORY_PEOPLE;
+    bool identity_list = operation == INVENTORY_IDENTITIES;
+    bool subject_write = operation == INVENTORY_SUBJECT_CREATE;
+    bool identity_link_write = operation == INVENTORY_IDENTITY_PERSON_CREATE;
+    bool directory_page = people_list || identity_list || operation == INVENTORY_PERSON_HISTORY ||
+        operation == INVENTORY_PERSON_IDENTITIES || operation == INVENTORY_PERSON_ASSETS ||
+        operation == INVENTORY_IDENTITY_HISTORY || operation == INVENTORY_IDENTITY_PEOPLE ||
+        operation == INVENTORY_IDENTITY_ASSETS || operation == INVENTORY_SUBJECTS;
+    if ((people_list || identity_list) && !strcmp(name,"q")) maximum=200;
+    if ((people_list || identity_list || person_write || identity_write) && !strcmp(name,"active"))
+        return !strcmp(value,"1") || !strcmp(value,"0");
+    if ((identity_list || identity_write) && !strcmp(name,"kind"))
+        return !strcmp(value,"personal") || !strcmp(value,"shared") || !strcmp(value,"service");
+    if ((identity_list || identity_link_write) && !strcmp(name,"person_id")) return positive_number(value,LLONG_MAX);
+    if ((person_write || identity_write || identity_link_write || subject_write) && !strcmp(name,"notes")) maximum=2000;
+    if ((person_write || identity_write) && !strcmp(name,"display_name")) maximum=160;
+    if (person_write) {
+        if (!strcmp(name,"person_code")) maximum=64;
+        if (!strcmp(name,"email")) maximum=254;
+        if (!strcmp(name,"organization")) maximum=160;
+        if (!strcmp(name,"job_title")) maximum=120;
+    }
+    if (identity_write && (!strcmp(name,"realm") || !strcmp(name,"login"))) maximum=160;
+    if ((operation == INVENTORY_PERSON_UPDATE || operation == INVENTORY_IDENTITY_UPDATE ||
+         identity_link_write || operation == INVENTORY_IDENTITY_PERSON_REMOVE || subject_write ||
+         operation == INVENTORY_SUBJECT_REMOVE) && !strcmp(name,"version")) return positive_number(value,LLONG_MAX);
+    if (subject_write && !strcmp(name,"subject_kind")) return !strcmp(value,"person") || !strcmp(value,"identity");
+    if (subject_write && !strcmp(name,"subject_id")) return positive_number(value,LLONG_MAX);
+    if ((identity_link_write || subject_write) && !strcmp(name,"role")) return !strcmp(value,"owner") ||
+        !strcmp(value,"user") || (subject_write && !strcmp(value,"administrator"));
     if (catalog && !strcmp(name, "q")) maximum = 200;
-    if (catalog || operation == INVENTORY_HISTORY || operation == INVENTORY_RELATIONS || operation == INVENTORY_DUE) {
+    if (catalog && !strcmp(name, "mine")) return !strcmp(value, "1");
+    if (catalog && (!strcmp(name,"site_id") || !strcmp(name,"department_id") ||
+        !strcmp(name,"person_id") || !strcmp(name,"identity_id"))) return positive_number(value,LLONG_MAX);
+    if (catalog && !strcmp(name,"attention")) return !strcmp(value,"open_custody") || !strcmp(value,"overdue_returns") ||
+        !strcmp(value,"never_verified") || !strcmp(value,"verification_due") || !strcmp(value,"location_mismatch");
+    if ((catalog || operation == INVENTORY_OPERATIONAL_DUE) && !strcmp(name,"verification_days")) return positive_number(value,365);
+    if ((catalog || operation == INVENTORY_OPERATIONAL_DUE) && !strcmp(name,"today")) return due_date(value);
+    if (operation == INVENTORY_OPERATIONAL_DUE && !strcmp(name,"kind")) return !strcmp(value,"return") || !strcmp(value,"verification");
+    if ((catalog && operation != INVENTORY_DASHBOARD) || operation == INVENTORY_HISTORY || operation == INVENTORY_RELATIONS ||
+        operation == INVENTORY_DUE || operation == INVENTORY_OPERATIONAL_DUE ||
+        operation == INVENTORY_PLACES || operation == INVENTORY_CUSTODY || operation == INVENTORY_VERIFICATIONS || directory_page) {
         if (!strcmp(name, "limit")) return positive_number(value, 100);
         if (!strcmp(name, "after_id")) return positive_number(value, LLONG_MAX);
     }
+    bool place_write = operation == INVENTORY_PLACE_CREATE || operation == INVENTORY_PLACE_UPDATE;
+    bool asset_action = operation >= INVENTORY_CONTEXT && operation <= INVENTORY_VERIFY;
+    if ((place_write || asset_action) && !strcmp(name, "version"))
+        return operation != INVENTORY_PLACE_CREATE && positive_number(value, LLONG_MAX);
+    if (operation == INVENTORY_PLACES || place_write) {
+        if (!strcmp(name,"kind")) return !strcmp(value,"site") || !strcmp(value,"department") || !strcmp(value,"location");
+        if (!strcmp(name,"active")) return !strcmp(value,"1") || !strcmp(value,"0");
+        if (place_write && !strcmp(name,"parent_id")) return !*value || positive_number(value,LLONG_MAX);
+        if (place_write && !strcmp(name,"name")) maximum=160;
+    }
+    if (operation == INVENTORY_CONTEXT) {
+        if (!strcmp(name,"assignee_user_id") || !strcmp(name,"site_id") ||
+            !strcmp(name,"department_id") || !strcmp(name,"location_id"))
+            return !*value || positive_number(value,LLONG_MAX);
+    }
+    if (operation == INVENTORY_CHECKOUT) {
+        if (!strcmp(name,"user_id")) return positive_number(value,LLONG_MAX);
+        if (!strcmp(name,"checkout_on") || !strcmp(name,"due_on")) maximum=10;
+        if (!strcmp(name,"condition_out")) return !strcmp(value,"good") || !strcmp(value,"fair") || !strcmp(value,"damaged");
+    }
+    if (operation == INVENTORY_CHECKIN) {
+        if (!strcmp(name,"returned_on")) maximum=10;
+        if (!strcmp(name,"condition_in")) return !strcmp(value,"good") || !strcmp(value,"fair") || !strcmp(value,"damaged");
+        if (!strcmp(name,"status")) return !strcmp(value,"available") || !strcmp(value,"maintenance");
+    }
+    if (operation == INVENTORY_VERIFY) {
+        if (!strcmp(name,"verified_on")) maximum=10;
+        if (!strcmp(name,"condition")) return !strcmp(value,"good") || !strcmp(value,"fair") || !strcmp(value,"damaged");
+        if (!strcmp(name,"observed_location_id")) return !*value || positive_number(value,LLONG_MAX);
+    }
+    if (asset_action && !strcmp(name,"notes")) maximum=2000;
     if (operation == INVENTORY_DUE) {
         if (!strcmp(name,"days_before")) return positive_number(value,365);
         if (!strcmp(name,"today")) {
@@ -380,7 +455,20 @@ static bool allowed_field(InventoryOperation operation, const char *name, const 
 
 /* Decode before checking names so escaped duplicates and identity fields are
    rejected. Re-encode every value before appending the trusted audit actor. */
-static char *build_form(InventoryOperation operation, const char *input, DbInt actor_id) {
+static bool write_operation(InventoryOperation operation) {
+    return operation == INVENTORY_CREATE || operation == INVENTORY_UPDATE ||
+        operation == INVENTORY_RELATION_CREATE || operation == INVENTORY_RELATION_REMOVE ||
+        operation == INVENTORY_IMPORT_PREVIEW || operation == INVENTORY_IMPORT_COMMIT ||
+        operation == INVENTORY_PLACE_CREATE || operation == INVENTORY_PLACE_UPDATE ||
+        (operation >= INVENTORY_CONTEXT && operation <= INVENTORY_VERIFY) ||
+        operation == INVENTORY_PERSON_CREATE || operation == INVENTORY_PERSON_UPDATE ||
+        operation == INVENTORY_IDENTITY_CREATE || operation == INVENTORY_IDENTITY_UPDATE ||
+        operation == INVENTORY_IDENTITY_PERSON_CREATE || operation == INVENTORY_IDENTITY_PERSON_REMOVE ||
+        operation == INVENTORY_SUBJECT_CREATE || operation == INVENTORY_SUBJECT_REMOVE;
+}
+
+static char *build_form(InventoryOperation operation, const char *input, DbInt actor_id,
+                       InventoryUserLookup lookup, int *error_status) {
     struct { char *name, *value; } fields[FIELD_LIMIT] = {{0}};
     size_t count = 0;
     size_t input_limit = operation == INVENTORY_IMPORT_PREVIEW ? IMPORT_FORM_LIMIT : INPUT_LIMIT;
@@ -405,26 +493,62 @@ static char *build_form(InventoryOperation operation, const char *input, DbInt a
             if (!strcmp(name, "relation_type") && *value) present |= 8;
             if (!strcmp(name, "csv") && *value) present |= 16;
             if (!strcmp(name, "preview_id") && *value) present |= 32;
+            if (!strcmp(name, "person_code") && *value) present |= 64;
+            if (!strcmp(name, "display_name") && *value) present |= 128;
+            if (!strcmp(name, "realm") && *value) present |= 256;
+            if (!strcmp(name, "login") && *value) present |= 512;
+            if (!strcmp(name, "person_id") && *value) present |= 1024;
+            if (!strcmp(name, "subject_kind") && *value) present |= 2048;
+            if (!strcmp(name, "subject_id") && *value) present |= 4096;
         }
         count++;
         p = *end ? end + 1 : end;
         if (*end && !*p) valid = false;
     }
-    bool write = operation == INVENTORY_CREATE || operation == INVENTORY_UPDATE ||
-        operation == INVENTORY_RELATION_CREATE || operation == INVENTORY_RELATION_REMOVE ||
-        operation == INVENTORY_IMPORT_PREVIEW || operation == INVENTORY_IMPORT_COMMIT;
+    bool write = write_operation(operation);
     unsigned required = operation == INVENTORY_CREATE ? 3U : operation == INVENTORY_UPDATE ? 7U :
         operation == INVENTORY_RELATION_CREATE ? 12U : operation == INVENTORY_IMPORT_PREVIEW ? 16U :
-        operation == INVENTORY_IMPORT_COMMIT ? 32U : 4U;
-    if (write && (present != required || actor_id <= 0)) valid = false;
-    char *form = valid ? calloc(1, input_limit * 3 + 128) : NULL;
+        operation == INVENTORY_IMPORT_COMMIT ? 32U : operation == INVENTORY_PLACE_CREATE ? 2U :
+        operation == INVENTORY_PLACE_UPDATE ? 6U : operation == INVENTORY_PERSON_CREATE ? 192U :
+        operation == INVENTORY_PERSON_UPDATE ? 196U : operation == INVENTORY_IDENTITY_CREATE ? 768U :
+        operation == INVENTORY_IDENTITY_UPDATE ? 772U : operation == INVENTORY_IDENTITY_PERSON_CREATE ? 1028U :
+        operation == INVENTORY_SUBJECT_CREATE ? 6148U : 4U;
+    if (write && ((present & required) != required || actor_id <= 0)) valid = false;
+    char user_name[481]={0};
+    bool user_field=false;
+    const char *trusted_name_field=operation == INVENTORY_CONTEXT ? "assignee_user_name" : "user_name";
+    if (valid && (operation == INVENTORY_CONTEXT || operation == INVENTORY_CHECKOUT)) {
+        const char *id_field=operation == INVENTORY_CONTEXT ? "assignee_user_id" : "user_id";
+        for (size_t i=0;i<count;i++) if (!strcmp(fields[i].name,id_field)) {
+            user_field=true;
+            if (*fields[i].value) {
+                int found=lookup ? lookup((DbInt)strtoll(fields[i].value,NULL,10),user_name,sizeof(user_name)) : 0;
+                if (found!=1) { valid=false; *error_status=found<0 ? 503 : 422; }
+                if (valid && (!*user_name || !utf8((unsigned char *)user_name))) valid=false;
+            }
+        }
+        if (operation == INVENTORY_CHECKOUT && !user_field) valid=false;
+    }
+    char *form = valid ? calloc(1, input_limit * 3 + 1800) : NULL;
     if (form) {
         for (size_t i = 0; i < count; i++) {
             char *encoded = encode(fields[i].value);
             if (!encoded) { free(form); form = NULL; break; }
             if (*form) strcat(form, "&");
-            strcat(form, fields[i].name); strcat(form, "="); strcat(form, encoded);
+            const char *field_name=!strcmp(fields[i].name,"mine") ? "assignee_user_id" : fields[i].name;
+            if (!strcmp(fields[i].name,"mine")) {
+                if (actor_id<=0) { free(encoded); free(form); form=NULL; break; }
+                char current_id[32]; snprintf(current_id,sizeof(current_id),"%lld",(long long)actor_id);
+                free(encoded); encoded=encode(current_id);
+                if (!encoded) { free(form); form=NULL; break; }
+            }
+            strcat(form, field_name); strcat(form, "="); strcat(form, encoded);
             free(encoded);
+        }
+        if (form && user_field) {
+            char *encoded=encode(user_name);
+            if (!encoded) { free(form); form=NULL; }
+            else { strcat(form,"&"); strcat(form,trusted_name_field); strcat(form,"="); strcat(form,encoded); free(encoded); }
         }
         if (form && write) {
             char actor[64];
@@ -432,6 +556,7 @@ static char *build_form(InventoryOperation operation, const char *input, DbInt a
             strcat(form, actor);
         }
     }
+    erase(user_name,sizeof(user_name));
     for (size_t i = 0; i < count; i++) {
         free(fields[i].name);
         if (fields[i].value) { erase(fields[i].value, strlen(fields[i].value)); free(fields[i].value); }
@@ -440,21 +565,30 @@ static char *build_form(InventoryOperation operation, const char *input, DbInt a
 }
 
 static void client_call(InventoryOperation operation, DbInt item_id, DbInt relation_id, DbInt actor_id,
-                        const char *input, InventoryResponse *response, long timeout_ms) {
+                        const char *input, InventoryUserLookup lookup, InventoryResponse *response, long timeout_ms) {
     if (!response) return;
     response->status = 0; response->body = NULL;
-    bool write = operation == INVENTORY_CREATE || operation == INVENTORY_UPDATE ||
-        operation == INVENTORY_RELATION_CREATE || operation == INVENTORY_RELATION_REMOVE ||
-        operation == INVENTORY_IMPORT_PREVIEW || operation == INVENTORY_IMPORT_COMMIT;
+    bool write = write_operation(operation);
     bool relations = operation == INVENTORY_RELATIONS || operation == INVENTORY_RELATION_CREATE ||
         operation == INVENTORY_RELATION_REMOVE;
-    bool item = operation == INVENTORY_DETAIL || operation == INVENTORY_HISTORY || operation == INVENTORY_UPDATE || relations;
-    if (operation < INVENTORY_STATUS || operation > INVENTORY_DUE || (item && item_id <= 0) ||
-        (operation == INVENTORY_RELATION_REMOVE && relation_id <= 0)) {
+    bool operational = operation >= INVENTORY_CONTEXT && operation <= INVENTORY_VERIFICATIONS;
+    bool person_item = operation == INVENTORY_PERSON_DETAIL || operation == INVENTORY_PERSON_UPDATE ||
+        operation == INVENTORY_PERSON_HISTORY || operation == INVENTORY_PERSON_IDENTITIES || operation == INVENTORY_PERSON_ASSETS;
+    bool identity_item = operation == INVENTORY_IDENTITY_DETAIL || operation == INVENTORY_IDENTITY_UPDATE ||
+        operation == INVENTORY_IDENTITY_HISTORY || operation == INVENTORY_IDENTITY_PEOPLE ||
+        operation == INVENTORY_IDENTITY_PERSON_CREATE || operation == INVENTORY_IDENTITY_PERSON_REMOVE || operation == INVENTORY_IDENTITY_ASSETS;
+    bool subjects = operation == INVENTORY_SUBJECTS || operation == INVENTORY_SUBJECT_CREATE || operation == INVENTORY_SUBJECT_REMOVE;
+    bool item = operation == INVENTORY_DETAIL || operation == INVENTORY_HISTORY || operation == INVENTORY_UPDATE || relations || operational || subjects;
+    bool remove = operation == INVENTORY_RELATION_REMOVE || operation == INVENTORY_IDENTITY_PERSON_REMOVE || operation == INVENTORY_SUBJECT_REMOVE;
+    if (operation < INVENTORY_STATUS || operation > INVENTORY_SUBJECT_REMOVE ||
+        ((item || person_item || identity_item || operation == INVENTORY_PLACE_UPDATE) && item_id <= 0) || (remove && relation_id <= 0)) {
         reply(response, 400, "{\"ok\":false,\"error\":\"Richiesta inventario non valida.\"}"); return;
     }
-    char *form = build_form(operation, input ? input : "", actor_id);
-    if (!form) { reply(response, 400, "{\"ok\":false,\"error\":\"Campi inventario non validi o duplicati.\"}"); return; }
+    int error_status=400;
+    char *form = build_form(operation, input ? input : "", actor_id, lookup, &error_status);
+    if (!form) { reply(response, error_status, error_status == 503 ? "{\"ok\":false,\"error\":\"Impossibile verificare l’utente. Riprova.\"}" :
+        error_status == 422 ? "{\"ok\":false,\"error\":\"Seleziona un utente attivo dell’app.\"}" :
+        "{\"ok\":false,\"error\":\"Campi inventario non validi o duplicati.\"}"); return; }
     if (!enabled) {
         reply(response, operation == INVENTORY_STATUS ? 200 : 503,
             operation == INVENTORY_STATUS ? "{\"ok\":true,\"configured\":false}" :
@@ -463,10 +597,39 @@ static void client_call(InventoryOperation operation, DbInt item_id, DbInt relat
     }
     char path[8192];
     int length;
-    if (operation == INVENTORY_IMPORT_PREVIEW || operation == INVENTORY_IMPORT_COMMIT)
+    if (operation == INVENTORY_PEOPLE || operation == INVENTORY_PERSON_CREATE ||
+        operation == INVENTORY_IDENTITIES || operation == INVENTORY_IDENTITY_CREATE)
+        length=snprintf(path,sizeof(path),"/v1/%s%s%s",
+            operation == INVENTORY_PEOPLE || operation == INVENTORY_PERSON_CREATE ? "people" : "identities",
+            !write && *form ? "?" : "",write ? "" : form);
+    else if (person_item || identity_item) {
+        const char *suffix = operation == INVENTORY_PERSON_HISTORY || operation == INVENTORY_IDENTITY_HISTORY ? "/history" :
+            operation == INVENTORY_PERSON_IDENTITIES ? "/identities" :
+            operation == INVENTORY_PERSON_ASSETS || operation == INVENTORY_IDENTITY_ASSETS ? "/assets" :
+            operation == INVENTORY_IDENTITY_PEOPLE || operation == INVENTORY_IDENTITY_PERSON_CREATE ? "/people" : "";
+        if (operation == INVENTORY_IDENTITY_PERSON_REMOVE)
+            length=snprintf(path,sizeof(path),"/v1/identities/%lld/people/%lld/remove",(long long)item_id,(long long)relation_id);
+        else length=snprintf(path,sizeof(path),"/v1/%s/%lld%s%s%s",person_item ? "people" : "identities",
+            (long long)item_id,suffix,!write && *form ? "?" : "",write ? "" : form);
+    } else if (subjects) {
+        if (operation == INVENTORY_SUBJECT_REMOVE)
+            length=snprintf(path,sizeof(path),"/v1/assets/%lld/subjects/%lld/remove",(long long)item_id,(long long)relation_id);
+        else length=snprintf(path,sizeof(path),"/v1/assets/%lld/subjects%s%s",(long long)item_id,
+            !write && *form ? "?" : "",write ? "" : form);
+    } else if (operation == INVENTORY_PLACE_UPDATE)
+        length=snprintf(path,sizeof(path),"/v1/places/%lld",(long long)item_id);
+    else if (operation == INVENTORY_PLACES || operation == INVENTORY_PLACE_CREATE)
+        length=snprintf(path,sizeof(path),"/v1/places%s%s",!write && *form ? "?" : "",write ? "" : form);
+    else if (operational) {
+        static const char *names[]={"context","checkout","checkin","verify","custody","verifications"};
+        length=snprintf(path,sizeof(path),"/v1/assets/%lld/%s%s%s",(long long)item_id,
+            names[operation-INVENTORY_CONTEXT],!write && *form ? "?" : "",write ? "" : form);
+    } else if (operation == INVENTORY_IMPORT_PREVIEW || operation == INVENTORY_IMPORT_COMMIT)
         length = snprintf(path,sizeof(path),"/v1/import/%s",operation == INVENTORY_IMPORT_PREVIEW ? "preview" : "commit");
-    else if (operation == INVENTORY_EXPORT || operation == INVENTORY_DUE)
-        length = snprintf(path,sizeof(path),"/v1/%s%s%s",operation == INVENTORY_EXPORT ? "assets/export" : "due",*form ? "?" : "",form);
+    else if (operation == INVENTORY_EXPORT || operation == INVENTORY_DUE ||
+             operation == INVENTORY_DASHBOARD || operation == INVENTORY_OPERATIONAL_DUE)
+        length = snprintf(path,sizeof(path),"/v1/%s%s%s",operation == INVENTORY_EXPORT ? "assets/export" :
+            operation == INVENTORY_DUE ? "due" : operation == INVENTORY_DASHBOARD ? "dashboard" : "operational-due",*form ? "?" : "",form);
     else if (operation == INVENTORY_RELATION_REMOVE) length = snprintf(path, sizeof(path),
         "/v1/assets/%lld/relations/%lld/remove", (long long)item_id, (long long)relation_id);
     else if (relations) length = snprintf(path, sizeof(path), "/v1/assets/%lld/relations%s%s", (long long)item_id,
@@ -493,7 +656,13 @@ static void client_call(InventoryOperation operation, DbInt item_id, DbInt relat
 
 void inventory_client_call(InventoryOperation operation, DbInt item_id, DbInt relation_id, DbInt actor_id,
                            const char *input, InventoryResponse *response) {
-    client_call(operation,item_id,relation_id,actor_id,input,response,5000L);
+    client_call(operation,item_id,relation_id,actor_id,input,NULL,response,5000L);
+}
+
+void inventory_client_call_with_lookup(InventoryOperation operation, DbInt item_id, DbInt relation_id,
+                           DbInt actor_id, const char *input, InventoryUserLookup lookup,
+                           InventoryResponse *response) {
+    client_call(operation,item_id,relation_id,actor_id,input,lookup,response,5000L);
 }
 
 static bool due_date(const char *value) {
@@ -538,7 +707,7 @@ bool inventory_client_due(const char *today,int days_before,struct json_object *
         snprintf(query,sizeof(query),"today=%s&days_before=%d&limit=100%s",today,days_before,after ? "&after_id=" : "");
         if (after) snprintf(query+strlen(query),sizeof(query)-strlen(query),"%lld",after);
         InventoryResponse response={0};
-        client_call(INVENTORY_DUE,0,0,0,query,&response,(long)(remaining<5000 ? remaining : 5000));
+        client_call(INVENTORY_DUE,0,0,0,query,NULL,&response,(long)(remaining<5000 ? remaining : 5000));
         struct json_object *data=response.status==200 && response.body ? parse_json(response.body,strlen(response.body)) : NULL;
         struct json_object *okay=NULL,*rows=NULL,*next=NULL;
         bool valid=data && json_object_object_get_ex(data,"ok",&okay) &&
@@ -572,7 +741,80 @@ bool inventory_client_due(const char *today,int days_before,struct json_object *
         }
         bool last=valid && json_object_is_type(next,json_type_null);
         long long cursor=valid && json_object_is_type(next,json_type_int) ? json_object_get_int64(next) : 0;
-        if (valid && !last && (!length || cursor<=0 || cursor>previous || (after && cursor>=after))) valid=false;
+        if (valid && !last && (!length || cursor<=0 || cursor!=previous || (after && cursor>=after))) valid=false;
+        if (data) json_object_put(data);
+        inventory_response_free(&response);
+        if (!valid) break;
+        if (last) { complete=true; break; }
+        after=cursor;
+    }
+    if (!complete) { json_object_put(all); return false; }
+    *items=all;
+    return true;
+}
+
+/* Gregorian day arithmetic avoids DST and process-timezone dependencies. */
+static long long due_day(const char *value) {
+    int year=atoi(value),month=atoi(value+5),day=atoi(value+8);
+    year-=month<=2;
+    int era=year/400,year_of_era=year-era*400;
+    int day_of_year=(153*(month+(month>2 ? -3 : 9))+2)/5+day-1;
+    return (long long)era*146097+year_of_era*365+year_of_era/4-year_of_era/100+day_of_year;
+}
+
+bool inventory_client_operational_due(const char *today,const char *kind,
+                                     int verification_days,struct json_object **items) {
+    if (!items) return false;
+    *items=NULL;
+    if (!enabled || !due_date(today) || !kind || (strcmp(kind,"return") && strcmp(kind,"verification")) ||
+        verification_days<1 || verification_days>365) return false;
+    bool returns=!strcmp(kind,"return");
+    struct json_object *all=json_object_new_array();
+    if (!all) return false;
+    long long started=monotonic_ms(),after=0;
+    bool complete=false;
+    for (unsigned page=0;page<100 && started>=0;page++) {
+        long long elapsed=monotonic_ms();
+        long long remaining=elapsed<0 ? 0 : 8000-(elapsed-started);
+        if (remaining<=0) break;
+        char query[192];
+        snprintf(query,sizeof(query),"kind=%s&today=%s&verification_days=%d&limit=100%s",kind,today,
+            verification_days,after ? "&after_id=" : "");
+        if (after) snprintf(query+strlen(query),sizeof(query)-strlen(query),"%lld",after);
+        InventoryResponse response={0};
+        client_call(INVENTORY_OPERATIONAL_DUE,0,0,0,query,NULL,&response,(long)(remaining<5000 ? remaining : 5000));
+        struct json_object *data=response.status==200 && response.body ? parse_json(response.body,strlen(response.body)) : NULL;
+        struct json_object *okay=NULL,*rows=NULL,*next=NULL;
+        bool valid=data && json_object_object_get_ex(data,"ok",&okay) &&
+            json_object_is_type(okay,json_type_boolean) && json_object_get_boolean(okay) &&
+            json_object_object_get_ex(data,"items",&rows) && json_object_is_type(rows,json_type_array) &&
+            json_object_object_get_ex(data,"next_after_id",&next);
+        size_t length=valid ? json_object_array_length(rows) : 0;
+        if (length>100 || json_object_array_length(all)+length>10000) valid=false;
+        long long previous=after ? after : LLONG_MAX;
+        for (size_t i=0;valid && i<length;i++) {
+            struct json_object *row=json_object_array_get_idx(rows,i),*id=NULL,*days=NULL,*source=NULL;
+            const char *tag=NULL,*name=NULL,*type=NULL,*event_kind=NULL,*date=NULL;
+            valid=json_object_is_type(row,json_type_object) && json_object_object_get_ex(row,"asset_id",&id) &&
+                json_object_is_type(id,json_type_int) && json_object_get_int64(id)>0 &&
+                (json_object_get_int64(id)<previous || (!after && !i && json_object_get_int64(id)==LLONG_MAX)) &&
+                due_text(row,"asset_tag",64,&tag) && due_text(row,"name",160,&name) &&
+                due_text(row,"asset_type",32,&type) && due_text(row,"due_kind",32,&event_kind) &&
+                due_text(row,"due_on",10,&date) && due_date(date) &&
+                json_object_object_get_ex(row,"days_remaining",&days) && json_object_is_type(days,json_type_int) &&
+                json_object_get_int64(days)==due_day(date)-due_day(today) &&
+                json_object_get_int64(days)<=(returns ? -1 : 0) &&
+                json_object_object_get_ex(row,"source_id",&source) && json_object_is_type(source,json_type_int) &&
+                json_object_get_int64(source)>=(returns ? 1 : 0);
+            if (!valid) break;
+            valid=(!strcmp(type,"it_device") || !strcmp(type,"network_device") || !strcmp(type,"physical")) &&
+                !strcmp(event_kind,returns ? "return_due" : "verification_due");
+            previous=json_object_get_int64(id);
+            if (valid && json_object_array_add(all,json_object_get(row))!=0) valid=false;
+        }
+        bool last=valid && json_object_is_type(next,json_type_null);
+        long long cursor=valid && json_object_is_type(next,json_type_int) ? json_object_get_int64(next) : 0;
+        if (valid && !last && (!length || cursor<=0 || cursor!=previous || (after && cursor>=after))) valid=false;
         if (data) json_object_put(data);
         inventory_response_free(&response);
         if (!valid) break;

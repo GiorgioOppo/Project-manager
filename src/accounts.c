@@ -424,6 +424,12 @@ bool accounts_open(const char *db_path, const char *bootstrap_email,
             "password_hash BLOB NOT NULL CHECK(length(password_hash)=32),"
             "salt BLOB NOT NULL CHECK(length(salt)=16)"
             ");"
+            "CREATE TABLE IF NOT EXISTS oidc_identities ("
+            "issuer TEXT NOT NULL COLLATE BINARY,"
+            "subject TEXT NOT NULL COLLATE BINARY,"
+            "user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),"
+            "PRIMARY KEY(issuer,subject)"
+            ");"
 #endif
             , NULL, NULL, NULL) != DB_OK ||
         !prepare(&statement, "SELECT COUNT(*) FROM users") ||
@@ -464,6 +470,7 @@ int accounts_authenticate(const char *email, const char *password, Account *out)
     if (strlen(password) > PASSWORD_LIMIT) return 0;
     char canonical[255];
     bool email_valid = canonical_email(email, canonical);
+    if (email_valid && !oidc_local_account_allowed(canonical)) return 0;
     DbStmt *statement = NULL;
     if (!prepare(&statement,
         "SELECT id,email,name,role,active,password_hash,salt FROM users WHERE email=?") ||
@@ -525,6 +532,22 @@ bool accounts_find(DbInt id, Account *out) {
     return accounts_lookup(id, out) == 1;
 }
 
+int accounts_lookup_email(const char *email, Account *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!database || !email || !*email || !out) return -1;
+    DbStmt *statement = NULL;
+    if (!prepare(&statement,
+        "SELECT id,email,name,role FROM users WHERE email=? AND active=1") ||
+        db_bind_text(statement, 1, email, -1, DB_TRANSIENT) != DB_OK) {
+        db_finalize(statement); return -1;
+    }
+    int result = db_step(statement);
+    int found = result == DB_DONE ? 0 :
+        (result == DB_ROW && copy_account(statement, out) ? 1 : -1);
+    db_finalize(statement);
+    return found;
+}
+
 static void list_users(WorkspaceResponse *response) {
     DbStmt *statement = NULL;
     if (!prepare(&statement, "SELECT id,email,name,role,active FROM users ORDER BY id LIMIT 201")) {
@@ -573,6 +596,146 @@ static char *user_snapshot(DbInt id) {
     db_finalize(statement);
     if (json.failed) { free(json.data); return NULL; }
     return json.data;
+}
+
+static bool valid_identity_key(const char *text, size_t capacity) {
+    size_t length = strnlen(text, capacity);
+    if (!length || length == capacity) return false;
+    for (size_t i = 0; i < length; i++)
+        if ((unsigned char)text[i] < 32 || (unsigned char)text[i] == 127) return false;
+    return true;
+}
+
+int accounts_resolve_oidc(const OidcIdentity *identity, Account *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!database || !identity || !out) return -1;
+    char email[255], bound_email[255];
+    if (!oidc_users_managed() ||
+        !valid_identity_key(identity->issuer, sizeof(identity->issuer)) ||
+        !valid_identity_key(identity->subject, sizeof(identity->subject)) ||
+        strnlen(identity->email, sizeof(identity->email)) == sizeof(identity->email) ||
+        strnlen(identity->name, sizeof(identity->name)) == sizeof(identity->name) ||
+        strnlen(identity->role, sizeof(identity->role)) == sizeof(identity->role) ||
+        strnlen(identity->bound_email, sizeof(identity->bound_email)) == sizeof(identity->bound_email) ||
+        !canonical_email(identity->email, email) || !valid_name(identity->name) ||
+        !valid_role(identity->role) ||
+        (*identity->bound_email && !canonical_email(identity->bound_email, bound_email))) return 0;
+
+    if (db_exec(database, "BEGIN IMMEDIATE", NULL, NULL, NULL) != DB_OK) return -1;
+    DbStmt *statement = NULL;
+    DbInt user_id = 0;
+    int answer = -1, result;
+    bool linked = false, changed = true;
+    char *before = NULL, *after = NULL;
+    unsigned char salt[SALT_SIZE] = {0}, hash[HASH_SIZE] = {0};
+    Account previous = {0};
+
+    if (!prepare(&statement,
+        "SELECT user_id FROM oidc_identities WHERE issuer=? AND subject=?") ||
+        !bind_text(statement, 1, identity->issuer) ||
+        !bind_text(statement, 2, identity->subject)) goto done;
+    result = db_step(statement);
+    if (result != DB_ROW && result != DB_DONE) goto done;
+    linked = result == DB_ROW;
+    if (linked) user_id = db_column_int64(statement, 0);
+    db_finalize(statement); statement = NULL;
+
+    /* A persistent provider subject is authoritative. Bindings are migration
+       instructions used once; an email claim never claims an existing row. */
+    if (!linked && *identity->bound_email) {
+        if (!prepare(&statement, "SELECT id FROM users WHERE email=?") ||
+            !bind_text(statement, 1, bound_email)) goto done;
+        result = db_step(statement);
+        if (result != DB_ROW) { if (result == DB_DONE) answer = 0; goto done; }
+        user_id = db_column_int64(statement, 0);
+        db_finalize(statement); statement = NULL;
+        if (!prepare(&statement, "SELECT user_id FROM oidc_identities WHERE user_id=?") ||
+            db_bind_int64(statement, 1, user_id) != DB_OK) goto done;
+        result = db_step(statement);
+        if (result != DB_DONE) { if (result == DB_ROW) answer = 0; goto done; }
+        db_finalize(statement); statement = NULL;
+    }
+
+    if (!prepare(&statement, "SELECT id FROM users WHERE email=?") ||
+        !bind_text(statement, 1, email)) goto done;
+    result = db_step(statement);
+    if (result != DB_ROW && result != DB_DONE) goto done;
+    if (result == DB_ROW && db_column_int64(statement, 0) != user_id) {
+        answer = 0; goto done;
+    }
+    db_finalize(statement); statement = NULL;
+
+    if (user_id) {
+        if (!prepare(&statement, "SELECT id,email,name,role,active FROM users WHERE id=?") ||
+            db_bind_int64(statement, 1, user_id) != DB_OK ||
+            db_step(statement) != DB_ROW || !copy_account(statement, &previous)) goto done;
+        changed = strcmp(previous.email, email) != 0 ||
+            strcmp(previous.name, identity->name) != 0 ||
+            strcmp(previous.role, identity->role) != 0 || db_column_int(statement, 4) != 1;
+        db_finalize(statement); statement = NULL;
+        before = user_snapshot(user_id);
+        if (!before) goto done;
+        if (changed) {
+            if (!prepare(&statement, "UPDATE users SET email=?,name=?,role=?,active=1 WHERE id=?") ||
+                !bind_text(statement, 1, email) || !bind_text(statement, 2, identity->name) ||
+                !bind_text(statement, 3, identity->role) ||
+                db_bind_int64(statement, 4, user_id) != DB_OK) goto done;
+            result = db_step(statement);
+            if (result != DB_DONE) {
+                if (db_extended_errcode(database) == DB_CONSTRAINT_UNIQUE) answer = 0;
+                goto done;
+            }
+            db_finalize(statement); statement = NULL;
+        }
+    } else {
+        if (!prepare(&statement, "SELECT COUNT(*) FROM users") || db_step(statement) != DB_ROW)
+            goto done;
+        if (db_column_int64(statement, 0) >= USER_LIMIT) { answer = 0; goto done; }
+        db_finalize(statement); statement = NULL;
+        /* Random hash material has no known password preimage. Provider-created
+           accounts cannot use the local emergency login. */
+        if (!random_bytes(salt, sizeof(salt)) || !random_bytes(hash, sizeof(hash)) ||
+            !prepare(&statement,
+                "INSERT INTO users(email,name,role,active,password_hash,salt) VALUES(?,?,?,1,?,?)") ||
+            !bind_text(statement, 1, email) || !bind_text(statement, 2, identity->name) ||
+            !bind_text(statement, 3, identity->role) ||
+            db_bind_blob(statement, 4, hash, sizeof(hash), DB_TRANSIENT) != DB_OK ||
+            db_bind_blob(statement, 5, salt, sizeof(salt), DB_TRANSIENT) != DB_OK) goto done;
+        result = db_step(statement);
+        if (result != DB_DONE) {
+            if (db_extended_errcode(database) == DB_CONSTRAINT_UNIQUE) answer = 0;
+            goto done;
+        }
+        user_id = db_last_insert_rowid(database);
+        db_finalize(statement); statement = NULL;
+    }
+
+    if (!linked) {
+        if (!prepare(&statement, "INSERT INTO oidc_identities(issuer,subject,user_id) VALUES(?,?,?)") ||
+            !bind_text(statement, 1, identity->issuer) || !bind_text(statement, 2, identity->subject) ||
+            db_bind_int64(statement, 3, user_id) != DB_OK) goto done;
+        result = db_step(statement);
+        if (result != DB_DONE) {
+            if (db_extended_errcode(database) == DB_CONSTRAINT_UNIQUE) answer = 0;
+            goto done;
+        }
+        db_finalize(statement); statement = NULL;
+    }
+    if (changed || !linked) {
+        after = user_snapshot(user_id);
+        if (!after || !storage_audit(database, 0, linked ? "users.oidc_sync" : "users.oidc_link",
+                                    "user", user_id, before, after)) goto done;
+    }
+    if (accounts_lookup(user_id, out) != 1) goto done;
+    if (db_exec(database, "COMMIT", NULL, NULL, NULL) != DB_OK) goto done;
+    answer = 1;
+done:
+    db_finalize(statement);
+    if (answer != 1) { rollback(); memset(out, 0, sizeof(*out)); }
+    free(before); free(after);
+    erase(&previous, sizeof(previous));
+    erase(salt, sizeof(salt)); erase(hash, sizeof(hash));
+    return answer;
 }
 
 static void create_user(const char *body, DbInt actor_id, WorkspaceResponse *response) {
@@ -720,6 +883,9 @@ bool accounts_handle(const char *method, const char *target, const char *query,
     if (!actor) { error(response, 401, "Accedi per continuare."); return true; }
     if (strcmp(actor->role, "manager") != 0) {
         error(response, 403, "Solo i gestori possono amministrare gli utenti."); return true;
+    }
+    if (oidc_users_managed() && strcmp(method, "POST") == 0) {
+        error(response, 403, "Gli utenti sono gestiti in Keycloak."); return true;
     }
     if (!database) { server_error(response); return true; }
     if (query && *query) {

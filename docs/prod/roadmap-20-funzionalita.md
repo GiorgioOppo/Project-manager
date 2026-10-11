@@ -1,5 +1,7 @@
 # Piano di implementazione delle 20 funzionalità di punto
 
+**Italiano** | [English](../en/prod/roadmap-20-funzionalita.md)
+
 > **Documento di pianificazione.** La prima stesura assumeva lo schema 3; il codice documentato al 10 ottobre 2026 usa lo schema 7. Le entità, le API e i rilasci proposti qui non attestano funzionalità già disponibili. Per il confronto aggiornato consulta [stato e roadmap](roadmap.md) e [panoramica del prodotto](panoramica.md). Analisi, tariffe, alert e addon sono stati aggiunti dopo la base iniziale di questo piano.
 
 Le 20 aggiunte saranno realizzate in sette rilasci, preceduti da una base tecnica comune. Il primo rilascio semplifica la navigazione e rende comprensibili gli accessi; i successivi migliorano ore, censimento e deleghe, quindi introducono versioni contrattuali, bozze offline e lettura assistita dei PDF.

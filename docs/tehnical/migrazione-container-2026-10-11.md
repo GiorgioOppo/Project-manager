@@ -1,5 +1,7 @@
 # Migrazione dei container — 11 ottobre 2026
 
+**Italiano** | [English](../en/tehnical/migrazione-container-2026-10-11.md)
+
 [Indice tecnico](README.md) · [Nomi dei servizi e delle immagini](nomi-servizi-e-immagini.md) · [Backup e ripristino](operazioni-backup-ripristino.md)
 
 **Stato: migrazione e collaudo completati.** Gli undici servizi con i nomi nuovi sono `running` e `healthy`; ciascuno dei tre membri MySQL vede tre membri `ONLINE` / `PRIMARY` e usa schema 8. Conservati i dati preesistenti, i volumi originali e le identità del cluster. Superati i controlli API, PDF, rete e interfaccia browser.

@@ -1,4 +1,4 @@
-"""Main-app schema 8→9 preserves alert delivery state and rolls back atomically."""
+"""Main-app schema 8/9→10 preserves alert delivery state and rolls back atomically."""
 
 from contextlib import closing
 from pathlib import Path
@@ -66,6 +66,26 @@ INSERT INTO preserved_business VALUES(8,'Dati esterni alle regole');
 PRAGMA user_version=8;
 """
 
+LEGACY_RULE_COLUMNS = "id,owner_id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,last_event_id"
+SCHEMA_NINE = (SCHEMA_EIGHT
+    .replace("type IN ('invalid_job','missing_hours')", "type IN ('invalid_job','missing_hours','inventory_due')")
+    .replace("last_event_id INTEGER NOT NULL DEFAULT 0 CHECK(last_event_id>=0));",
+             "last_event_id INTEGER NOT NULL DEFAULT 0 CHECK(last_event_id>=0),"
+             "days_before INTEGER NOT NULL DEFAULT 30 CHECK(days_before BETWEEN 1 AND 365));")
+    .replace("INSERT INTO alert_rules VALUES(", "INSERT INTO alert_rules(" + LEGACY_RULE_COLUMNS + ") VALUES(")
+    .replace("INSERT INTO alert_rules SELECT 900", "INSERT INTO alert_rules(" + LEGACY_RULE_COLUMNS + ") SELECT 900")
+    .replace("PRAGMA user_version=8;", "PRAGMA user_version=9;")) + """
+INSERT INTO alert_rules(owner_id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,days_before)
+ VALUES(1,'Garanzie esistenti','inventory_due','10:30',1,'2026-10-01T08:30:00Z','2026-10-05T08:30:00Z',
+ '2026-10-05T08:30:00Z','2026-10-05',17);
+INSERT INTO alert_rule_users VALUES(901,1);
+INSERT INTO alert_rule_emails VALUES(901,'inventory@example.test');
+INSERT INTO alert_notifications(rule_id,recipient_id,subject_user_id,event_key,title,message,created_at)
+ VALUES(901,1,1,'inventory_due:17:warranty_until:2026-11-01:17','Scadenza inventario','Da conservare','2026-10-05T08:30:00Z');
+INSERT INTO alert_rules(id,owner_id,name,type,run_time,created_at,updated_at) VALUES(1000,1,'Consumata','inventory_due','11:00','2026-10-05','2026-10-05');
+DELETE FROM alert_rules WHERE id=1000;
+"""
+
 
 class InventoryAlertMigrationTests(unittest.TestCase):
     @classmethod
@@ -100,36 +120,70 @@ class InventoryAlertMigrationTests(unittest.TestCase):
         result = subprocess.run([str(self.binary), str(self.db)], capture_output=True, text=True, timeout=8)
         self.assertEqual(result.returncode, expected, result.stderr)
 
-    def test_schema_eight_upgrade_preserves_children_high_water_sequence_and_audit(self):
+    def assert_preserved_upgrade(self, migration_versions, sequence):
+        with closing(sqlite3.connect(self.db)) as database:
+            original_columns = [row[1] for row in database.execute("PRAGMA table_info(alert_rules)")]
         self.migrate()
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (9,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (10,))
             self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
-            self.assertEqual(database.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_rules'").fetchone(), (900,))
+            self.assertEqual(database.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_rules'").fetchone(), (sequence,))
             for table, rows in self.original.items():
                 if table in ("sqlite_sequence", "audit_events"):
                     continue
                 if table == "alert_rules":
-                    self.assertEqual(database.execute("SELECT id,owner_id,name,type,run_time,enabled,created_at,updated_at,"
-                                                      "last_run_at,last_run_on,last_event_id FROM alert_rules ORDER BY id").fetchall(), rows)
-                    self.assertEqual(database.execute("SELECT days_before FROM alert_rules ORDER BY id").fetchall(), [(30,), (30,)])
+                    self.assertEqual(database.execute("SELECT " + ",".join(original_columns) + " FROM alert_rules ORDER BY id").fetchall(), rows)
+                    self.assertEqual(database.execute("SELECT verification_days FROM alert_rules ORDER BY id").fetchall(), [(90,)] * len(rows))
                 else:
                     self.assertEqual(database.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(database.execute("SELECT * FROM audit_events WHERE action!='system.migration' ORDER BY id").fetchall(), self.original["audit_events"])
-            self.assertEqual(database.execute("SELECT entity_id,after_json FROM audit_events WHERE action='system.migration'").fetchall(), [(9, '{"schema_version":9}')])
+            self.assertEqual(database.execute("SELECT entity_id,after_json FROM audit_events WHERE action='system.migration'").fetchall(),
+                             [(version, '{"schema_version":%d}' % version) for version in migration_versions])
             database.execute("PRAGMA foreign_keys=ON")
             inserted = database.execute("INSERT INTO alert_rules(owner_id,name,type,run_time,created_at,updated_at,days_before) "
                                         "VALUES(1,'Scadenze','inventory_due','10:00','2026-10-11','2026-10-11',365)").lastrowid
-            self.assertEqual(inserted, 901)
+            self.assertEqual(inserted, sequence + 1)
             for value in (0, 366):
                 with self.assertRaises(sqlite3.IntegrityError):
                     database.execute("UPDATE alert_rules SET days_before=? WHERE id=?", (value, inserted))
+                with self.assertRaises(sqlite3.IntegrityError):
+                    database.execute("UPDATE alert_rules SET verification_days=? WHERE id=?", (value, inserted))
+            for rule_type in ("inventory_return", "inventory_verification"):
+                database.execute("UPDATE alert_rules SET type=? WHERE id=?", (rule_type, inserted))
             with self.assertRaises(sqlite3.IntegrityError):
                 database.execute("UPDATE alert_rules SET type='unknown' WHERE id=?", (inserted,))
             database.commit()
         migrated = self.snapshot()
         self.migrate()
         self.assertEqual(self.snapshot(), migrated, "Restart must preserve rules and avoid a duplicate migration audit.")
+
+    def test_schema_eight_upgrade_preserves_children_high_water_sequence_and_audit(self):
+        self.assert_preserved_upgrade([9, 10], 900)
+
+    def schema_nine(self):
+        self.db.unlink()
+        with closing(sqlite3.connect(self.db)) as database:
+            database.executescript(SCHEMA_NINE)
+        self.original = self.snapshot()
+
+    def test_schema_nine_upgrade_preserves_existing_inventory_rule_and_deliveries(self):
+        self.schema_nine()
+        self.assert_preserved_upgrade([10], 1000)
+
+    def test_schema_nine_audit_failure_rolls_back_complete_rebuild(self):
+        self.schema_nine()
+        with closing(sqlite3.connect(self.db)) as database:
+            database.execute("CREATE TRIGGER reject_migration_audit BEFORE INSERT ON audit_events "
+                             "WHEN NEW.action='system.migration' AND NEW.entity_id=10 "
+                             "BEGIN SELECT RAISE(ABORT,'audit unavailable'); END")
+            database.commit()
+            original_ddl = database.execute("SELECT sql FROM sqlite_master WHERE name='alert_rules'").fetchone()
+        self.migrate(expected=1)
+        self.assertEqual(self.snapshot(), self.original)
+        with closing(sqlite3.connect(self.db)) as database:
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (9,))
+            self.assertEqual(database.execute("SELECT sql FROM sqlite_master WHERE name='alert_rules'").fetchone(), original_ddl)
+            self.assertEqual(database.execute("SELECT name FROM sqlite_master WHERE name='alert_rules_v10'").fetchall(), [])
 
     def test_audit_failure_rolls_back_rebuild_rows_sequence_and_version(self):
         with closing(sqlite3.connect(self.db)) as database:

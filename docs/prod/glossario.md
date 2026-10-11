@@ -1,5 +1,7 @@
 # Glossario
 
+**Italiano** | [English](../en/prod/glossario.md)
+
 [Indice prodotto](README.md) · [Processi e regole](processi-e-regole.md)
 
 I termini seguenti descrivono il prodotto attuale. Le voci riferite a sviluppi futuri lo indicano esplicitamente.

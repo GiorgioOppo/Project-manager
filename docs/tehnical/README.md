@@ -1,8 +1,10 @@
 # Documentazione tecnica
 
+**Italiano** | [English](../en/tehnical/README.md)
+
 [Indice generale](../README.md) · [Documentazione di prodotto](../prod/README.md) · [README del progetto](../../README.md)
 
-Queste guide descrivono il sistema implementato all’**11 ottobre 2026**: server C, interfaccia HTML/CSS/JavaScript, schema applicativo 9, deployment Docker con tre membri MySQL e tre addon C. Le configurazioni native e Docker sono ambienti distinti.
+Queste guide descrivono il sistema implementato all’**11 ottobre 2026**: server C, interfaccia HTML/CSS/JavaScript, schema applicativo 10, deployment Docker con tre membri MySQL e tre addon C. Le configurazioni native e Docker sono ambienti distinti.
 
 ## Guide
 
@@ -12,6 +14,8 @@ Queste guide descrivono il sistema implementato all’**11 ottobre 2026**: serve
 | [Nomenclatura Docker](nomi-servizi-e-immagini.md) | Nomi servizi e immagini, alias TLS, tag locali e passaggio dai container precedenti |
 | [Migrazione container dell’11 ottobre 2026](migrazione-container-2026-10-11.md) | Rapporto operativo: backup, conservazione dei dati, recupero del cluster e verifiche del deployment |
 | [Installazione e configurazione](installazione-configurazione.md) | Requisiti, primo avvio, modalità native, variabili, certificati e attivazione dei provider |
+| [Keycloak e autenticazione multi app](keycloak.md) | Realm condiviso, client Punto e Ticket, modalità di accesso, collegamento utenti, segreti e deployment |
+| [Reverse proxy Ticket](ticket-reverse-proxy.md) | Pubblicazione di Ticket tramite Nginx Proxy Manager, hostname, inoltro e verifiche |
 | [Rete e sicurezza](rete-sicurezza.md) | Otto reti, indirizzi e porte, Squid, TLS, autenticazione, autorizzazioni, segreti e cifratura effettiva |
 | [Modello dati](modello-dati.md) | Database, dizionario delle tabelle, tipi, relazioni, vincoli, indici, migrazioni e archivi degli addon |
 | [API dell’app](api-app.md) | Endpoint pubblici, sessione, controlli di origine, permessi, parametri, risposte, errori e limiti |

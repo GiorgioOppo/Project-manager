@@ -69,16 +69,16 @@ function parse(source) {
   return level(false).nodes;
 }
 
-function locationMatches(node) {
+function locationMatches(node, callback) {
   if (node.header[0] !== "location") return false;
   const [, modifier, address] = node.header;
   if (modifier === "~" || modifier === "~*") return true; // PCRE cannot be safely approximated by JS.
-  if (modifier === "=") return address === CALLBACK;
+  if (modifier === "=") return address === callback;
   const prefix = modifier === "^~" ? address : modifier;
-  return typeof prefix !== "string" || CALLBACK.startsWith(prefix);
+  return typeof prefix !== "string" || callback.startsWith(prefix);
 }
 
-function inspectIncludes(nodes, directory) {
+function inspectIncludes(nodes, directory, callback) {
   const standard = new Set([
     "conf.d/include/assets.conf", "conf.d/include/block-exploits.conf",
     "conf.d/include/letsencrypt-acme-challenge.conf", "conf.d/include/ssl-cache.conf",
@@ -86,7 +86,7 @@ function inspectIncludes(nodes, directory) {
   ]);
   function customSafety(items) {
     for (const item of items) {
-      if (locationMatches(item) || ["include", "rewrite", "try_files", "error_page"].includes(item.header[0]))
+      if (locationMatches(item, callback) || ["include", "rewrite", "try_files", "error_page"].includes(item.header[0]))
         throw new Error(FAILURE);
       if (item.children) customSafety(item.children);
     }
@@ -126,17 +126,17 @@ function callbackBody(source, root) {
   return "\n    access_log off;\n    error_log /dev/null crit;\n" + body;
 }
 
-export function protectProxyConfig(source, options = {}) {
+function protectCallback(source, options, callback, marker, upstream, port) {
   if (typeof source !== "string" || source.length > 1024 * 1024) throw new Error(FAILURE);
   const lexical = tokens(source);
   const setTo = (variable, value) => lexical.some((word, index) => word.value === "set" &&
     lexical[index + 1]?.value === variable && lexical[index + 2]?.value === value &&
     lexical[index + 3]?.structural && lexical[index + 3]?.value === ";");
-  if (!setTo("$server", "app") || !setTo("$port", "8080")) return source;
+  if (!setTo("$server", upstream) || !setTo("$port", port)) return source;
   const nodes = parse(source);
   const appServers = nodes.filter(node => node.header.length === 1 && node.header[0] === "server" &&
-    node.children.some(item => item.header.join(" ") === "set $server app") &&
-    node.children.some(item => item.header.join(" ") === "set $port 8080"));
+    node.children.some(item => item.header.join(" ") === "set $server " + upstream) &&
+    node.children.some(item => item.header.join(" ") === "set $port " + port));
   if (!appServers.length) return source;
   if (appServers.length !== 1 || nodes.filter(node => node.header[0] === "server").length !== 1) throw new Error(FAILURE);
   const server = appServers[0];
@@ -144,18 +144,26 @@ export function protectProxyConfig(source, options = {}) {
   if (roots.length !== 1) throw new Error(FAILURE);
   const root = roots[0];
   const expected = callbackBody(source, root);
-  const callbacks = server.children.filter(node => node.header.join(" ") === "location = " + CALLBACK);
-  if (source.includes(MARKER)) {
-    if (source.split(MARKER).length !== 2 || callbacks.length !== 1 ||
+  const callbacks = server.children.filter(node => node.header.join(" ") === "location = " + callback);
+  if (source.includes(marker)) {
+    if (source.split(marker).length !== 2 || callbacks.length !== 1 ||
         source.slice(callbacks[0].bodyStart, callbacks[0].bodyEnd) !== expected) throw new Error(FAILURE);
   } else if (callbacks.length) throw new Error(FAILURE);
   for (const node of server.children) {
-    if (node !== root && node !== callbacks[0] && locationMatches(node)) throw new Error(FAILURE);
+    if (node !== root && node !== callbacks[0] && locationMatches(node, callback)) throw new Error(FAILURE);
   }
-  inspectIncludes(server.children, options.customDirectory || "/data/nginx/custom");
+  inspectIncludes(server.children, options.customDirectory || "/data/nginx/custom", callback);
   if (callbacks.length) return source;
-  const callback = `\n  ${MARKER}\n  location = ${CALLBACK} {${expected}}\n`;
-  return source.slice(0, server.bodyEnd) + callback + source.slice(server.bodyEnd);
+  const block = `\n  ${marker}\n  location = ${callback} {${expected}}\n`;
+  return source.slice(0, server.bodyEnd) + block + source.slice(server.bodyEnd);
+}
+
+export function protectProxyConfig(source, options = {}) {
+  let result = protectCallback(source, options, CALLBACK, MARKER, "app", "8080");
+  for (const [upstream, port] of [["app", "8080"], ["tickets", "8083"], ["ticket-app", "8083"]]) {
+    result = protectCallback(result, options, "/auth/callback", "# punto-oidc-callback-private-v1", upstream, port);
+  }
+  return result;
 }
 
 export function migrateProxyDirectory(directory = "/data/nginx/proxy_host", options = {}) {

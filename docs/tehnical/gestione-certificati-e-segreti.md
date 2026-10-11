@@ -1,5 +1,7 @@
 # Gestione di certificati e segreti
 
+**Italiano** | [English](../en/tehnical/gestione-certificati-e-segreti.md)
+
 Inventario e procedure riferiti al codice del **10 ottobre 2026**. Questo manuale descrive ciò che viene generato o letto oggi e separa i percorsi manuali di manutenzione dalle rotazioni che richiedono ancora strumenti dedicati. Non contiene valori reali né ha letto o modificato i materiali dell'installazione.
 
 Fonti: [Compose](../../compose.yaml), [preparazione TLS e secret](../../scripts/configure_network.py), [account del cluster](../../scripts/manage_cluster.py), [client email](../../src/mail_client.c), [client Calendar](../../src/calendar_client.c), [servizio email](../../addon/src/mailer.c), [servizio Calendar](../../calendar-addon/src/calendar.c). Per i confini della protezione leggere [rete e sicurezza](rete-sicurezza.md).

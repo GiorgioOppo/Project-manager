@@ -1,5 +1,7 @@
 # Motore alert: pianificazione, cursori e notifiche
 
+**Italiano** | [English](../en/tehnical/motore-alert.md)
+
 Riferimento: implementazione del **10 ottobre 2026**, schema 7. Fonti: [alerts.c](../../src/alerts.c), [alerts.h](../../src/alerts.h), [ciclo server](../../src/server.c), [registrazione ore](../../src/workspace.c), [test alert](../../tests/test_alerts.py) e [harness temporale](../../tests/alerts_native_check.c). Per l’utilizzo consultare [guida gestore](../prod/guida-gestore.md); per i payload consultare [API app](api-app.md).
 
 ## Responsabilità e collocazione

@@ -63,6 +63,10 @@ button,input,summary {
   display: none!important
 }
 
+.sso-signin { margin-bottom: 24px; }
+.sso-signin .primary-button { text-decoration: none; }
+.sso-signin p, #auth-status { font-size: 13px; color: var(--text-muted, #64748b); line-height: 1.5; }
+
 .page-shell {
   max-width: 1488px;
   margin: auto;

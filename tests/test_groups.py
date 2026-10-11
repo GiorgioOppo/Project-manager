@@ -459,7 +459,7 @@ class GroupIntegrationTests(unittest.TestCase):
             # Remove only later migration records manufactured while creating this old fixture.
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (3,4,5,6,7,8,9)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (3,4,5,6,7,8,9,10)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=2")
             db.commit()
@@ -477,8 +477,8 @@ class GroupIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, history)
         self.assertEqual((history["total_minutes"], history["entries"][0]["id"]), (35, entry))
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (9,))
-            self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' AND entity_id IN (3,4,5,6,7,8,9)) ORDER BY id").fetchall(), old_audit)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' AND entity_id IN (3,4,5,6,7,8,9,10)) ORDER BY id").fetchall(), old_audit)
         events = self.events()
         self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == 3 for event in events), 1)
         self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == 4 for event in events), 1)

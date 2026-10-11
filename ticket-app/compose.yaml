@@ -3,7 +3,8 @@ services:
     image: "punto/tickets:${PUNTO_IMAGE_TAG:-local}"
     pull_policy: build
     build:
-      context: .
+      context: ..
+      dockerfile: ticket-app/Dockerfile
     environment:
       TICKETS_BIND: 0.0.0.0
       TICKETS_PORT: "8083"
@@ -13,6 +14,9 @@ services:
       TICKETS_PASSWORD: "${TICKETS_PASSWORD:?Imposta TICKETS_PASSWORD di almeno 12 caratteri}"
       TICKETS_NAME: "${TICKETS_NAME:-Gestore}"
       TICKETS_PUBLIC_ORIGIN: "${TICKETS_PUBLIC_ORIGIN:-http://localhost:8083}"
+      TICKETS_ADDITIONAL_ORIGINS: "${TICKETS_ADDITIONAL_ORIGINS:-}"
+      TICKETS_PUNTO_ORIGIN: "${TICKETS_PUNTO_ORIGIN:-}"
+      TICKETS_PUNTO_RESOLVE_IP: "${TICKETS_PUNTO_RESOLVE_IP:-}"
     ports:
       - "127.0.0.1:${TICKETS_HOST_PORT:-8083}:8083"
     volumes:

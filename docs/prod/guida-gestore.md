@@ -1,5 +1,7 @@
 # Guida del gestore
 
+**Italiano** | [English](../en/prod/guida-gestore.md)
+
 Il **Gestore** amministra lo spazio di lavoro e usa anche il proprio Registro ore. Le funzioni personali di accesso, registrazione e notifiche sono descritte nella [guida utente](guida-utente.md). Questo documento segue l’ordine consigliato per predisporre persone, commesse e controlli.
 
 ## Preparare lo spazio di lavoro

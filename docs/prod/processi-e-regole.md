@@ -1,5 +1,7 @@
 # Processi e regole del prodotto
 
+**Italiano** | [English](../en/prod/processi-e-regole.md)
+
 Questo documento raccoglie il comportamento corrente che incide sull’organizzazione del lavoro e sull’interpretazione dei dati. Le procedure con i comandi dell’interfaccia sono nelle guide [utente](guida-utente.md) e [gestore](guida-gestore.md).
 
 ## 1. Due livelli di autorizzazione

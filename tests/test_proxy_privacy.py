@@ -70,15 +70,16 @@ catch(error) { console.error(error.message); process.exitCode = 1; }
     def test_exact_callback_clones_auth_acl_headers_and_tls_policy(self):
         result = self.protect()
         self.assertIn("location = " + CALLBACK, result)
-        self.assertEqual(result.count('auth_basic "Authorization required";'), 2)
-        self.assertEqual(result.count('proxy_set_header Authorization "";'), 2)
-        self.assertEqual(result.count('allow 192.0.2.0/24;'), 2)
-        self.assertEqual(result.count('deny all;'), 2)
-        self.assertEqual(result.count('satisfy all;'), 2)
-        self.assertEqual(result.count('add_header Strict-Transport-Security $hsts_header always;'), 2)
-        self.assertEqual(result.count('include conf.d/include/proxy.conf;'), 2)
-        self.assertEqual(result.count('access_log off;'), 1)
-        self.assertEqual(result.count('error_log /dev/null crit;'), 1)
+        self.assertIn("location = /auth/callback", result)
+        self.assertEqual(result.count('auth_basic "Authorization required";'), 3)
+        self.assertEqual(result.count('proxy_set_header Authorization "";'), 3)
+        self.assertEqual(result.count('allow 192.0.2.0/24;'), 3)
+        self.assertEqual(result.count('deny all;'), 3)
+        self.assertEqual(result.count('satisfy all;'), 3)
+        self.assertEqual(result.count('add_header Strict-Transport-Security $hsts_header always;'), 3)
+        self.assertEqual(result.count('include conf.d/include/proxy.conf;'), 3)
+        self.assertEqual(result.count('access_log off;'), 2)
+        self.assertEqual(result.count('error_log /dev/null crit;'), 2)
         self.assertEqual(self.protect(result), result)
 
     def test_non_app_hosts_are_unchanged(self):
@@ -86,6 +87,21 @@ catch(error) { console.error(error.message); process.exitCode = 1; }
         self.assertEqual(self.protect(other), other)
         other_port = FIXTURE.replace('set $port 8080;', 'set $port 8088;')
         self.assertEqual(self.protect(other_port), other_port)
+
+    def test_ticket_callback_preserves_its_access_controls(self):
+        for upstream in ("tickets", "ticket-app"):
+            fixture = FIXTURE.replace('set $server "app";', f'set $server "{upstream}";').replace('set $port 8080;', 'set $port 8083;')
+            result = self.protect(fixture)
+            self.assertIn("location = /auth/callback", result)
+            self.assertNotIn("location = " + CALLBACK, result)
+            self.assertEqual(result.count('deny all;'), 2)
+            self.assertEqual(self.protect(result), result)
+            self.protect(fixture.replace("  location / {", "location /auth { deny all; }\n  location / {"), valid=False)
+
+    def test_old_calendar_privacy_config_is_upgraded_idempotently(self):
+        current = self.protect()
+        old = current[:current.index("\n  # punto-oidc-callback-private-v1")] + "}\n"
+        self.assertEqual(self.protect(old), current)
 
     def test_conflicting_custom_locations_and_internal_redirects_fail_closed(self):
         for location in ("location /api { deny all; }", "location ^~ /api/calendar { deny all; }",
@@ -241,6 +257,8 @@ if(!writer.includes('protectProxyConfig(config_text)') ||
                     self.fail("Disposable Nginx did not start: " + diagnostic.stdout + diagnostic.stderr)
                 self.assertEqual(request(CALLBACK + "?code=" + marker + "&state=" + marker, port, sensitive=True), 502)
                 self.assertEqual(request(CALLBACK + "?code=" + marker, denied_port, sensitive=True), 403)
+                self.assertEqual(request("/auth/callback?code=" + marker + "&state=" + marker, port, sensitive=True), 502)
+                self.assertEqual(request("/auth/callback?code=" + marker, denied_port, sensitive=True), 403)
                 self.assertEqual(request("/ordinary?normal_marker=ordinary-diagnostic", denied_port), 403)
                 self.assertEqual(request("/ordinary?normal_marker=ordinary-diagnostic", port), 502)
                 time.sleep(0.2)

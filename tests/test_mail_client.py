@@ -423,11 +423,11 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (7,8,9)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (7,8,9,10)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=6")
             db.commit()
-            # Compare the columns present in schema 6; schema 9 adds days_before.
+            # Compare the columns present in schema 6; schemas 9/10 add alert thresholds.
             projections = {"alert_rules": "id,owner_id,name,type,run_time,enabled,created_at,updated_at,"
                                           "last_run_at,last_run_on,last_event_id"}
             old = {table: db.execute('SELECT ' + projections.get(table, '*') + ' FROM "' + table + '" ORDER BY rowid').fetchall()
@@ -444,12 +444,12 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             self.start_server()
         self.stop_server()
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (9,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
             for table, rows in old.items():
                 self.assertEqual(db.execute('SELECT ' + projections.get(table, '*') + ' FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(db.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_email_outbox'").fetchone(), (77,))
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (7,8,9)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (7,8,9,10)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=7").fetchone(), (1,))
             db.execute("UPDATE alert_email_outbox SET status='retrying'")

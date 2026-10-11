@@ -1,14 +1,24 @@
 # punto — Commesse e ore di lavoro in C
 
-Web app in italiano con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, gruppi gerarchici, ruoli sulle commesse, fornitori, contratti e PDF originali, attività e sottoattività, bacheca Kanban, registro dei blocchi, registrazioni delle ore, alert giornalieri e storico delle modifiche.
+Web app in italiano, inglese, cinese semplificato, spagnolo, francese e tedesco con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, gruppi gerarchici, ruoli sulle commesse, fornitori, contratti e PDF originali, attività e sottoattività, bacheca Kanban, registro dei blocchi, registrazioni delle ore, alert giornalieri e storico delle modifiche.
 
 Sono disponibili due modalità indipendenti: **Docker con MySQL** per i dati strutturati e **MongoDB GridFS** per i PDF, oppure **avvio nativo con SQLite** e archivio documentale locale. Le due modalità non condividono dati e non eseguono importazioni automatiche.
 
-È disponibile anche **[Punto Ticket](ticket-app/README.md)**, un'app C autonoma per gestire ticket, assegnazioni, priorità, scadenze, commenti e storico, con account e database dedicati. Compilazione: `make tickets`; verifica: `make test-tickets`. La guida include l'avvio nativo, Docker indipendente e l'affiancamento allo stack tramite Nginx Proxy Manager.
+È disponibile anche **[Punto Ticket](ticket-app/README.md)**, un'app C autonoma per gestire ticket, assegnazioni, priorità, scadenze, commenti e storico, con account e database dedicati. Il collegamento verificato a Punto permette di associare commesse e asset, filtrare i ticket per riferimento e aprirli dai due moduli, rispettando le abilitazioni alle commesse. Compilazione: `make tickets`; verifica: `make test-tickets`. La guida include l'avvio nativo, Docker indipendente e l'affiancamento allo stack tramite Nginx Proxy Manager.
+
+## Lingue dell’interfaccia
+
+Il selettore **Lingua** nell’intestazione è disponibile sia all’accesso sia nell’area di lavoro di Punto e Punto Ticket. Sono supportati italiano, inglese, cinese semplificato, spagnolo, francese e tedesco. La prima apertura segue una lingua supportata del browser, con ripiego sull’italiano; le scelte successive vengono salvate nel browser. Il parametro `?lang=it|en|zh|es|fr|de` permette di aprire un collegamento in una lingua specifica e viene mantenuto nei collegamenti tra le due app. La preferenza riguarda questo browser, non l’account sul server.
+
+Il cambio lingua ricarica la pagina e richiede conferma quando un modulo visibile contiene modifiche non salvate. Sono tradotti testi dell’interfaccia, etichette accessibili, validazioni, errori applicativi riconosciuti e avvisi di sistema; nomi, note, descrizioni e altri contenuti inseriti dagli utenti restano originali. Date e importi seguono la lingua selezionata; la valuta resta EUR e le regole che usano Europe/Rome conservano quel fuso. Email già generate, CSV, API e pagina del provider SSO mantengono i propri formati e contenuti.
+
+I cataloghi sono in `public/locales/`. Dopo una modifica ai cataloghi o al runtime condiviso eseguire `python3 scripts/sync_locales.py` per aggiornare la copia autonoma di Ticket; `--check` verifica che le copie coincidano. I test in `tests/test_i18n.py` controllano copertura, placeholder e sincronizzazione. Il collaudo browser facoltativo usa due database temporanei ed è attivabile con `PUNTO_I18N_BROWSER_TEST=1`, indicando Node, il modulo Playwright e, se necessario, Chrome tramite `PUNTO_NODE_BINARY`, `PUNTO_PLAYWRIGHT_MODULE` e `PUNTO_CHROME_BINARY`. Se un catalogo non è raggiungibile, il login resta disponibile in italiano con un messaggio esplicito di ripiego.
 
 ## Documentazione di dettaglio
 
 L’[indice della documentazione](docs/README.md) raccoglie le guide organizzate per destinatario:
+
+**English documentation:** [Documentation index](docs/en/README.md).
 
 - **[Documentazione tecnica](docs/tehnical/README.md):** architettura, installazione, configurazione, reti, sicurezza, modello dati, API, addon, backup, ripristino, sviluppo e test.
 - **[Documentazione di prodotto](docs/prod/README.md):** funzionalità disponibili, guide per operatori e gestori, processi, regole, glossario e roadmap.
@@ -43,7 +53,7 @@ La CA locale dura dieci anni e i certificati server un anno. **Il rinnovo è man
 
 Lo script ferma l’app durante la preparazione, esegue un backup dei dati del primo nodo, inizializza i nuovi nodi vuoti con una copia coerente, crea il gruppo e avvia gli altri servizi. Il primo nodo conserva il volume `mysql_data` già usato dal progetto: non occorre eliminare il database per aggiungere le repliche. Il file locale `data/cluster-state.json` conserva i marcatori dei nodi già preparati, così il seed non viene ripetuto sui dati esistenti. Gli account interni vengono creati su ciascun nodo e il seed viene importato localmente, senza registrare le password nell’output del controller. Su macOS il comando usa per impostazione predefinita il contesto Docker `desktop-linux`; `--docker-context` permette di sceglierne un altro.
 
-Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 9, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
+Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 10, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
 
 Per applicare la segmentazione e il TLS a un **cluster già inizializzato**, usa invece:
 
@@ -58,6 +68,14 @@ La migrazione iniziale supporta il precedente database singolo con GTID disattiv
 In `docker/mysql/cluster.cnf` le opzioni del plugin hanno il prefisso `loose-group_replication_`: consente la fase `mysqld --initialize`, durante la quale il plugin non è ancora caricato. Dopo l’avvio il controller verifica le variabili effettive del server prima di inizializzare o recuperare il gruppo.
 
 Apri [http://localhost](http://localhost) tramite Nginx Proxy Manager e accedi con `PUNTO_EMAIL` e `PUNTO_PASSWORD` impostati nel file. Su una nuova installazione configura anche gli inoltri NPM come descritto nella sezione del reverse proxy. `NPM_HTTP_PORT` cambia la porta HTTP pubblicata. L’app non pubblica una porta diretta sull’host: il precedente accesso su `8082` è rimosso. Lo schema e il primo gestore vengono creati quando necessario. Il container applicativo legge e scrive in MySQL e non utilizza `data/punto.db`.
+
+### Accesso aziendale condiviso con Keycloak
+
+Punto e Ticket supportano lo stesso realm Keycloak tramite OpenID Connect, con client separati e accesso SSO. L’overlay `compose.keycloak.yaml` aggiunge Keycloak e il suo database dedicato; `compose.tickets-keycloak.yaml` collega anche Ticket. La [guida Keycloak](docs/tehnical/keycloak.md) contiene preparazione dei segreti, configurazione HTTPS, collegamento degli utenti esistenti e comandi di avvio.
+
+`AUTH_MODE=local` mantiene l’accesso attuale; `hybrid` aggiunge il pulsante **Accedi con l’account aziendale**; `oidc` disabilita il login locale anche via API. L’overlay usa variabili `KEYCLOAK_*` per scegliere la modalità delle due app senza conflitti tra i file env. L’identità viene collegata esplicitamente tramite subject Keycloak all’email dell’account locale: ID, assegnazioni, storico e ruoli restano quelli dell’app. Non vengono importate password né concessi ruoli a partire dai claim del provider.
+
+Il flusso usa Authorization Code con PKCE, state e nonce monouso e verifica crittografica del token. I token restano sul server; il browser riceve soltanto il cookie della propria app. La sessione SSO locale scade entro la validità del token, al massimo 8 ore. **Esci** chiude la sessione della singola app: la sessione centrale Keycloak può consentire un successivo accesso senza richiedere nuovamente la password. Le configurazioni e i backup dell’identità centrale sono descritti nella guida dedicata.
 
 ### Servizi, dati e disponibilità
 
@@ -158,7 +176,7 @@ docker compose --env-file .env.docker build proxy-egress mail calendar inventory
 docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait proxy-egress mail calendar inventory app proxy-web
 ```
 
-Compose crea le reti e i volumi mancanti, avvia Squid e addon e ricrea app e NPM. Il servizio può essere brevemente indisponibile; l’app applica le migrazioni SQL mancanti fino alla versione 9 conservando i dati. L’addon Calendar non richiede altre migrazioni MySQL. Questo aggiornamento non richiede `configure_network.py apply`, un nuovo seed o la ricreazione dei database. Il controllo di salute di Squid verifica una risposta locale `403` senza richiedere Internet: non dimostra da solo che Google sia raggiungibile. Se Squid si arresta, le nuove richieste esterne falliscono; il lavoro sui database rimane indipendente dal proxy mentre l’app è già avviata. A un nuovo avvio Compose attende invece che Squid e addon siano sani.
+Compose crea le reti e i volumi mancanti, avvia Squid e addon e ricrea app e NPM. Il servizio può essere brevemente indisponibile; l’app applica le migrazioni SQL mancanti fino alla versione 10 conservando i dati. L’addon Calendar non richiede altre migrazioni MySQL. Questo aggiornamento non richiede `configure_network.py apply`, un nuovo seed o la ricreazione dei database. Il controllo di salute di Squid verifica una risposta locale `403` senza richiedere Internet: non dimostra da solo che Google sia raggiungibile. Se Squid si arresta, le nuove richieste esterne falliscono; il lavoro sui database rimane indipendente dal proxy mentre l’app è già avviata. A un nuovo avvio Compose attende invece che Squid e addon siano sani.
 
 Per aggiornare la allowlist, modifica `docker/squid/allowed-domains.txt` mantenendo un host esatto per riga. I file sono montati in sola lettura nel container. Prima di ricaricare, verifica il contenuto effettivamente montato e la sintassi:
 
@@ -498,9 +516,11 @@ Questa integrazione espone API: la schermata Calendario e il collegamento evento
 
 ### Asset inventory
 
-Il modulo gestisce dispositivi IT, rete, beni fisici, software e licenze con relazioni manuali. Include esportazione CSV filtrata, importazione con anteprima e conferma atomica, alert configurabili sulle scadenze e backup automatici. Gli alert richiedono lo schema applicativo 9; il database separato inventory migra alla versione 3.
+Il modulo gestisce dispositivi IT, rete, beni fisici, software e licenze con relazioni manuali. Include esportazione CSV filtrata, importazione con anteprima e conferma atomica, alert configurabili sulle scadenze e backup automatici. Gli alert richiedono lo schema applicativo 10; il database separato inventory migra alla versione 5. Le regole `inventory_return` segnalano restituzioni scadute e `inventory_verification` beni mai verificati o da verificare nuovamente, con `verification_days` predefinito a 90 giorni (1–365).
 
 **`inventory`** è un'applicazione C separata, con schede dei beni, stati, assegnazione, acquisto, garanzia e storico persistente. La scheda **Asset inventory** dell'app permette a tutti gli utenti autenticati di consultare catalogo e revisioni; i Gestori possono creare e modificare le schede. L'etichetta è univoca e le modifiche usano una versione per impedire sovrascritture concorrenti. Per ritirare un bene si usa lo stato Dismesso; non è prevista la cancellazione.
+
+Le anagrafiche **Persone** e **Identità** distinguono individui reali e utenze dei sistemi, indipendentemente dagli account di accesso a Punto. I collegamenti sono molti a molti e supportano utenze condivise. Persone e identità possono essere collegate direttamente ai beni, con ruolo, note, storico e filtri condivisi con cruscotto ed esportazione. Lo schema inventory 5 migra le versioni precedenti conservando i dati; la [guida operativa](docs/prod/asset-inventory.md#persone-e-identità) descrive il flusso.
 
 Il servizio ascolta su `https://inventory-api:8092` (`172.30.80.2`) e accetta soltanto l'app `172.30.80.10`, con token dedicato e verifica TLS. La sola rete `inventory_api` non fornisce accesso a Internet, Squid o database dell'app. Il volume `inventory_addon_data` contiene un database SQLite indipendente, da salvare separatamente dal backup MySQL. Compose conserva copie automatiche verificate ogni 24 ore nel volume separato `inventory_addon_backups`, mantenendo le ultime 14. Non esegue autodiscovery o scansioni della rete.
 
@@ -552,11 +572,12 @@ La base attuale gestisce fino a 200 utenti, 200 gruppi, 100 ruoli sulle commesse
 
 ## Tabelle del database
 
-Nel backend MySQL il database applicativo, predefinito `punto`, contiene **24 tabelle InnoDB**; lo schema corrente è la **versione 9**. Il passo 9 aggiunge alle regole alert il tipo `inventory_due` e l’anticipo `days_before`, senza nuove tabelle applicative. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
+Nel backend MySQL il database applicativo, predefinito `punto`, contiene **25 tabelle InnoDB**; lo schema corrente è la **versione 10**. Il passo 9 aggiunge alle regole alert il tipo `inventory_due` e l’anticipo `days_before`; il passo 10 aggiunge `inventory_return`, `inventory_verification` e `verification_days` (1–365, predefinito 90), senza nuove tabelle applicative e conservando ID, FK e storico. L’inizializzazione include inoltre `oidc_identities`, che conserva il collegamento permanente fra identità del provider e utenti locali senza cambiare il numero di versione. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
 
 | Tabella | Dati principali e struttura |
 | --- | --- |
 | `users` | ID utente `BIGINT`, email univoca, nome, ruolo e stato attivo; derivazione della password `BINARY(32)` e sale `BINARY(16)` |
+| `oidc_identities` | Chiave composta `(issuer,subject)` con confronti binari, rispettivamente `VARBINARY(1023)` e `VARBINARY(255)`; `user_id BIGINT` univoco e FK verso `users`, senza password o token |
 | `suppliers` | ID `BIGINT`, codice univoco `VARCHAR(40)`, nome `VARCHAR(120)`, partita IVA, email, telefono, indirizzo, note e stato `TINYINT` |
 | `contracts` | ID `BIGINT`, codice univoco, titolo, `supplier_id` obbligatorio, stato, date `CHAR(10)` nullable, `value_cents BIGINT` nullable, valuta `EUR` e note |
 | `contract_documents` | ID `BIGINT`, `contract_id`, chiave archivio univoca `CHAR(64)`, nome `VARCHAR(180)`, dimensione `INT`, SHA-256 `CHAR(64)`, autore `uploaded_by` e data UTC; nessun byte PDF |
@@ -582,7 +603,7 @@ Nel backend MySQL il database applicativo, predefinito `punto`, contiene **24 ta
 
 I testi usano `utf8mb4`; email e codici sono univoci senza distinzione tra maiuscole e minuscole. Le giornate e gli intervalli sono stringhe ISO `YYYY-MM-DD`, le durate sono minuti interi e i JSON dello storico sono testo. I trigger proteggono lo storico da aggiornamenti ed eliminazioni e impediscono di cambiare l’utente già associato a una registrazione. La definizione completa si trova in `src/mysql_schema.c`.
 
-SQLite conserva **22 tabelle applicative**, oltre alla tabella interna `sqlite_sequence`, e usa `PRAGMA user_version=9` per la versione dello schema. `schema_metadata` e `cluster_write_guard` appartengono alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
+SQLite conserva **23 tabelle applicative**, oltre alla tabella interna `sqlite_sequence`, e usa `PRAGMA user_version=10` per la versione dello schema. `schema_metadata` e `cluster_write_guard` appartengono alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
 
 Il database MongoDB, predefinito **`punto_documents`**, contiene i PDF nel bucket GridFS `contract_pdfs`:
 

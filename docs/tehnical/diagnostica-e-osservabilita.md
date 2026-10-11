@@ -1,5 +1,7 @@
 # Diagnostica e osservabilità
 
+**Italiano** | [English](../en/tehnical/diagnostica-e-osservabilita.md)
+
 Manuale riferito al codice del **10 ottobre 2026**. Fornisce controlli di lettura per individuare il componente coinvolto in un problema e stabilire il passo successivo. Non installa un sistema di monitoraggio e non introduce procedure automatiche di riparazione. Per la topologia consultare [architettura](architettura.md); per un intervento operativo usare [backup e ripristino](operazioni-backup-ripristino.md).
 
 Fonti: [Compose](../../compose.yaml), [server HTTP](../../src/server.c), [health SQL](../../src/storage.c), [monitor del gruppo](../../docker/db-proxy/health.py), [health MongoDB](../../docker/mongodb/health.js), [health Squid](../../docker/squid/proxy-health), [client email](../../src/mail_client.c), [client Calendar](../../src/calendar_client.c).
@@ -177,7 +179,7 @@ Quando serve conoscere la versione dello schema, un amministratore può leggere 
 docker compose --env-file .env.docker exec -T mysql-1 sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --user=root --database="$MYSQL_DATABASE" --batch --skip-column-names --execute="SELECT version FROM schema_metadata WHERE id=1;"'
 ```
 
-Il comando usa la credenziale già presente nell'ambiente del container senza inserirne il valore nella riga di comando. Non abilita il debug della shell e non stampa l'ambiente. La versione attesa dal codice corrente è 9. Per una verifica del gruppo usare prima il controller, che evita di stampare query e valori sensibili in caso di errore.
+Il comando usa la credenziale già presente nell'ambiente del container senza inserirne il valore nella riga di comando. Non abilita il debug della shell e non stampa l'ambiente. La versione attesa dal codice corrente è 10. Per una verifica del gruppo usare prima il controller, che evita di stampare query e valori sensibili in caso di errore.
 
 ## Log, privacy e raccolta di evidenze
 

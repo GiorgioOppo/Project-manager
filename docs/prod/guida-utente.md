@@ -1,5 +1,7 @@
 # Guida utente
 
+**Italiano** | [English](../en/prod/guida-utente.md)
+
 Questa guida descrive il percorso dell’**Operatore** nell’interfaccia attuale. Le azioni amministrative sono nella [guida del gestore](guida-gestore.md). I nomi in grassetto corrispondono alle etichette dei comandi.
 
 ## Accedere e uscire

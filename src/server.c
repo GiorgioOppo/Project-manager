@@ -15,6 +15,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <json-c/json.h>
 
 #include "workspace.h"
 #include "accounts.h"
@@ -26,6 +27,8 @@
 #include "calendar_client.h"
 #include "inventory_client.h"
 #include "work_board.h"
+#include "ticket_bridge.h"
+#include "../auth/oidc.h"
 
 #ifdef __APPLE__
 #include <Security/SecRandom.h>
@@ -45,6 +48,7 @@
 #define SHORT_SESSION (8 * 60 * 60)
 #define LONG_SESSION (30 * 24 * 60 * 60)
 #define PUBLIC_ORIGIN_LIMIT 16
+#define TICKET_GRANT_LIMIT 128
 
 typedef struct {
     char origin[320];
@@ -60,6 +64,14 @@ typedef struct {
 } Session;
 
 typedef struct {
+    char token[TOKEN_LENGTH + 1];
+    char session_binding[TOKEN_LENGTH + 1];
+    char state[TOKEN_LENGTH + 1];
+    time_t expires;
+    DbInt user_id;
+} TicketGrant;
+
+typedef struct {
     char method[12];
     char target[8192];
     char host[256];
@@ -67,6 +79,7 @@ typedef struct {
     char content_type[128];
     char cookie[4096];
     char fetch_site[32];
+    char authorization[256];
     size_t content_length;
     bool has_content_length;
     bool transfer_encoding;
@@ -74,6 +87,9 @@ typedef struct {
 } Request;
 
 static Session sessions[SESSION_LIMIT];
+static TicketGrant ticket_grants[TICKET_GRANT_LIMIT];
+static PublicOrigin tickets_app_origin;
+static bool tickets_configured;
 static const char *public_dir;
 static char authority[64], localhost_authority[64], public_authority[64], public_localhost[64];
 static PublicOrigin public_origins[PUBLIC_ORIGIN_LIMIT];
@@ -143,7 +159,7 @@ static const char *status_text(int status) {
 
 static void respond(int fd, int status, const char *type, const char *body,
                     size_t length, const char *extra, bool head) {
-    char headers[2048];
+    char headers[12288];
     int n = snprintf(headers, sizeof(headers),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\nContent-Length: %zu\r\n"
@@ -251,6 +267,18 @@ static bool parse_origin(const char *value, PublicOrigin *origin) {
     return written > 0 && (size_t)written < sizeof(origin->origin);
 }
 
+static bool configure_tickets(const char *value) {
+    tickets_configured = false;
+    if (!value || !*value) return true;
+    if (!parse_origin(value, &tickets_app_origin)) return false;
+    /* Bearer grants cross services only over TLS; local development stays on
+       loopback. Never derive the destination from an incoming HTTP header. */
+    if (!tickets_app_origin.secure && strcmp(tickets_app_origin.hostname, "localhost") &&
+        strcmp(tickets_app_origin.hostname, "127.0.0.1")) return false;
+    tickets_configured = true;
+    return true;
+}
+
 static bool configure_public_origins(const char *value) {
     public_origin_count = 0;
     if (!value || !*value) return true;
@@ -345,7 +373,7 @@ static int read_request(int fd, char **allocation, size_t *capacity, Request *re
     if (request->target[0] != '/' || strchr(request->target, '#')) return 400;
 
     bool seen_host = false, seen_origin = false, seen_cookie = false;
-    bool seen_type = false, seen_fetch = false;
+    bool seen_type = false, seen_fetch = false, seen_authorization = false;
     char *line = first_end + 2;
     while (line < buffer + header_size - 2) {
         char *end = strstr(line, "\r\n");
@@ -385,6 +413,10 @@ static int read_request(int fd, char **allocation, size_t *capacity, Request *re
             if (seen_fetch || !copy_value(request->fetch_site, sizeof(request->fetch_site), value))
                 return 400;
             seen_fetch = true;
+        } else if (strcasecmp(line, "Authorization") == 0) {
+            if (seen_authorization || !copy_value(request->authorization, sizeof(request->authorization), value))
+                return 400;
+            seen_authorization = true;
         } else if (strcasecmp(line, "Content-Length") == 0) {
             if (request->has_content_length || !*value) return 400;
             for (char *p = value; *p; p++) if (!isdigit((unsigned char)*p)) return 400;
@@ -553,6 +585,10 @@ static Session *new_session(int duration, DbInt user_id) {
 }
 
 static void login(int fd, Request *request) {
+    if (!oidc_local_enabled()) {
+        json(fd, 403, "{\"ok\":false,\"error\":\"Usa l’accesso aziendale.\"}", NULL);
+        return;
+    }
     if (!same_origin(request)) { error_response(fd, 403); return; }
     const char expected[] = "application/x-www-form-urlencoded";
     size_t expected_length = sizeof(expected) - 1;
@@ -565,6 +601,11 @@ static void login(int fd, Request *request) {
     if (!login_fields(request->body, email, password, &remember)) {
         erase(password, sizeof(password));
         error_response(fd, 400); return;
+    }
+    if (!oidc_local_account_allowed(email)) {
+        erase(password, sizeof(password));
+        json(fd, 403, "{\"ok\":false,\"error\":\"Usa l’accesso aziendale.\"}", NULL);
+        return;
     }
     time_t now = time(NULL);
     if (now - attempts_since >= 60) { failed_attempts = 0; attempts_since = now; }
@@ -597,6 +638,55 @@ static void login(int fd, Request *request) {
             "Set-Cookie: punto_session=%s; Path=/; HttpOnly; SameSite=Lax%s\r\n", session->token, secure);
     }
     json(fd, 200, "{\"ok\":true}", cookie);
+}
+
+static void sso_login(int fd) {
+    char location[8192], cookie[512], headers[9216];
+    int status = oidc_start(location, cookie);
+    if (status != 200) { error_response(fd, status); return; }
+    int n = snprintf(headers, sizeof(headers), "Location: %s\r\n%s", location, cookie);
+    if (n < 0 || (size_t)n >= sizeof(headers)) { error_response(fd, 500); return; }
+    respond(fd, 303, "text/plain; charset=utf-8", "", 0, headers, false);
+}
+
+static void sso_callback(int fd, Request *request, const char *query) {
+    char email[255];
+    int lifetime = 0;
+    int status;
+    Account account;
+    if (oidc_users_managed()) {
+        OidcIdentity identity;
+        status = oidc_callback_identity(query, request->cookie, &identity, &lifetime);
+        if (status == 200) {
+            int found = accounts_resolve_oidc(&identity, &account);
+            if (found != 1) status = found < 0 ? 503 : 403;
+        }
+        erase(&identity, sizeof(identity));
+    } else {
+        status = oidc_callback(query, request->cookie, email, &lifetime);
+        if (status == 200) {
+            int found = accounts_lookup_email(email, &account);
+            if (found != 1) status = found < 0 ? 503 : 403;
+        }
+    }
+    if (status != 200) {
+        json(fd, status, "{\"ok\":false,\"error\":\"Accesso aziendale non riuscito. Torna alla pagina di accesso e riprova; verifica che il tuo account sia collegato e attivo.\"}", oidc_clear_cookie());
+        return;
+    }
+    Session *session = new_session(lifetime, account.id);
+    if (!session) {
+        json(fd, 500, "{\"ok\":false,\"error\":\"Impossibile creare la sessione.\"}", oidc_clear_cookie());
+        return;
+    }
+    /* Rotate only after successful authentication, preserving an existing
+       session if the identity provider or database is temporarily unavailable. */
+    Session *old = find_session(request->cookie);
+    if (old && old != session) erase(old, sizeof(*old));
+    char headers[1024];
+    snprintf(headers, sizeof(headers),
+        "Location: /app\r\n%sSet-Cookie: punto_session=%s; Path=/; HttpOnly; SameSite=Lax%s\r\n",
+        oidc_clear_cookie(), session->token, secure_request(request) ? "; Secure" : "");
+    respond(fd, 303, "text/plain; charset=utf-8", "", 0, headers, false);
 }
 
 static void serve_file(int fd, const char *name, const char *mime, bool head) {
@@ -639,22 +729,32 @@ static void session_response(int fd, const Session *session) {
     int found = session ? accounts_lookup(session->user_id, &account) : 0;
     if (found < 0) { error_response(fd, 503); return; }
     if (!found) {
-        json(fd, 200, "{\"authenticated\":false}", NULL); return;
+        char origin[6 * sizeof(tickets_app_origin.origin)], body[sizeof(origin) + 128];
+        escape_json(origin, tickets_app_origin.origin);
+        snprintf(body, sizeof(body), "{\"authenticated\":false,\"tickets\":{\"configured\":%s,\"origin\":%s%s%s}}",
+            tickets_configured ? "true" : "false", tickets_configured ? "\"" : "",
+            tickets_configured ? origin : "null", tickets_configured ? "\"" : "");
+        json(fd, 200, body, NULL); return;
     }
     char email[6 * sizeof(account.email)], name[6 * sizeof(account.name)];
     escape_json(email, account.email);
     escape_json(name, account.name);
     bool manager = strcmp(account.role, "manager") == 0;
     const char *allowed = manager ? "true" : "false";
-    char body[sizeof(email) + sizeof(name) + 640];
+    char origin[6 * sizeof(tickets_app_origin.origin)];
+    escape_json(origin, tickets_app_origin.origin);
+    char body[sizeof(email) + sizeof(name) + sizeof(origin) + 768];
     snprintf(body, sizeof(body),
         "{\"authenticated\":true,\"email\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
         "\"permissions\":{\"manage_jobs\":%s,\"manage_users\":%s,\"edit_time_entries\":%s,"
         "\"manage_assignments\":%s,\"view_audit\":%s,"
         "\"manage_suppliers\":%s,\"manage_contracts\":%s,"
-        "\"manage_groups\":%s,\"manage_job_roles\":%s}}",
-        email, name, account.role, allowed, allowed, allowed, allowed, allowed, allowed, allowed,
-        allowed, allowed);
+        "\"manage_groups\":%s,\"manage_job_roles\":%s},"
+        "\"tickets\":{\"configured\":%s,\"origin\":%s%s%s}}",
+        email, name, account.role, allowed, manager && !oidc_users_managed() ? "true" : "false",
+        allowed, allowed, allowed, allowed, allowed,
+        allowed, allowed, tickets_configured ? "true" : "false", tickets_configured ? "\"" : "",
+        tickets_configured ? origin : "null", tickets_configured ? "\"" : "");
     json(fd, 200, body, NULL);
 }
 
@@ -673,6 +773,138 @@ static bool calendar_session_binding(const Session *session, char binding[65]) {
     }
     binding[64] = '\0';
     erase(digest, sizeof(digest));
+    return true;
+}
+
+static bool ticket_token(const char *value) {
+    if (strlen(value) != TOKEN_LENGTH) return false;
+    for (const char *p = value; *p; p++)
+        if (!(*p >= '0' && *p <= '9') && !(*p >= 'a' && *p <= 'f')) return false;
+    return true;
+}
+
+static TicketGrant *new_ticket_grant(const Session *session, const char *state) {
+    time_t now = time(NULL);
+    if (now == (time_t)-1 || session->expires <= now) return NULL;
+    size_t slot = TICKET_GRANT_LIMIT;
+    for (size_t i = 0; i < TICKET_GRANT_LIMIT; i++) {
+        if (ticket_grants[i].expires <= now) { slot = i; break; }
+    }
+    if (slot == TICKET_GRANT_LIMIT) return NULL;
+    TicketGrant next = {0};
+    unsigned char random[TOKEN_BYTES];
+    if (!calendar_session_binding(session, next.session_binding) || !random_bytes(random, sizeof(random))) {
+        erase(&next, sizeof(next)); return NULL;
+    }
+    const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(random); i++) {
+        next.token[2 * i] = digits[random[i] >> 4];
+        next.token[2 * i + 1] = digits[random[i] & 15];
+    }
+    erase(random, sizeof(random));
+    memcpy(next.state, state, TOKEN_LENGTH + 1);
+    next.user_id = session->user_id;
+    next.expires = now + SHORT_SESSION;
+    if (next.expires > session->expires) next.expires = session->expires;
+    erase(&ticket_grants[slot], sizeof(ticket_grants[slot]));
+    ticket_grants[slot] = next;
+    erase(&next, sizeof(next));
+    return &ticket_grants[slot];
+}
+
+/* Every use rechecks both the originating Punto session and live account.
+   Logout, session replacement, expiry and restart therefore revoke grants. */
+static TicketGrant *find_ticket_grant(const char *authorization, Account *account, int *status) {
+    *status = 401;
+    const char prefix[] = "Bearer ";
+    if (strncmp(authorization, prefix, sizeof(prefix) - 1) || !ticket_token(authorization + sizeof(prefix) - 1))
+        return NULL;
+    time_t now = time(NULL);
+    if (now == (time_t)-1) { *status = 503; return NULL; }
+    for (size_t i = 0; i < TICKET_GRANT_LIMIT; i++) {
+        TicketGrant *grant = &ticket_grants[i];
+        if (grant->expires <= now || !equal_hash((const unsigned char *)grant->token,
+            (const unsigned char *)(authorization + sizeof(prefix) - 1), TOKEN_LENGTH)) continue;
+        bool bound = false;
+        for (size_t j = 0; j < SESSION_LIMIT; j++) {
+            if (sessions[j].expires <= now || sessions[j].user_id != grant->user_id) continue;
+            char binding[TOKEN_LENGTH + 1];
+            if (!calendar_session_binding(&sessions[j], binding)) { *status = 503; return NULL; }
+            bound = equal_hash((const unsigned char *)grant->session_binding,
+                               (const unsigned char *)binding, TOKEN_LENGTH);
+            erase(binding, sizeof(binding));
+            if (bound) break;
+        }
+        if (!bound) { erase(grant, sizeof(*grant)); return NULL; }
+        int found = accounts_lookup(grant->user_id, account);
+        if (found < 0) { *status = 503; return NULL; }
+        if (!found) { erase(grant, sizeof(*grant)); return NULL; }
+        return grant;
+    }
+    return NULL;
+}
+
+static bool ticket_bridge_route(int fd, Request *request, const char *query) {
+    const char prefix[] = "/api/integrations/tickets/";
+    if (strncmp(request->target, prefix, sizeof(prefix) - 1)) return false;
+    const char *resource = request->target + sizeof(prefix) - 1;
+    bool grant_request = !strcmp(resource, "grant");
+    bool head = !strcmp(request->method, "HEAD");
+    if (!grant_request && strcmp(resource, "scope") && strcmp(resource, "jobs") &&
+        strcmp(resource, "assets") && strcmp(resource, "validate")) {
+        error_response_head(fd, 404, head); return true;
+    }
+    if (strcmp(request->method, grant_request ? "POST" : "GET")) {
+        error_response_head(fd, 405, head); return true;
+    }
+    if (!tickets_configured) { error_response(fd, 503); return true; }
+    if (grant_request) {
+        Session *session = find_session(request->cookie);
+        Account account;
+        int found = session ? accounts_lookup(session->user_id, &account) : 0;
+        if (found <= 0) {
+            if (found < 0) error_response(fd, 503);
+            else json(fd, 401, "{\"ok\":false,\"error\":\"Accedi a Punto per collegare Ticket.\"}", NULL);
+            return true;
+        }
+        if (!same_origin(request)) { error_response(fd, 403); return true; }
+        const char type[] = "application/x-www-form-urlencoded";
+        if (strncmp(request->content_type, type, sizeof(type) - 1) ||
+            (request->content_type[sizeof(type) - 1] && request->content_type[sizeof(type) - 1] != ';')) {
+            error_response(fd, 415); return true;
+        }
+        char state[TOKEN_LENGTH + 1];
+        if (*query || strncmp(request->body, "state=", 6) || strchr(request->body, '&') ||
+            !decode_form(state, sizeof(state), request->body + 6) || !ticket_token(state)) {
+            error_response(fd, 400); return true;
+        }
+        TicketGrant *grant = new_ticket_grant(session, state);
+        if (!grant) { error_response(fd, 503); return true; }
+        char destination[sizeof(tickets_app_origin.origin) + 2 * TOKEN_LENGTH + 64];
+        snprintf(destination, sizeof(destination), "%s/#punto_grant=%s&state=%s",
+            tickets_app_origin.origin, grant->token, grant->state);
+        struct json_object *object = json_object_new_object();
+        if (!object) { erase(grant, sizeof(*grant)); error_response(fd, 503); return true; }
+        json_object_object_add(object, "url", json_object_new_string(destination));
+        json(fd, 200, json_object_to_json_string_ext(object, JSON_C_TO_STRING_PLAIN), NULL);
+        json_object_put(object);
+        erase(destination, sizeof(destination));
+        return true;
+    }
+    if (request->content_length) { error_response(fd, 400); return true; }
+    Account account;
+    int status;
+    TicketGrant *grant = find_ticket_grant(request->authorization, &account, &status);
+    if (!grant) {
+        if (status == 401) json(fd, 401, "{\"ok\":false,\"error\":\"Collegamento Punto scaduto o revocato. Ricollega l'account da Punto.\"}", NULL);
+        else error_response(fd, status);
+        return true;
+    }
+    WorkspaceResponse response = {0};
+    ticket_bridge_read(resource, query, &account, grant->state, grant->expires, &response);
+    if (response.body) json(fd, response.status, response.body, NULL);
+    else error_response(fd, 503);
+    workspace_response_free(&response);
     return true;
 }
 
@@ -764,6 +996,52 @@ static bool inventory_identifier(const char *number, const char **end, DbInt *va
     return true;
 }
 
+static int inventory_user_lookup(DbInt user_id, char *name, size_t capacity) {
+    Account account;
+    int found=accounts_lookup(user_id,&account);
+    if (found!=1) return found;
+    size_t length=strlen(account.name);
+    if (length>=capacity) return -1;
+    memcpy(name,account.name,length+1);
+    return 1;
+}
+
+static void inventory_users(int fd, const Account *account) {
+    WorkspaceResponse response={0};
+    if (!accounts_handle("GET","/api/users","","",account,&response) || !response.body) {
+        workspace_response_free(&response); error_response(fd,503); return;
+    }
+    if (response.status!=200) {
+        json(fd,response.status,response.body,NULL); workspace_response_free(&response); return;
+    }
+    struct json_object *source=json_tokener_parse(response.body), *users=NULL;
+    struct json_object *result=json_object_new_object(), *active=json_object_new_array();
+    bool valid=source && result && active && json_object_object_get_ex(source,"users",&users) &&
+        json_object_is_type(users,json_type_array);
+    if (valid) for (size_t i=0;i<json_object_array_length(users);i++) {
+        struct json_object *user=json_object_array_get_idx(users,i), *is_active=NULL;
+        if (!json_object_object_get_ex(user,"active",&is_active) || !json_object_get_boolean(is_active)) continue;
+        struct json_object *entry=json_object_new_object();
+        if (!entry) { valid=false; break; }
+        const char *names[]={"id","name","email"};
+        for (size_t j=0;j<3;j++) {
+            struct json_object *value=NULL;
+            if (!json_object_object_get_ex(user,names[j],&value)) { valid=false; break; }
+            json_object_object_add(entry,names[j],json_object_get(value));
+        }
+        json_object_array_add(active,entry);
+        if (!valid) break;
+    }
+    if (valid) {
+        json_object_object_add(result,"users",active); active=NULL;
+        json(fd,200,json_object_to_json_string_ext(result,JSON_C_TO_STRING_PLAIN),NULL);
+    } else error_response(fd,503);
+    if (source) json_object_put(source);
+    if (result) json_object_put(result);
+    if (active) json_object_put(active);
+    workspace_response_free(&response);
+}
+
 static bool inventory_route(int fd, Request *request, const char *query) {
     if (strncmp(request->target, "/api/inventory/", 15)) return false;
     bool get = !strcmp(request->method, "GET");
@@ -771,16 +1049,64 @@ static bool inventory_route(int fd, Request *request, const char *query) {
     bool head = !strcmp(request->method, "HEAD");
     const char *resource = request->target + 15;
     InventoryOperation operation;
+    bool user_directory=!strcmp(resource,"users");
     DbInt item_id = 0, relation_id = 0;
-    if (!strcmp(resource, "status")) {
+    if (user_directory) {
+        if (!get) { error_response_head(fd,405,head); return true; }
+        operation=INVENTORY_STATUS;
+    } else if (!strcmp(resource,"people") || !strcmp(resource,"identities")) {
+        if (!get && !post) { error_response_head(fd,405,head); return true; }
+        bool people=!strcmp(resource,"people");
+        operation=people ? (post ? INVENTORY_PERSON_CREATE : INVENTORY_PEOPLE) :
+            (post ? INVENTORY_IDENTITY_CREATE : INVENTORY_IDENTITIES);
+    } else if (!strncmp(resource,"people/",7) || !strncmp(resource,"identities/",11)) {
+        bool people=!strncmp(resource,"people/",7);
+        const char *end;
+        if (!inventory_identifier(resource+(people ? 7 : 11),&end,&item_id)) {
+            error_response_head(fd,404,head); return true;
+        }
+        bool read_only=false, write_only=false;
+        if (!*end) operation=people ? (post ? INVENTORY_PERSON_UPDATE : INVENTORY_PERSON_DETAIL) :
+            (post ? INVENTORY_IDENTITY_UPDATE : INVENTORY_IDENTITY_DETAIL);
+        else if (!strcmp(end,"/history")) {
+            operation=people ? INVENTORY_PERSON_HISTORY : INVENTORY_IDENTITY_HISTORY; read_only=true;
+        } else if (!strcmp(end,"/assets")) {
+            operation=people ? INVENTORY_PERSON_ASSETS : INVENTORY_IDENTITY_ASSETS; read_only=true;
+        } else if (people && !strcmp(end,"/identities")) {
+            operation=INVENTORY_PERSON_IDENTITIES; read_only=true;
+        } else if (!people && !strcmp(end,"/people"))
+            operation=post ? INVENTORY_IDENTITY_PERSON_CREATE : INVENTORY_IDENTITY_PEOPLE;
+        else if (!people && !strncmp(end,"/people/",8)) {
+            const char *suffix;
+            if (!inventory_identifier(end+8,&suffix,&relation_id) || strcmp(suffix,"/remove")) {
+                error_response_head(fd,404,head); return true;
+            }
+            operation=INVENTORY_IDENTITY_PERSON_REMOVE; write_only=true;
+        } else { error_response_head(fd,404,head); return true; }
+        if ((!get && !post) || (read_only && !get) || (write_only && !post)) {
+            error_response_head(fd,405,head); return true;
+        }
+    } else if (!strcmp(resource, "places")) {
+        if (!get && !post) { error_response_head(fd,405,head); return true; }
+        operation=post ? INVENTORY_PLACE_CREATE : INVENTORY_PLACES;
+    } else if (!strncmp(resource,"places/",7)) {
+        const char *end;
+        if (!inventory_identifier(resource+7,&end,&item_id) || *end) {
+            error_response_head(fd,404,head); return true;
+        }
+        if (!post) { error_response_head(fd,405,head); return true; }
+        operation=INVENTORY_PLACE_UPDATE;
+    } else if (!strcmp(resource, "status")) {
         if (!get) { error_response_head(fd, 405, head); return true; }
         operation = INVENTORY_STATUS;
     } else if (!strcmp(resource, "assets")) {
         if (!get && !post) { error_response_head(fd, 405, head); return true; }
         operation = post ? INVENTORY_CREATE : INVENTORY_ASSETS;
-    } else if (!strcmp(resource,"assets/export") || !strcmp(resource,"due")) {
+    } else if (!strcmp(resource,"assets/export") || !strcmp(resource,"due") ||
+               !strcmp(resource,"dashboard") || !strcmp(resource,"operational-due")) {
         if (!get) { error_response_head(fd,405,head); return true; }
-        operation = !strcmp(resource,"due") ? INVENTORY_DUE : INVENTORY_EXPORT;
+        operation = !strcmp(resource,"due") ? INVENTORY_DUE : !strcmp(resource,"dashboard") ? INVENTORY_DASHBOARD :
+            !strcmp(resource,"operational-due") ? INVENTORY_OPERATIONAL_DUE : INVENTORY_EXPORT;
     } else if (!strcmp(resource,"import/preview") || !strcmp(resource,"import/commit")) {
         if (!post) { error_response_head(fd,405,head); return true; }
         operation = !strcmp(resource,"import/preview") ? INVENTORY_IMPORT_PREVIEW : INVENTORY_IMPORT_COMMIT;
@@ -792,6 +1118,20 @@ static bool inventory_route(int fd, Request *request, const char *query) {
         bool read_only = false, write_only = false;
         if (!*end) operation = post ? INVENTORY_UPDATE : INVENTORY_DETAIL;
         else if (!strcmp(end, "/history")) { operation = INVENTORY_HISTORY; read_only = true; }
+        else if (!strcmp(end,"/context")) { operation=INVENTORY_CONTEXT; write_only=true; }
+        else if (!strcmp(end,"/checkout")) { operation=INVENTORY_CHECKOUT; write_only=true; }
+        else if (!strcmp(end,"/checkin")) { operation=INVENTORY_CHECKIN; write_only=true; }
+        else if (!strcmp(end,"/verify")) { operation=INVENTORY_VERIFY; write_only=true; }
+        else if (!strcmp(end,"/custody")) { operation=INVENTORY_CUSTODY; read_only=true; }
+        else if (!strcmp(end,"/verifications")) { operation=INVENTORY_VERIFICATIONS; read_only=true; }
+        else if (!strcmp(end,"/subjects")) operation=post ? INVENTORY_SUBJECT_CREATE : INVENTORY_SUBJECTS;
+        else if (!strncmp(end,"/subjects/",10)) {
+            const char *suffix;
+            if (!inventory_identifier(end+10,&suffix,&relation_id) || strcmp(suffix,"/remove")) {
+                error_response_head(fd,404,head); return true;
+            }
+            operation=INVENTORY_SUBJECT_REMOVE; write_only=true;
+        }
         else if (!strcmp(end, "/relations")) operation = post ? INVENTORY_RELATION_CREATE : INVENTORY_RELATIONS;
         else if (!strncmp(end, "/relations/", 11)) {
             const char *suffix;
@@ -813,7 +1153,8 @@ static bool inventory_route(int fd, Request *request, const char *query) {
         else json(fd, 401, "{\"ok\":false,\"error\":\"Accedi per continuare.\"}", NULL);
         return true;
     }
-    if (post && (strcmp(account.role, "manager") || !same_origin(request))) {
+    if ((user_directory && strcmp(account.role,"manager")) ||
+        (post && (strcmp(account.role, "manager") || !same_origin(request)))) {
         error_response(fd, 403); return true;
     }
     if (post) {
@@ -826,8 +1167,14 @@ static bool inventory_route(int fd, Request *request, const char *query) {
     if ((get && request->content_length) || (post && *query)) {
         error_response(fd, 400); return true;
     }
+    if (user_directory) {
+        if (*query) error_response(fd,400);
+        else inventory_users(fd,&account);
+        return true;
+    }
     InventoryResponse response = {0};
-    inventory_client_call(operation, item_id, relation_id, account.id, get ? query : request->body, &response);
+    inventory_client_call_with_lookup(operation, item_id, relation_id, account.id,
+        get ? query : request->body, inventory_user_lookup, &response);
     if (!response.body) error_response(fd, 500);
     else json(fd, response.status, response.body, NULL);
     inventory_response_free(&response);
@@ -978,11 +1325,41 @@ static void route(int fd, Request *request) {
     if (query) *query++ = '\0';
     if (calendar_route(fd, request, query ? query : "")) return;
     if (inventory_route(fd, request, query ? query : "")) return;
+    if (ticket_bridge_route(fd, request, query ? query : "")) return;
     if (workspace_route(fd, request, query ? query : "")) return;
     const char *target = request->target;
     bool get = strcmp(request->method, "GET") == 0;
     bool head = strcmp(request->method, "HEAD") == 0;
     bool post = strcmp(request->method, "POST") == 0;
+    if (strcmp(target, "/api/auth/config") == 0) {
+        if (!get) { error_response_head(fd, 405, head); return; }
+        if (oidc_users_managed()) {
+            const char *url = oidc_users_admin_url();
+            size_t capacity = 6 * strlen(url) + 160;
+            char *escaped = malloc(capacity), *body = malloc(capacity);
+            if (!escaped || !body) {
+                free(escaped); free(body); error_response(fd, 500); return;
+            }
+            escape_json(escaped, url);
+            snprintf(body, capacity,
+                "{\"sso\":%s,\"local\":%s,\"managed_users\":true,\"users_admin_url\":\"%s\"}",
+                oidc_enabled() ? "true" : "false", oidc_local_enabled() ? "true" : "false", escaped);
+            json(fd, 200, body, NULL);
+            free(escaped); free(body); return;
+        } else {
+            char body[64];
+            snprintf(body, sizeof(body), "{\"sso\":%s,\"local\":%s}",
+                     oidc_enabled() ? "true" : "false", oidc_local_enabled() ? "true" : "false");
+            json(fd, 200, body, NULL); return;
+        }
+    }
+    if (strcmp(target, "/auth/login") == 0 || strcmp(target, "/auth/callback") == 0) {
+        if (!get) { error_response_head(fd, 405, head); return; }
+        if (!oidc_enabled()) { error_response(fd, 404); return; }
+        if (strcmp(target, "/auth/login") == 0) sso_login(fd);
+        else sso_callback(fd, request, query ? query : "");
+        return;
+    }
     if (strcmp(target, "/api/login") == 0) {
         if (!post) { error_response_head(fd, 405, head); return; }
         login(fd, request); return;
@@ -1015,11 +1392,20 @@ static void route(int fd, Request *request) {
         {"/index.html", "index.html", "text/html; charset=utf-8"},
         {"/styles.css", "styles.css", "text/css; charset=utf-8"},
         {"/login.js", "login.js", "text/javascript; charset=utf-8"},
+        {"/i18n.js", "i18n.js", "text/javascript; charset=utf-8"},
+        {"/i18n.css", "i18n.css", "text/css; charset=utf-8"},
+        {"/locales/en.json", "locales/en.json", "application/json; charset=utf-8"},
+        {"/locales/zh.json", "locales/zh.json", "application/json; charset=utf-8"},
+        {"/locales/es.json", "locales/es.json", "application/json; charset=utf-8"},
+        {"/locales/fr.json", "locales/fr.json", "application/json; charset=utf-8"},
+        {"/locales/de.json", "locales/de.json", "application/json; charset=utf-8"},
         {"/app.js", "app.js", "text/javascript; charset=utf-8"},
         {"/workspace.css", "workspace.css", "text/css; charset=utf-8"},
         {"/reports.css", "reports.css", "text/css; charset=utf-8"},
         {"/work-board.css", "work-board.css", "text/css; charset=utf-8"},
         {"/inventory.css", "inventory.css", "text/css; charset=utf-8"},
+        {"/qrcodegen.js", "qrcodegen.js", "text/javascript; charset=utf-8"},
+        {"/inventory-qr.js", "inventory-qr.js", "text/javascript; charset=utf-8"},
         {"/favicon.svg", "favicon.svg", "image/svg+xml"}
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
@@ -1067,6 +1453,10 @@ int main(void) {
         fprintf(stderr, "PUBLIC_ORIGINS deve contenere al massimo 16 origini http/https univoche, senza percorso o credenziali.\n");
         return 1;
     }
+    if (!configure_tickets(getenv("TICKETS_APP_ORIGIN"))) {
+        fprintf(stderr, "TICKETS_APP_ORIGIN deve essere un'origine HTTPS, oppure HTTP su localhost/127.0.0.1, senza percorso o credenziali.\n");
+        return 1;
+    }
     const char *email = getenv("PUNTO_EMAIL");
     const char *password = getenv("PUNTO_PASSWORD");
     if (!email) email = "demo@punto.local";
@@ -1080,6 +1470,11 @@ int main(void) {
             fprintf(stderr, "PUNTO_EMAIL contiene caratteri non validi.\n"); return 1;
         }
     }
+    if (!oidc_init()) {
+        fprintf(stderr, "Configurazione autenticazione OIDC non valida. Controlla AUTH_MODE, URL, segreti e collegamenti utenti.\n");
+        return 1;
+    }
+    if (atexit(oidc_close) != 0) { oidc_close(); return 1; }
     public_dir = getenv("PUBLIC_DIR");
     if (!public_dir || !*public_dir) public_dir = "public";
 #ifdef PUNTO_MYSQL
@@ -1131,6 +1526,11 @@ int main(void) {
         fprintf(stderr, "Impossibile configurare attività, alert, contratti e archivio documentale. Controlla database e impostazioni dei servizi.\n");
         work_board_close(); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
+    if (tickets_configured && !ticket_bridge_open(database_path)) {
+        fprintf(stderr, "Impossibile inizializzare l'integrazione Ticket. Controlla database e permessi.\n");
+        work_board_close(); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+    }
+    if (atexit(ticket_bridge_close) != 0) { ticket_bridge_close(); return 1; }
     snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
     snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
     snprintf(public_authority, sizeof(public_authority), "127.0.0.1:%ld", public_port);

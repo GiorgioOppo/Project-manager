@@ -1,5 +1,7 @@
 # Flussi delle integrazioni mail e Google Calendar
 
+**Italiano** | [English](../en/tehnical/flussi-integrazioni.md)
+
 Verificato sul codice e sui fixture il **10 ottobre 2026**. I diagrammi descrivono i flussi implementati; SMTP e client OAuth Google restano da configurare per l'uso reale. Sono illustrati i punti di persistenza e le possibili interruzioni, senza ripetere il catalogo completo in [API addon](api-addon.md) e [API app](api-app.md).
 
 Fonti: [alerts.c](../../src/alerts.c), [mail_client.c](../../src/mail_client.c), [mailer.c](../../addon/src/mailer.c), [server.c](../../src/server.c), [calendar_client.c](../../src/calendar_client.c), [calendar.c](../../calendar-addon/src/calendar.c), [privacy NPM](../../docker/nginx-proxy-manager/proxy-privacy.mjs). Non sono state effettuate nuove chiamate a provider o prove runtime per questa stesura.

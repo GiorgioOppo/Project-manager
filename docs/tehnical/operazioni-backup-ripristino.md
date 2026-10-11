@@ -1,5 +1,7 @@
 # Operazioni, backup e ripristino
 
+**Italiano** | [English](../en/tehnical/operazioni-backup-ripristino.md)
+
 Questa guida descrive le procedure disponibili nel repository al **10 ottobre 2026**. Non esegue né promette un ripristino automatico completo: gli script presenti coprono inizializzazione, stato, dump e recupero del gruppo SQL. Consultare [installazione](installazione-configurazione.md), [architettura](architettura.md) e [README principale](../../README.md) per il contesto.
 
 ## Controlli ordinari

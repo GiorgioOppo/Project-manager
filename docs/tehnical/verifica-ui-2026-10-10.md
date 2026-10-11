@@ -1,5 +1,7 @@
 # Verifica UI e funzionalità di punto — 10 ottobre 2026
 
+**Italiano** | [English](../en/tehnical/verifica-ui-2026-10-10.md)
+
 > **Evidenza storica: collaudo dello schema 3.** Questo rapporto conserva i risultati e i limiti rilevati in quella fase del 10 ottobre 2026; numeri di servizi, test, sezioni e funzioni non descrivono il rilascio attuale. Per l’architettura corrente e il collaudo successivo consulta [architettura](architettura.md) e [sviluppo e test](sviluppo-test.md).
 
 Il controllo ha riguardato le funzioni implementate nello schema 3, con prove nel browser da gestore, operatore e lettore. La suite nativa comprende 128 test: 114 superati e 14 facoltativi saltati. Lo stack Docker è disponibile, con sette servizi sani e tre membri MySQL ONLINE e PRIMARY.

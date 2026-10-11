@@ -1,8 +1,10 @@
 # Documentazione di punto
 
+**Italiano** | [English](en/README.md)
+
 La documentazione descrive la web app per commesse e registrazione delle ore, i servizi che la eseguono e i processi di lavoro. È organizzata in **`tehnical/`** per chi sviluppa o amministra il sistema e **`prod/`** per chi lo configura e lo utilizza. Il nome della cartella `tehnical` è mantenuto come richiesto dal progetto.
 
-**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo 9, 24 tabelle MySQL, 11 servizi Docker (12 con Ticket) e 8 reti. La modalità nativa usa 22 tabelle funzionali SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.md) conserva le istruzioni generali di avvio.
+**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo 10, 25 tabelle MySQL, 11 servizi Docker (12 con Ticket) e 8 reti. La modalità nativa usa 23 tabelle funzionali SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.md) conserva le istruzioni generali di avvio.
 
 ## Percorsi di lettura
 
@@ -49,6 +51,10 @@ I piani descrivono anche tabelle e API future: la loro presenza in un documento 
 ```text
 docs/
 ├── README.md
+├── en/               # Versione inglese con la stessa struttura
+│   ├── README.md
+│   ├── tehnical/
+│   └── prod/
 ├── tehnical/
 │   ├── README.md
 │   ├── architettura.md
@@ -56,6 +62,8 @@ docs/
 │   ├── interni-server-c.md
 │   ├── frontend-e-interfaccia.md
 │   ├── installazione-configurazione.md
+│   ├── keycloak.md
+│   ├── ticket-reverse-proxy.md
 │   ├── rete-sicurezza.md
 │   ├── gestione-certificati-e-segreti.md
 │   ├── modello-dati.md
@@ -106,5 +114,6 @@ Le immagini esistenti mantengono i propri percorsi. I manuali locali dei servizi
 4. Riportare i test come risultati datati, indicando cosa è stato eseguito, cosa è opzionale e cosa usa provider simulati. Un risultato storico non certifica un nuovo ambiente.
 5. Usare esempi sintetici e nomi segnaposto. Credenziali, cookie reali, file `.env.docker`, chiavi private e dati degli utenti non appartengono alla documentazione.
 6. Verificare i link relativi dopo uno spostamento. I riferimenti al sorgente sono relativi alla radice del repository, senza percorsi personali del computer.
+7. Mantenere allineate le versioni italiana e inglese quando cambia il comportamento documentato.
 
 Le guide correnti derivano dal codice e dalla configurazione versionabile. Le scelte ancora da decidere rimangono nella roadmap; non vengono trasformate in funzionalità o garanzie già disponibili.

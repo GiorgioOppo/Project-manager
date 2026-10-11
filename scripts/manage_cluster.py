@@ -27,6 +27,7 @@ LEGACY_SERVICES = frozenset(("db", "db2", "db3", "db-proxy", "documents", "squid
 GROUP_ID = "8de71c6b-d3bc-4287-9a2a-edf8436340b1"
 PROJECT = Path(__file__).resolve().parent.parent
 STATE_PATH = PROJECT / "data" / "cluster-state.json"
+KEYCLOAK_SERVICES = frozenset(("keycloak", "keycloak-db", "auth-config-init"))
 
 
 class ClusterError(Exception):
@@ -78,9 +79,27 @@ def ensure_secrets(env_file):
 
 
 class Cluster:
-    def __init__(self, env_file, context):
+    def __init__(self, env_file, context, *, keycloak=False, tickets=False,
+                 keycloak_env_file=None, tickets_env_file=None):
         self.env_file = env_file.resolve()
+        self.keycloak = keycloak
+        self.tickets = tickets
+        env_files = [self.env_file]
+        compose_files = [PROJECT / "compose.yaml"]
         self.values = read_env(self.env_file)
+        if tickets:
+            env_files.append((tickets_env_file or PROJECT / "ticket-app" / ".env").resolve())
+            compose_files.append(PROJECT / "compose.tickets.yaml")
+        if keycloak:
+            env_files.append((keycloak_env_file or PROJECT / "data" / "keycloak" / "compose.env").resolve())
+            compose_files.append(PROJECT / "compose.keycloak.yaml")
+            if tickets:
+                compose_files.append(PROJECT / "compose.tickets-keycloak.yaml")
+        for selected in env_files[1:]:
+            if not selected.is_file():
+                raise ClusterError("File ambiente dell'overlay non trovato: " + str(selected) +
+                                   ". Prepara prima la configurazione; nessun servizio avviato.")
+            self.values.update(read_env(selected))
         self.database = self.values.get("MYSQL_DATABASE", "punto")
         if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", self.database):
             raise ClusterError("MYSQL_DATABASE deve essere un identificatore alfanumerico valido.")
@@ -90,7 +109,11 @@ class Cluster:
         if not binary:
             raise ClusterError("Docker non disponibile.")
         self.command = [binary] + (["--context", context] if context else []) + [
-            "compose", "--project-directory", str(PROJECT), "--env-file", str(self.env_file)]
+            "compose", "--project-directory", str(PROJECT)]
+        for selected in env_files:
+            self.command.extend(("--env-file", str(selected)))
+        for selected in compose_files:
+            self.command.extend(("-f", str(selected)))
         self.environment = os.environ.copy()
         self.environment["PATH"] = str(Path(binary).parent) + os.pathsep + self.environment.get("PATH", "")
 
@@ -109,7 +132,7 @@ class Cluster:
         return result
 
     def require_service_migration_complete(self):
-        """Refuse to start beside old containers sharing the project's IPs/data."""
+        """Refuse legacy conflicts or silently dropping an installed overlay."""
         try:
             # Resolved Compose configuration contains secrets: inspect only in
             # memory and never include its payload in output or error messages.
@@ -125,6 +148,7 @@ class Cluster:
             if result.returncode:
                 raise ValueError
             legacy = set()
+            configured = set()
             for line in result.stdout.decode("utf-8").splitlines():
                 if not line:
                     continue
@@ -132,14 +156,26 @@ class Cluster:
                 if len(labels) != 2:
                     raise ValueError
                 container_project, service = labels
-                if container_project == project and service in LEGACY_SERVICES:
-                    legacy.add(service)
+                if container_project == project:
+                    configured.add(service)
+                    if service in LEGACY_SERVICES:
+                        legacy.add(service)
         except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError):
             raise ClusterError("Impossibile verificare la migrazione dei servizi; avvio interrotto senza modificare container.") from None
         if legacy:
             raise ClusterError("Container legacy presenti nello stesso progetto: " + ", ".join(sorted(legacy)) +
                 ". Completa prima la migrazione descritta in docs/tehnical/nomi-servizi-e-immagini.md. "
                 "Nessun container viene rimosso automaticamente.")
+        missing = []
+        if configured & KEYCLOAK_SERVICES and not getattr(self, "keycloak", False):
+            missing.append("--keycloak")
+        if "tickets" in configured and not getattr(self, "tickets", False):
+            missing.append("--tickets")
+        if missing:
+            raise ClusterError("Overlay già presenti nel progetto: ripeti l'operazione selezionando " +
+                " ".join(missing) + ". I container arrestati sono inclusi nel controllo; "
+                "nessun servizio viene ricreato con una configurazione ridotta. "
+                "Vedi docs/tehnical/keycloak.md.")
 
     def sql(self, node, query, *, check=True, timeout=30):
         result = self.run(("exec", "-T", NODE_SERVICES[node], "sh", "-c",
@@ -238,7 +274,14 @@ class Cluster:
     def start_services(self):
         self.require_service_migration_complete()
         print("Avvio del bilanciatore, dell’app e del reverse proxy…", flush=True)
-        self.run(("up", "--build", "-d", "proxy-db", "app", "proxy-web"), timeout=600)
+        services = ("proxy-db", "app", "proxy-web")
+        if getattr(self, "tickets", False):
+            services += ("tickets",)
+        self.run(("up", "--build", "-d", *services), timeout=600)
+
+    def start(self):
+        """Restart an initialized deployment through the same safe recovery path."""
+        self.recover()
 
     def status(self):
         for node in NODES:
@@ -374,11 +417,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=PROJECT / ".env.docker")
     parser.add_argument("--docker-context", default=os.environ.get("DOCKER_CONTEXT", "desktop-linux" if sys.platform == "darwin" else ""))
-    parser.add_argument("action", choices=("init", "status", "backup", "recover"))
+    parser.add_argument("--keycloak", action="store_true", help="Carica l'overlay Keycloak e il suo ambiente preparato")
+    parser.add_argument("--tickets", action="store_true", help="Carica anche Punto Tickets e, se selezionato, il suo overlay Keycloak")
+    parser.add_argument("--keycloak-env-file", type=Path, help="Ambiente Keycloak alternativo, usato solo con --keycloak")
+    parser.add_argument("--tickets-env-file", type=Path, help="Ambiente Tickets alternativo, usato solo con --tickets")
+    parser.add_argument("action", choices=("init", "status", "backup", "recover", "start"))
     args = parser.parse_args()
     lock = None
     try:
-        if args.action in ("init", "recover"):
+        if args.keycloak_env_file and not args.keycloak:
+            raise ClusterError("--keycloak-env-file richiede la selezione esplicita --keycloak.")
+        if args.tickets_env_file and not args.tickets:
+            raise ClusterError("--tickets-env-file richiede la selezione esplicita --tickets.")
+        if args.action in ("init", "recover", "start"):
             STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
             lock = (STATE_PATH.parent / "cluster-controller.lock").open("a")
             try:
@@ -387,7 +438,8 @@ def main():
                 raise ClusterError("Un'altra inizializzazione o procedura di recupero è già in corso.") from None
         if args.action == "init":
             ensure_secrets(args.env_file)
-        cluster = Cluster(args.env_file, args.docker_context)
+        cluster = Cluster(args.env_file, args.docker_context, keycloak=args.keycloak, tickets=args.tickets,
+                          keycloak_env_file=args.keycloak_env_file, tickets_env_file=args.tickets_env_file)
         if args.action == "backup":
             online = [node for node in NODES if cluster.local_state(node) == "ONLINE"]
             cluster.backup(online[0] if online else "db")

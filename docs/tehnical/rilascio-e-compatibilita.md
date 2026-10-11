@@ -1,5 +1,7 @@
 # Rilascio e compatibilità
 
+**Italiano** | [English](../en/tehnical/rilascio-e-compatibilita.md)
+
 Guida al rilascio locale dello stack presente l’**11 ottobre 2026**. Distingue compilazione, aggiornamento dei processi, migrazione dei dati e ripristino. È una procedura operativa da eseguire quando si distribuisce una modifica; la scrittura del manuale non ha ricompilato né riavviato servizi.
 
 Fonti: [Makefile](../../Makefile), [Dockerfile app](../../Dockerfile), [Compose](../../compose.yaml), [migrazioni](../../src/storage.c), [schema MySQL](../../src/mysql_schema.c), [controller cluster](../../scripts/manage_cluster.py), [controller rete](../../scripts/configure_network.py), [addon email](../../addon/README.md) e [addon Calendar](../../calendar-addon/README.md).
@@ -10,16 +12,16 @@ Un rilascio deve dichiarare quali elementi modifica. L'immagine applicativa comp
 
 | Elemento | Versione/configurazione corrente | Relazione di compatibilità |
 | --- | --- | --- |
-| App C | Compilazione C11 con warning come errori | Schema applicativo massimo 9; API e frontend distribuiti insieme |
+| App C | Compilazione C11 con warning come errori | Schema applicativo massimo 10; API e frontend distribuiti insieme |
 | Backend MySQL | `mysql:8.4` | Tre membri con configurazione Group Replication coerente |
-| Schema applicativo SQL | 9 | Stessa versione logica per MySQL e SQLite, con DDL e migrazioni specifici |
+| Schema applicativo SQL | 10 | Stessa versione logica per MySQL e SQLite, con DDL e migrazioni specifici |
 | Proxy SQL | `haproxy:3.2-alpine` e monitor Python | Controlla modalità multi-primary, quorum e TLS dei tre nodi |
 | MongoDB | `mongo:8.0`, GridFS `contract_pdfs` | Dati PDF collegati al manifesto SQL, senza transazione distribuita |
 | NPM | Base `jc21/nginx-proxy-manager:2.16.0` con patch locali | Entry point amministrativo e generazione configurazioni sono verificati dalla build |
 | Squid | Pacchetto Debian Trixie nell'immagine del progetto | ACL, IP e allowlist devono coincidere con le reti Compose |
-| Addon email | Binario C separato; ledger SQLite `deliveries` | Contratto HTTPS `/v1`, stati outbox introdotti dallo schema 7, conservati nello schema 9, e namespace stabile |
+| Addon email | Binario C separato; ledger SQLite `deliveries` | Contratto HTTPS `/v1`, stati outbox introdotti dallo schema 7, conservati nello schema 10, e namespace stabile |
 | Addon Calendar | Binario C separato; SQLite `user_version=1` | Contratto HTTPS `/v1`, chiave AES e identificativi utenti persistenti |
-| Addon inventory | Binario C separato; archivio SQLite versione 3 | Contratto HTTPS `/v1`, schede e revisioni persistenti |
+| Addon inventory | Binario C separato; archivio SQLite versione 5 | Contratto HTTPS `/v1`, schede e revisioni persistenti |
 | Reti | Otto bridge, IP e interfacce espliciti | Docker Engine ≥28, Compose ≥2.36.0 e SAN coerenti |
 | TLS privato | CA locale e leaf per servizio | Nomi/IP/CA verificati; file attesi dai mount |
 
@@ -114,9 +116,9 @@ Questa seconda sequenza è per un rilascio congiunto dei componenti elencati; no
 
 ## Migrazioni: percorso applicato e limiti
 
-L'app rifiuta database che dichiarino una versione superiore a quella supportata. Per SQLite legge `PRAGMA user_version`; per MySQL controlla `schema_metadata`. Il codice corrente porta i dati alla versione 9; la versione effettivamente distribuita va letta nell’ambiente di destinazione. Calendar gestisce separatamente la propria versione 1 e rifiuta versioni superiori; il ledger email non ha una numerazione `user_version` gestita come quella Calendar.
+L'app rifiuta database che dichiarino una versione superiore a quella supportata. Per SQLite legge `PRAGMA user_version`; per MySQL controlla `schema_metadata`. Il codice corrente porta i dati alla versione 10; la versione effettivamente distribuita va letta nell’ambiente di destinazione. Calendar gestisce separatamente la propria versione 1 e rifiuta versioni superiori; il ledger email non ha una numerazione `user_version` gestita come quella Calendar.
 
-Il rilascio inventory aggiunge lo schema applicativo 9 (`inventory_due`, `days_before`), senza nuove tabelle dell’app, e lo schema indipendente inventory 3 (anteprime CSV). Richiede app, servizio inventory e interfaccia aggiornati insieme. Conservare backup di entrambi gli archivi; la verifica nativa non certifica la migrazione del cluster MySQL.
+Il rilascio inventory corrente usa lo schema applicativo 10: al passo 9 (`inventory_due`, `days_before`) segue il passo 10 (`inventory_return`, `inventory_verification`, `verification_days` 1–365, default 90), senza nuove tabelle dell’app e conservando ID, FK, destinatari e storico. Lo schema indipendente inventory è 5, con persone, identità, legami molti a molti, contesto, consegne e verifiche, e conserva le anteprime CSV introdotte dalla versione 3. Richiede app, servizio inventory e interfaccia aggiornati insieme. Conservare backup di entrambi gli archivi; la verifica nativa non certifica la migrazione del cluster MySQL.
 
 Il rilascio attività/blocchi passa da schema 7 a 8, aggiungendo due tabelle senza trasformare le commesse o le ore esistenti. Richiede il binario nuovo insieme a `app.html`, `app.js` e `work-board.css`; gli addon mantengono i propri formati. Prima della distribuzione verificare aggiornamento su copia, accessi Gestore/Collaboratore/Lettore, revisioni obsolete, gerarchie e cancellazioni. La verifica SQLite non prova da sola il DDL o le transazioni sul cluster MySQL. Vedere [specifica del modulo](attivita-kanban-e-blocchi.md).
 

@@ -1,5 +1,7 @@
 # Piano di collaudo di accettazione
 
+**Italiano** | [English](../en/prod/collaudo-accettazione.md)
+
 Questo documento definisce prove manuali riproducibili e risultati attesi per il prodotto corrente. **Non attesta che queste nuove prove siano state eseguite.** I rapporti di esecuzione vanno compilati separatamente con versione, ambiente, data, osservazioni ed evidenze.
 
 I criteri sono ricavati dall’interfaccia, dal codice e dai test esistenti. La [verifica UI storica](../tehnical/verifica-ui-2026-10-10.md) documenta soltanto il perimetro esaminato in quella sessione; non sostituisce l’esecuzione di questo piano sulla versione da consegnare.

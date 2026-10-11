@@ -1,5 +1,7 @@
 # Scenari concreti di accesso alle commesse
 
+**Italiano** | [English](../en/prod/scenari-accessi.md)
+
 Questi esempi illustrano le regole effettive del prodotto. Sono casi di ragionamento e di collaudo, non assegnazioni da applicare automaticamente. Tutte le persone e le commesse sono fittizie. La procedura per crearle è nella [guida del gestore](guida-gestore.md).
 
 ## 1. Distinguere persona, profilo e ruolo operativo

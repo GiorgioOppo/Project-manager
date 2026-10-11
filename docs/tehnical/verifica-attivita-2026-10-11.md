@@ -1,5 +1,7 @@
 # Verifica di attività, Kanban e blocchi — 11 ottobre 2026
 
+**Italiano** | [English](../en/tehnical/verifica-attivita-2026-10-11.md)
+
 Questo verbale riguarda il primo modulo **Attività e blocchi**, con schema applicativo **8**. Le prove usano utenti, commesse e contenuti sintetici, database temporanei e un browser isolato. Non attestano un aggiornamento del database operativo.
 
 ## Compilazione e suite

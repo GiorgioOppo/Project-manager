@@ -1,5 +1,7 @@
 # Implementazione di attività, Kanban e blocchi
 
+**Italiano** | [English](../en/tehnical/attivita-kanban-e-blocchi.md)
+
 Riferimento del codice: **11 ottobre 2026**. Il modulo introduce lo **schema applicativo 8** e le tabelle `job_tasks` e `job_blockers`. Le fonti sono [work_board.c](../../src/work_board.c), [storage.c](../../src/storage.c), [mysql_schema.c](../../src/mysql_schema.c), [server.c](../../src/server.c), [frontend](../../public/app.js) e [test](../../tests/test_work_board.py). La [guida di prodotto](../prod/attivita-kanban-e-blocchi.md) descrive il flusso operativo.
 
 ## Relazioni e migrazione

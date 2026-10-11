@@ -192,6 +192,32 @@ static json_object *csv_item(const CsvTable *table, size_t row, const char *acti
     json_object_object_add(item,"errors",errors);
     return item;
 }
+/* Resolve license references before a dry-run can create temporary software IDs. */
+static bool csv_software_references(const CsvTable *table, sqlite3_int64 references[CSV_ROWS], bool invalid[CSV_ROWS]) {
+    for (size_t row=0;row<table->count;row++) {
+        bool error=false;
+        json_object *existing=csv_existing(csv_cell(table,row,"asset_tag"),&error),*details=NULL;
+        const char *type=csv_has(table,"asset_type") ? csv_cell(table,row,"asset_type") : existing ? jstr(existing,"asset_type") : "it_device";
+        if (!strcmp(type,"license")) {
+            if (csv_has(table,"details")) details=strict_details(csv_cell(table,row,"details"));
+            else if (existing) {
+                json_object *current=NULL;
+                if (json_object_object_get_ex(existing,"details",&current)) details=json_object_get(current);
+            }
+            sqlite3_int64 software_id=details ? jint(details,"software_id") : 0;
+            if (software_id>0) {
+                json_object *software=load_asset(software_id,&error);
+                if (software && !strcmp(jstr(software,"asset_type"),"software")) references[row]=software_id;
+                else invalid[row]=true;
+                if (software) json_object_put(software);
+            }
+        }
+        if (details) json_object_put(details);
+        if (existing) json_object_put(existing);
+        if (error) return false;
+    }
+    return true;
+}
 static json_object *csv_preview(Form *form, int *status) {
     static const char *const allowed[]={"csv","mode","actor_id"};
     sqlite3_int64 actor;
@@ -203,6 +229,12 @@ static json_object *csv_preview(Form *form, int *status) {
     CsvTable *table=csv_parse(field(form,"csv"),&message);
     if (!table) return failure(status,400,message);
     if (!execute("BEGIN IMMEDIATE")) { csv_table_free(table); return failure(status,503,"Archivio inventario temporaneamente occupato."); }
+    sqlite3_int64 software_references[CSV_ROWS]={0};
+    bool invalid_references[CSV_ROWS]={0};
+    if (!csv_software_references(table,software_references,invalid_references)) {
+        (void)execute("ROLLBACK"); csv_table_free(table);
+        return failure(status,500,"Impossibile verificare i riferimenti software del CSV.");
+    }
     json_object *o=ok_json(), *items=json_object_new_array(), *plan=json_object_new_array();
     json_object_object_add(o,"items",items);
     size_t created=0,updated=0,errors=0;
@@ -212,6 +244,8 @@ static json_object *csv_preview(Form *form, int *status) {
         const char *row_error=NULL;
         for (size_t other=0;other<table->count;other++)
             if (other!=r && !strcasecmp(tag,csv_cell(table,other,"asset_tag"))) row_error="Etichetta duplicata nel CSV.";
+        if (!row_error && invalid_references[r])
+            row_error="La licenza deve riferirsi a un software già presente prima dell'anteprima.";
         bool db_error=false;
         json_object *existing=row_error ? NULL : csv_existing(tag,&db_error);
         sqlite3_int64 id=existing ? jint(existing,"id") : 0, version=0;
@@ -264,6 +298,7 @@ static json_object *csv_preview(Form *form, int *status) {
                 json_object_object_get_ex(saved,"asset",&asset);
                 addstr(item,"asset_type",jstr(asset,"asset_type"));
                 addint(entry,"id",id); addint(entry,"expected_version",version);
+                if (!strcmp(jstr(asset,"asset_type"),"license")) addint(entry,"software_reference_id",software_references[r]);
                 json_object_object_add(entry,"asset",json_object_get(asset));
                 json_object_array_add(plan,entry);
                 if (id) updated++; else created++;
@@ -349,6 +384,13 @@ static json_object *csv_commit(Form *form, int *status) {
         json_object *entry=json_object_array_get_idx(plan,r), *asset=NULL;
         sqlite3_int64 id=jint(entry,"id"),version=jint(entry,"expected_version");
         json_object_object_get_ex(entry,"asset",&asset);
+        if (!strcmp(jstr(asset,"asset_type"),"license")) {
+            json_object *details=NULL;
+            json_object_object_get_ex(asset,"details",&details);
+            if (jint(entry,"software_reference_id")<=0 || jint(entry,"software_reference_id")!=jint(details,"software_id")) {
+                ok=false; message="Il riferimento software della licenza richiede una nuova anteprima.";
+            }
+        }
         bool db_error=false;
         json_object *current=csv_existing(jstr(asset,"asset_tag"),&db_error);
         if (db_error) { ok=false; code=500; message="Impossibile verificare l'inventario corrente."; }

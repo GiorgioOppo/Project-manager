@@ -419,7 +419,7 @@ class AssignmentIntegrationTests(unittest.TestCase):
         manager_id = self.users()[0]["id"]
         self.assertEqual(self.day(self.manager_cookie)["total_minutes"], 75)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (9,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
             self.assertEqual(db.execute("SELECT owner,user_id FROM time_entries WHERE id=?", (entry_id,)).fetchone(),
                              ("MaNaGeR@PuNtO.LoCaL", manager_id))
             self.assertEqual(db.execute("SELECT user_id FROM time_entries WHERE id=?", (legacy_id,)).fetchone(), (None,))
@@ -433,14 +433,14 @@ class AssignmentIntegrationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT owner,user_id FROM time_entries WHERE id=?", (legacy_id,)).fetchone(),
                              ("FuTuRe@punto.local", future_id))
         before_events = self.events("limit=100")
-        self.assertEqual(sum(event["action"] == "system.migration" for event in before_events), 9)
+        self.assertEqual(sum(event["action"] == "system.migration" for event in before_events), 10)
         self.stop_server()
         self.start_server(password="Replacement-only!2026")
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         self.assertEqual(self.events("limit=100"), before_events)
         self.assertEqual(self.day(self.login("future@punto.local", roles.WORKER_PASSWORD))["total_minutes"], 35)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (9,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM time_entries").fetchone(), (3,))
 
     def test_upgrade_preserves_existing_accounts_and_claims_only_unowned_history(self):

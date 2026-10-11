@@ -197,7 +197,7 @@ class InventoryAddonTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/v1/assets/%d" % asset["id"])[1]["asset"], updated)
         self.assertEqual(len(self.request("GET", "/v1/assets/%d/history" % asset["id"])[1]["items"]), 2)
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
             self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         self.assertEqual(self.db.stat().st_mode & 0o077, 0)
 
@@ -395,13 +395,13 @@ class InventoryAddonTests(unittest.TestCase):
                                  env=self.environment(INVENTORY_API_TOKEN_FILE=""), capture_output=True, timeout=5)
         self.assertNotEqual(invalid.returncode, 0)
         with closing(sqlite3.connect(self.db)) as database:
-            database.execute("PRAGMA user_version=4")
+            database.execute("PRAGMA user_version=6")
         invalid = subprocess.run([str(ROOT / "inventory-addon/build/punto-inventory")],
                                  env=self.environment(), capture_output=True, timeout=5)
         self.assertNotEqual(invalid.returncode, 0)
         self.assertIn(b"Inventory store unavailable", invalid.stderr)
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 6)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 # Rete e sicurezza
 
+**Italiano** | [English](../en/tehnical/rete-sicurezza.md)
+
 La configurazione descritta è quella del repository al **11 ottobre 2026**. Le fonti principali sono [Compose](../../compose.yaml), [configurazione MySQL](../../docker/mysql/cluster.cnf), [Squid](../../docker/squid/squid.conf), [preparazione TLS](../../scripts/configure_network.py) e i client C. Per il quadro generale consultare [architettura](architettura.md) e [README principale](../../README.md).
 
 ## Otto reti e indirizzi

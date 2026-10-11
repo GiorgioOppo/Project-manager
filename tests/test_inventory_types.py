@@ -196,7 +196,7 @@ class InventoryTypesTests(unittest.TestCase):
             database.commit()
         self.start()
         migrated = self.get(snapshot)
-        self.assertEqual(migrated, dict(snapshot, asset_type="it_device", details={}))
+        self.assertEqual(migrated, dict(snapshot, asset_type="it_device", details={}, context=None, custody=None, last_verification=None))
         old_event = self.history(snapshot)[0]
         self.assertEqual((old_event["id"], old_event["snapshot"]), (77, snapshot))
         status, value = self.update(migrated, name="Dopo migrazione")
@@ -206,7 +206,7 @@ class InventoryTypesTests(unittest.TestCase):
         self.start()
         self.assertEqual(self.get(snapshot), value["asset"])
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
             self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(database.execute("SELECT snapshot FROM asset_history WHERE id=77").fetchone()[0], serialized)
 

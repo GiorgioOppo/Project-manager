@@ -1,5 +1,7 @@
 # Avvio operativo dello spazio di lavoro
 
+**Italiano** | [English](../en/prod/avvio-operativo.md)
+
 Questo percorso porta un’organizzazione dal primo accesso a una commessa utilizzabile, con ore, analisi e controlli. È una procedura da eseguire nell’installazione scelta, non il resoconto di nuove operazioni compiute durante la redazione. Nomi, codici e dati dell’esempio sono fittizi.
 
 Per i singoli comandi consulta anche la [guida del gestore](guida-gestore.md); per il lavoro quotidiano, la [guida utente](guida-utente.md).

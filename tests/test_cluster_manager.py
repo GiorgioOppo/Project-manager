@@ -251,6 +251,7 @@ class ServiceMigrationGuardTests(unittest.TestCase):
 
     def test_only_current_services_allow_start(self):
         cluster = self.cluster()
+        cluster.tickets = True
         services = ("app", "mysql-1", "mysql-2", "mysql-3", "proxy-db", "proxy-web",
                     "proxy-egress", "mongodb", "mail", "calendar", "inventory", "tickets")
         result = mock.Mock(returncode=0, stdout="".join("projectmanament\t" + name + "\n" for name in services).encode("ascii"))

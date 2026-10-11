@@ -22,12 +22,15 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include "oidc.h"
+#include "punto_client.h"
 
 #define HEADER_MAX 16384
 #define BODY_MAX 65536
 #define PASSWORD_ROUNDS 600000
 #define SESSION_SECONDS 28800
-#define TICKET_COLUMNS "t.id,t.title,t.description,t.requester,t.status,t.priority,t.assignee_id,a.name,t.created_by,c.name,t.due_date,t.created_at,t.updated_at,t.revision"
+#define PUBLIC_ORIGINS_MAX 4
+#define TICKET_COLUMNS "t.id,t.title,t.description,t.requester,t.status,t.priority,t.assignee_id,a.name,t.created_by,c.name,t.due_date,t.created_at,t.updated_at,t.revision,t.job_id,t.job_code,t.job_name,t.asset_id,t.asset_tag,t.asset_name"
 #define TICKET_FROM " FROM tickets t LEFT JOIN users a ON a.id=t.assignee_id JOIN users c ON c.id=t.created_by "
 
 static sqlite3 *db;
@@ -35,9 +38,13 @@ static volatile sig_atomic_t stopping;
 static int listener = -1;
 static int configured_port = 8083;
 static const char *public_dir = "public";
-static char public_origin[512];
-static char public_authority[256];
-static bool secure_cookie;
+typedef struct {
+    char origin[512], authority[256];
+    bool secure;
+} PublicOrigin;
+static PublicOrigin public_origins[PUBLIC_ORIGINS_MAX];
+static size_t public_origins_count;
+static char oidc_origin[512];
 
 typedef struct {
     int fd;
@@ -45,7 +52,8 @@ typedef struct {
     char *query, *body;
     size_t body_len;
     char host[256], origin[512], cookie[2048], csrf[128], content_type[128];
-    bool has_origin;
+    char request_origin[512];
+    bool has_origin, secure_cookie;
 } Request;
 typedef struct {
     sqlite3_int64 id;
@@ -173,6 +181,7 @@ static bool send_bytes(int fd, const void *data, size_t len) {
 static const char *status_text(int status) {
     switch (status) { case 200:return "OK";
     case 201:return "Created";
+    case 303:return "See Other";
     case 400:return "Bad Request";
     case 401:return "Unauthorized";
     case 403:return "Forbidden";
@@ -182,11 +191,13 @@ static const char *status_text(int status) {
     case 413:return "Payload Too Large";
     case 415:return "Unsupported Media Type";
     case 429:return "Too Many Requests";
+    case 502:return "Bad Gateway";
+    case 503:return "Service Unavailable";
     default:return "Internal Server Error";
     }
 }
 static void response(Request *r, int status, const char *mime, const void *body, size_t len, const char *extra) {
-    char header[2048];
+    char header[12288];
     int n = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\n"
         "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n"
@@ -206,6 +217,12 @@ static void error_response(Request *r, int status, const char *message) {
     json_object_object_add(o, "ok", json_object_new_boolean(false));
     add_string(o, "error", message);
     send_json(r, status, o);
+}
+static void auth_error_response(Request *r, int status, const char *message) {
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "ok", json_object_new_boolean(false));
+    add_string(o, "error", message);
+    send_json_extra(r, status, o, oidc_clear_cookie());
 }
 static void db_error(Request *r) { error_response(r, 500, "Errore di archivio. Riprova.");
 }
@@ -227,16 +244,26 @@ static bool local_authority(const char *host) {
     return false;
 }
 static bool host_allowed(Request *r) {
-    if (*public_authority) { if (!strcasecmp(r->host, public_authority)) return true;
-    return !strcmp(r->method, "GET") && !strcmp(r->path, "/healthz") && local_authority(r->host);
+    for (size_t i = 0; i < public_origins_count; i++) {
+        if (!strcasecmp(r->host, public_origins[i].authority)) {
+            bounded_copy(r->request_origin, sizeof(r->request_origin), public_origins[i].origin);
+            r->secure_cookie = public_origins[i].secure;
+            return true;
+        }
     }
-    return local_authority(r->host);
+    if (!local_authority(r->host)) return false;
+    if (public_origins_count)
+        return !strcmp(r->method, "GET") && !strcmp(r->path, "/healthz");
+    snprintf(r->request_origin, sizeof(r->request_origin), "http://%s", r->host);
+    for (char *p = r->request_origin; *p; p++) *p = (char)tolower((unsigned char)*p);
+    return true;
 }
 static bool origin_allowed(Request *r) {
     if (!r->has_origin) return true;
-    if (*public_origin) return !strcmp(r->origin, public_origin);
-    if (strncmp(r->origin, "http://", 7)) return false;
-    return local_authority(r->origin + 7);
+    return *r->request_origin && !strcmp(r->origin, r->request_origin);
+}
+static bool sso_origin_allowed(Request *r) {
+    return oidc_enabled() && !strcmp(r->request_origin, oidc_origin);
 }
 static bool header_value(char *dst, size_t cap, const char *value) { if (strlen(value) >= cap || *dst) return false;
 bounded_copy(dst, cap, value);
@@ -403,6 +430,8 @@ static bool allowed_keys(json_object *o, const char *const keys[]) {
     }
     return true;
 }
+#include "punto_integration.inc"
+
 static bool email_normalize(const char *raw, char out[255]) {
     size_t len = strlen(raw);
     if (!len || len > 254) return false;
@@ -455,9 +484,10 @@ static bool session_cookie(const char *cookies, char token[65]) {
 static bool authenticate(Request *r, Auth *a) {
     char token[65];
     if (!session_cookie(r->cookie, token) || !digest_hex(token, a->token_hash)) return false;
-    sqlite3_stmt *st = prepare("SELECT u.id,u.name,u.email,u.role,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?1 AND s.expires_at>unixepoch() AND u.active=1");
+    sqlite3_stmt *st = prepare("SELECT u.id,u.name,u.email,u.role,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?1 AND s.origin=?2 AND s.expires_at>unixepoch() AND u.active=1");
     if (!st) return false;
     bind_text(st, 1, a->token_hash);
+    bind_text(st, 2, r->request_origin);
     bool ok = sqlite3_step(st) == SQLITE_ROW;
     if (ok) { a->id = sqlite3_column_int64(st, 0);
     bounded_copy(a->name, sizeof(a->name), column_text(st, 1));
@@ -480,7 +510,34 @@ static void session_response(Request *r, Auth *a, const char *cookie) {
     add_string(o, "csrf_token", a->csrf);
     send_json_extra(r, 200, o, cookie);
 }
+static bool create_session(Request *r, sqlite3_int64 user_id, int lifetime, Auth *a, char cookie[256]) {
+    char token[65];
+    if (lifetime <= 0) return false;
+    if (lifetime > SESSION_SECONDS) lifetime = SESSION_SECONDS;
+    a->id = user_id;
+    if (!random_hex(token, 32) || !random_hex(a->csrf, 32) || !digest_hex(token, a->token_hash)) {
+        OPENSSL_cleanse(token, sizeof(token));
+        return false;
+    }
+    if (!exec_sql("DELETE FROM sessions WHERE expires_at<=unixepoch()")) {
+        OPENSSL_cleanse(token, sizeof(token));
+        return false;
+    }
+    sqlite3_stmt *st = prepare("INSERT INTO sessions(token_hash,user_id,csrf,expires_at,origin) VALUES(?1,?2,?3,unixepoch()+?4,?5)");
+    if (!st) { OPENSSL_cleanse(token, sizeof(token)); return false; }
+    bind_text(st, 1, a->token_hash);
+    sqlite3_bind_int64(st, 2, user_id);
+    bind_text(st, 3, a->csrf);
+    sqlite3_bind_int(st, 4, lifetime);
+    bind_text(st, 5, r->request_origin);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    if (rc == SQLITE_DONE) snprintf(cookie, 256, "Set-Cookie: tickets_session=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d%s\r\n", token, lifetime, r->secure_cookie ? "; Secure" : "");
+    OPENSSL_cleanse(token, sizeof(token));
+    return rc == SQLITE_DONE;
+}
 static void login(Request *r) {
+    if (!oidc_local_enabled()) { error_response(r, 403, "Accedi con il servizio di autenticazione aziendale."); return; }
     static time_t failures_since;
     static unsigned failures;
     time_t now = time(NULL);
@@ -499,6 +556,7 @@ static void login(Request *r) {
     error_response(r, 400, "Email o password non validi.");
     return;
     }
+    if (!oidc_local_account_allowed(normalized)) { json_object_put(input); error_response(r, 403, "Usa l’account aziendale. L’accesso locale è riservato all’amministratore di emergenza."); return; }
     sqlite3_stmt *st = prepare("SELECT id,password_salt,password_hash FROM users WHERE email=?1 COLLATE NOCASE AND active=1");
     if (!st) { json_object_put(input);
     db_error(r);
@@ -523,32 +581,123 @@ static void login(Request *r) {
     return;
     }
     Auth a = {0};
-    a.id = user_id;
-    char token[65];
-    if (!random_hex(token, 32) || !random_hex(a.csrf, 32) || !digest_hex(token, a.token_hash)) { db_error(r);
-    return;
-    }
-    if (!exec_sql("DELETE FROM sessions WHERE expires_at<=unixepoch()")) { db_error(r);
-    return;
-    }
-    st = prepare("INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?1,?2,?3,unixepoch()+?4)");
-    if (!st) { db_error(r);
-    return;
-    }
-    bind_text(st, 1, a.token_hash);
-    sqlite3_bind_int64(st, 2, user_id);
-    bind_text(st, 3, a.csrf);
-    sqlite3_bind_int(st, 4, SESSION_SECONDS);
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    if (rc != SQLITE_DONE) { db_error(r);
-    return;
-    }
     char cookie[256];
-    snprintf(cookie, sizeof(cookie), "Set-Cookie: tickets_session=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d%s\r\n", token, SESSION_SECONDS, secure_cookie ? "; Secure" : "");
-    OPENSSL_cleanse(token, sizeof(token));
+    if (!create_session(r, user_id, SESSION_SECONDS, &a, cookie)) { db_error(r); return; }
     failures = 0;
     session_response(r, &a, cookie);
+}
+static void sso_login(Request *r) {
+    char location[8192], cookie[512], headers[9000];
+    int status = oidc_start(location, cookie);
+    if (status != 200) { auth_error_response(r, status, "Accesso aziendale non disponibile."); return; }
+    snprintf(headers, sizeof(headers), "Location: %s\r\n%s", location, cookie);
+    response(r, 303, "text/plain; charset=utf-8", "", 0, headers);
+}
+static int managed_oidc_user(const OidcIdentity *identity, sqlite3_int64 *user_id) {
+    char email[255];
+    *user_id = 0;
+    if (!*identity->issuer || !*identity->subject || !email_normalize(identity->email, email) ||
+        !*identity->name || whitespace_only(identity->name) || utf8_length(identity->name) > 120 ||
+        !valid_role(identity->role)) return 403;
+    if (!exec_sql("BEGIN IMMEDIATE")) return 500;
+    int status = 500, rc;
+    sqlite3_int64 id = 0;
+    bool linked = false, revoke = false;
+    sqlite3_stmt *st = prepare("SELECT u.id,u.email,u.role,u.active FROM oidc_identities i JOIN users u ON u.id=i.user_id WHERE i.issuer=?1 AND i.subject=?2");
+    if (!st) goto fail;
+    bind_text(st, 1, identity->issuer); bind_text(st, 2, identity->subject);
+    rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        id = sqlite3_column_int64(st, 0); linked = true;
+        revoke = strcmp(column_text(st, 1), email) || strcmp(column_text(st, 2), identity->role) || !sqlite3_column_int(st, 3);
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) goto fail;
+    if (!id && *identity->bound_email) {
+        st = prepare("SELECT u.id,u.email,u.role,u.active,EXISTS(SELECT 1 FROM oidc_identities i WHERE i.user_id=u.id) FROM users u WHERE u.email=?1 COLLATE NOCASE");
+        if (!st) goto fail;
+        bind_text(st, 1, identity->bound_email);
+        rc = sqlite3_step(st);
+        if (rc == SQLITE_ROW && !sqlite3_column_int(st, 4)) {
+            id = sqlite3_column_int64(st, 0);
+            revoke = strcmp(column_text(st, 1), email) || strcmp(column_text(st, 2), identity->role) || !sqlite3_column_int(st, 3);
+        }
+        sqlite3_finalize(st);
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE) goto fail;
+        if (!id) { status = 403; goto fail; }
+    }
+    /* A signed email is profile data, never authority to take an existing ID. */
+    st = prepare("SELECT id FROM users WHERE email=?1 COLLATE NOCASE AND id<>?2");
+    if (!st) goto fail;
+    bind_text(st, 1, email); sqlite3_bind_int64(st, 2, id);
+    rc = sqlite3_step(st); sqlite3_finalize(st);
+    if (rc == SQLITE_ROW) { status = 403; goto fail; }
+    if (rc != SQLITE_DONE) goto fail;
+    if (!id) {
+        char salt[33], hash[65];
+        /* No usable password is issued by JIT provisioning. Local access is
+           independently restricted to the configured emergency account. */
+        if (!random_hex(salt, 16) || !random_hex(hash, 32)) goto fail;
+        st = prepare("INSERT INTO users(name,email,role,password_salt,password_hash) VALUES(?1,?2,?3,?4,?5)");
+        if (!st) { OPENSSL_cleanse(hash, sizeof(hash)); goto fail; }
+        bind_text(st, 1, identity->name); bind_text(st, 2, email); bind_text(st, 3, identity->role);
+        bind_text(st, 4, salt); bind_text(st, 5, hash);
+        rc = sqlite3_step(st); sqlite3_finalize(st); OPENSSL_cleanse(hash, sizeof(hash));
+        if (rc != SQLITE_DONE) goto fail;
+        id = sqlite3_last_insert_rowid(db);
+    }
+    if (!linked) {
+        st = prepare("INSERT INTO oidc_identities(issuer,subject,user_id) VALUES(?1,?2,?3)");
+        if (!st) goto fail;
+        bind_text(st, 1, identity->issuer); bind_text(st, 2, identity->subject); sqlite3_bind_int64(st, 3, id);
+        rc = sqlite3_step(st); sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) goto fail;
+    }
+    st = prepare("UPDATE users SET name=?1,email=?2,role=?3,active=1 WHERE id=?4");
+    if (!st) goto fail;
+    bind_text(st, 1, identity->name); bind_text(st, 2, email); bind_text(st, 3, identity->role); sqlite3_bind_int64(st, 4, id);
+    rc = sqlite3_step(st); sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) goto fail;
+    if (revoke) {
+        st = prepare("DELETE FROM sessions WHERE user_id=?1");
+        if (!st) goto fail;
+        sqlite3_bind_int64(st, 1, id); rc = sqlite3_step(st); sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) goto fail;
+    }
+    if (!exec_sql("COMMIT")) goto fail;
+    *user_id = id;
+    return 200;
+fail:
+    exec_sql("ROLLBACK");
+    return status;
+}
+static void sso_callback(Request *r) {
+    char email[255];
+    int lifetime = 0;
+    sqlite3_int64 user_id = 0;
+    int status;
+    if (oidc_users_managed()) {
+        OidcIdentity identity = {0};
+        status = oidc_callback_identity(r->query ? r->query : "", r->cookie, &identity, &lifetime);
+        if (status == 200) status = managed_oidc_user(&identity, &user_id);
+    } else {
+        status = oidc_callback(r->query ? r->query : "", r->cookie, email, &lifetime);
+    }
+    if (status != 200) { auth_error_response(r, status, "Accesso aziendale non riuscito. Ripeti l’accesso."); return; }
+    if (!oidc_users_managed()) {
+        sqlite3_stmt *st = prepare("SELECT id FROM users WHERE email=?1 COLLATE NOCASE AND active=1");
+        if (!st) { auth_error_response(r, 500, "Errore di archivio. Riprova."); return; }
+        bind_text(st, 1, email);
+        int rc = sqlite3_step(st);
+        user_id = rc == SQLITE_ROW ? sqlite3_column_int64(st, 0) : 0;
+        sqlite3_finalize(st);
+        if (!user_id) { auth_error_response(r, rc == SQLITE_DONE ? 403 : 500, "Account Ticket non disponibile. Contatta l’amministratore."); return; }
+    }
+    Auth a = {0};
+    char cookie[256], headers[1024];
+    if (!create_session(r, user_id, lifetime, &a, cookie)) { auth_error_response(r, 500, "Impossibile creare la sessione. Riprova."); return; }
+    snprintf(headers, sizeof(headers), "Location: /\r\n%s%s", oidc_clear_cookie(), cookie);
+    response(r, 303, "text/plain; charset=utf-8", "", 0, headers);
 }
 static void logout(Request *r, Auth *a) {
     sqlite3_stmt *st = prepare("DELETE FROM sessions WHERE token_hash=?1");
@@ -564,7 +713,7 @@ static void logout(Request *r, Auth *a) {
     json_object *o = json_object_new_object();
     json_object_object_add(o, "ok", json_object_new_boolean(true));
     char cookie[180];
-    snprintf(cookie, sizeof(cookie), "Set-Cookie: tickets_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0%s\r\n", secure_cookie ? "; Secure" : "");
+    snprintf(cookie, sizeof(cookie), "Set-Cookie: tickets_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0%s\r\n", r->secure_cookie ? "; Secure" : "");
     send_json_extra(r, 200, o, cookie);
 }
 static void list_users(Request *r, Auth *a) {
@@ -727,6 +876,14 @@ static json_object *ticket_json(sqlite3_stmt *st) {
     add_string(o, "created_at", column_text(st, 11));
     add_string(o, "updated_at", column_text(st, 12));
     add_int(o, "revision", sqlite3_column_int64(st, 13));
+    if (sqlite3_column_type(st, 14) == SQLITE_NULL) json_object_object_add(o, "job_id", NULL);
+    else add_int(o, "job_id", sqlite3_column_int64(st, 14));
+    add_string(o, "job_code", sqlite3_column_type(st, 15) == SQLITE_NULL ? NULL : column_text(st, 15));
+    add_string(o, "job_name", sqlite3_column_type(st, 16) == SQLITE_NULL ? NULL : column_text(st, 16));
+    if (sqlite3_column_type(st, 17) == SQLITE_NULL) json_object_object_add(o, "asset_id", NULL);
+    else add_int(o, "asset_id", sqlite3_column_int64(st, 17));
+    add_string(o, "asset_tag", sqlite3_column_type(st, 18) == SQLITE_NULL ? NULL : column_text(st, 18));
+    add_string(o, "asset_name", sqlite3_column_type(st, 19) == SQLITE_NULL ? NULL : column_text(st, 19));
     return o;
 }
 static json_object *fetch_ticket(sqlite3_int64 id) {
@@ -752,11 +909,13 @@ static bool valid_date(const char *s) {
     return d <= last;
 }
 typedef struct { const char *title, *description, *requester, *status, *priority, *due_date;
-sqlite3_int64 assignee_id;
+sqlite3_int64 assignee_id, job_id, asset_id;
+const char *job_code, *job_name, *asset_tag, *asset_name;
+json_object *references;
 } TicketFields;
 static bool ticket_fields(json_object *input, json_object *current, TicketFields *f, bool updating) {
-    const char *const create_keys[] = {"title", "description", "requester", "priority", "assignee_id", "due_date", NULL};
-    const char *const update_keys[] = {"title", "description", "requester", "priority", "assignee_id", "due_date", "status", "revision", NULL};
+    const char *const create_keys[] = {"title", "description", "requester", "priority", "assignee_id", "due_date", "job_id", "asset_id", NULL};
+    const char *const update_keys[] = {"title", "description", "requester", "priority", "assignee_id", "due_date", "status", "revision", "job_id", "asset_id", NULL};
     if (!allowed_keys(input, updating ? update_keys : create_keys)) return false;
     f->title = "";
     f->description = "";
@@ -764,7 +923,9 @@ static bool ticket_fields(json_object *input, json_object *current, TicketFields
     f->status = "open";
     f->priority = "normal";
     f->due_date = NULL;
-    f->assignee_id = 0;
+    f->assignee_id = f->job_id = f->asset_id = 0;
+    f->job_code = f->job_name = f->asset_tag = f->asset_name = NULL;
+    f->references = NULL;
     if (current) {
         f->title = json_object_get_string(json_object_object_get(current, "title"));
         f->description = json_object_get_string(json_object_object_get(current, "description"));
@@ -774,12 +935,27 @@ static bool ticket_fields(json_object *input, json_object *current, TicketFields
         json_object *due = json_object_object_get(current, "due_date");
         f->due_date = due ? json_object_get_string(due) : NULL;
         f->assignee_id = json_object_get_int64(json_object_object_get(current, "assignee_id"));
+        f->job_id = json_object_get_int64(json_object_object_get(current, "job_id"));
+        f->asset_id = json_object_get_int64(json_object_object_get(current, "asset_id"));
+        f->job_code = json_object_get_string(json_object_object_get(current, "job_code"));
+        f->job_name = json_object_get_string(json_object_object_get(current, "job_name"));
+        f->asset_tag = json_object_get_string(json_object_object_get(current, "asset_tag"));
+        f->asset_name = json_object_get_string(json_object_object_get(current, "asset_name"));
     }
     if (!get_string(input, "title", &f->title, 160, !updating, true) || !get_string(input, "description", &f->description, 8000, false, false) || !get_string(input, "requester", &f->requester, 200, false, false) || !get_string(input, "status", &f->status, 32, false, true) || !get_string(input, "priority", &f->priority, 16, false, true) || !valid_status(f->status) || !valid_priority(f->priority)) return false;
     json_object *assignee = NULL;
     if (json_object_object_get_ex(input, "assignee_id", &assignee)) {
         if (!assignee) f->assignee_id = 0;
         else if (!json_object_is_type(assignee, json_type_int) || (f->assignee_id = json_object_get_int64(assignee)) <= 0) return false;
+    }
+    const char *const reference_keys[] = {"job_id", "asset_id"};
+    sqlite3_int64 *reference_ids[] = {&f->job_id, &f->asset_id};
+    for (size_t i = 0; i < 2; i++) {
+        json_object *value = NULL;
+        if (json_object_object_get_ex(input, reference_keys[i], &value)) {
+            if (!value) *reference_ids[i] = 0;
+            else if (!json_object_is_type(value, json_type_int) || (*reference_ids[i] = json_object_get_int64(value)) <= 0) return false;
+        }
     }
     json_object *due = NULL;
     if (json_object_object_get_ex(input, "due_date", &due)) {
@@ -788,6 +964,35 @@ static bool ticket_fields(json_object *input, json_object *current, TicketFields
         else f->due_date = json_object_get_string(due);
     }
     return true;
+}
+static bool ticket_resolve_references(Request *r, Auth *a, json_object *current, TicketFields *f) {
+    sqlite3_int64 old_job = current ? json_object_get_int64(json_object_object_get(current, "job_id")) : 0;
+    sqlite3_int64 old_asset = current ? json_object_get_int64(json_object_object_get(current, "asset_id")) : 0;
+    bool changed_job = old_job != f->job_id, changed_asset = old_asset != f->asset_id;
+    if (changed_job && !f->job_id) f->job_code = f->job_name = NULL;
+    if (changed_asset && !f->asset_id) f->asset_tag = f->asset_name = NULL;
+    sqlite3_int64 validate_job = changed_job ? f->job_id : 0, validate_asset = changed_asset ? f->asset_id : 0;
+    if (!validate_job && !validate_asset) return true;
+    if (!punto_validate_refs(r, a, validate_job, validate_asset, &f->references)) return false;
+    if (validate_job) {
+        json_object *job = json_object_object_get(f->references, "job");
+        f->job_code = json_object_get_string(json_object_object_get(job, "code"));
+        f->job_name = json_object_get_string(json_object_object_get(job, "name"));
+    }
+    if (validate_asset) {
+        json_object *asset = json_object_object_get(f->references, "asset");
+        f->asset_tag = json_object_get_string(json_object_object_get(asset, "asset_tag"));
+        f->asset_name = json_object_get_string(json_object_object_get(asset, "name"));
+    }
+    return true;
+}
+static void bind_references(sqlite3_stmt *st, TicketFields *f, int start) {
+    if (f->job_id) sqlite3_bind_int64(st, start, f->job_id);
+    else sqlite3_bind_null(st, start);
+    bind_text(st, start + 1, f->job_code); bind_text(st, start + 2, f->job_name);
+    if (f->asset_id) sqlite3_bind_int64(st, start + 3, f->asset_id);
+    else sqlite3_bind_null(st, start + 3);
+    bind_text(st, start + 4, f->asset_tag); bind_text(st, start + 5, f->asset_name);
 }
 static bool assignee_active(sqlite3_int64 id) {
     if (!id) return true;
@@ -833,34 +1038,28 @@ static void create_ticket(Request *r, Auth *a) {
     json_object *input = parse_json(r);
     if (!input) return;
     TicketFields f;
-    if (!ticket_fields(input, NULL, &f, false)) { json_object_put(input);
-    error_response(r, 400, "Ticket non valido: controlla titolo, priorità, assegnatario e scadenza.");
-    return;
+    if (!ticket_fields(input, NULL, &f, false)) { json_object_put(input); error_response(r, 400, "Ticket non valido: controlla titolo, priorità, assegnatario e scadenza."); return; }
+    if (!ticket_resolve_references(r, a, NULL, &f)) { json_object_put(input); return; }
+    if (!exec_sql("BEGIN IMMEDIATE")) goto fail_without_transaction;
+    if (!assignee_active(f.assignee_id)) {
+        exec_sql("ROLLBACK"); if (f.references) json_object_put(f.references); json_object_put(input);
+        error_response(r, 400, "L'assegnatario deve essere un utente attivo."); return;
     }
-    if (!exec_sql("BEGIN IMMEDIATE")) { json_object_put(input);
-    db_error(r);
-    return;
-    }
-    if (!assignee_active(f.assignee_id)) { exec_sql("ROLLBACK");
-    json_object_put(input);
-    error_response(r, 400, "L'assegnatario deve essere un utente attivo.");
-    return;
-    }
-    sqlite3_stmt *st = prepare("INSERT INTO tickets(title,description,requester,status,priority,assignee_id,due_date,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)");
+    sqlite3_stmt *st = prepare("INSERT INTO tickets(title,description,requester,status,priority,assignee_id,due_date,created_by,job_id,job_code,job_name,asset_id,asset_tag,asset_name) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)");
     if (!st) goto fail;
-    bind_ticket(st, &f);
-    sqlite3_bind_int64(st, 8, a->id);
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
+    bind_ticket(st, &f); sqlite3_bind_int64(st, 8, a->id); bind_references(st, &f, 9);
+    int rc = sqlite3_step(st); sqlite3_finalize(st);
     if (rc != SQLITE_DONE) goto fail;
     sqlite3_int64 id = sqlite3_last_insert_rowid(db);
-    if (!add_history(id, a, "created", "Ticket creato.") || !exec_sql("COMMIT")) goto fail;
-    json_object_put(input);
-    ticket_response(r, 201, id);
-    return;
+    char detail[2400];
+    snprintf(detail, sizeof(detail), "Ticket creato.%s%s%s%s", f.job_id ? " Commessa: " : "", f.job_code ? f.job_code : "", f.asset_id ? " Asset: " : "", f.asset_tag ? f.asset_tag : "");
+    if (!add_history(id, a, "created", detail) || !exec_sql("COMMIT")) goto fail;
+    if (f.references) json_object_put(f.references);
+    json_object_put(input); ticket_response(r, 201, id); return;
 fail: exec_sql("ROLLBACK");
-json_object_put(input);
-db_error(r);
+fail_without_transaction:
+    if (f.references) json_object_put(f.references);
+    json_object_put(input); db_error(r);
 }
 static const char *status_label(const char *s) {
     if (!strcmp(s, "open")) return "Aperto";
@@ -888,45 +1087,45 @@ static void update_ticket(Request *r, Auth *a, sqlite3_int64 id) {
     error_response(r, 400, "Indica la revisione attuale del ticket.");
     return;
     }
-    if (!exec_sql("BEGIN IMMEDIATE")) { json_object_put(input);
-    db_error(r);
-    return;
-    }
     json_object *current = fetch_ticket(id);
-    if (!current) { exec_sql("ROLLBACK");
-    json_object_put(input);
+    if (!current) { json_object_put(input);
     error_response(r, 404, "Ticket non trovato.");
     return;
     }
-    if (json_object_get_int64(revision) != json_object_get_int64(json_object_object_get(current, "revision"))) { exec_sql("ROLLBACK");
-    json_object_put(current);
+    if (!punto_ticket_access(r, a, current)) { json_object_put(current); json_object_put(input); return; }
+    if (json_object_get_int64(revision) != json_object_get_int64(json_object_object_get(current, "revision"))) { json_object_put(current);
     json_object_put(input);
     error_response(r, 409, "Il ticket è stato modificato. Ricaricalo prima di salvare.");
     return;
     }
     TicketFields f;
-    if (!ticket_fields(input, current, &f, true)) { exec_sql("ROLLBACK");
-    json_object_put(current);
+    if (!ticket_fields(input, current, &f, true)) { json_object_put(current);
     json_object_put(input);
     error_response(r, 400, "Dati del ticket non validi.");
     return;
     }
     /* An inactive previous assignee may be retained; a new assignment must be active. */
     sqlite3_int64 old_assignee = json_object_get_int64(json_object_object_get(current, "assignee_id"));
-    if (f.assignee_id != old_assignee && !assignee_active(f.assignee_id)) { exec_sql("ROLLBACK");
-    json_object_put(current);
+    if (f.assignee_id != old_assignee && !assignee_active(f.assignee_id)) { json_object_put(current);
     json_object_put(input);
     error_response(r, 400, "L'assegnatario deve essere un utente attivo.");
     return;
     }
-    sqlite3_stmt *st = prepare("UPDATE tickets SET title=?1,description=?2,requester=?3,status=?4,priority=?5,assignee_id=?6,due_date=?7,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),revision=revision+1 WHERE id=?8 AND revision=?9");
+    if (!ticket_resolve_references(r, a, current, &f)) { json_object_put(current); json_object_put(input); return; }
+    if (!exec_sql("BEGIN IMMEDIATE")) goto fail;
+    sqlite3_stmt *st = prepare("UPDATE tickets SET title=?1,description=?2,requester=?3,status=?4,priority=?5,assignee_id=?6,due_date=?7,job_id=?10,job_code=?11,job_name=?12,asset_id=?13,asset_tag=?14,asset_name=?15,updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),revision=revision+1 WHERE id=?8 AND revision=?9");
     if (!st) goto fail;
     bind_ticket(st, &f);
+    bind_references(st, &f, 10);
     sqlite3_bind_int64(st, 8, id);
     sqlite3_bind_int64(st, 9, json_object_get_int64(revision));
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
-    if (rc != SQLITE_DONE || sqlite3_changes(db) != 1) goto fail;
+    if (rc != SQLITE_DONE) goto fail;
+    if (sqlite3_changes(db) != 1) {
+        exec_sql("ROLLBACK"); if (f.references) json_object_put(f.references); json_object_put(current); json_object_put(input);
+        error_response(r, 409, "Il ticket è stato modificato. Ricaricalo prima di salvare."); return;
+    }
     char detail[4096] = "";
     const char *const text_keys[] = {"title", "description", "requester"};
     const char *const labels[] = {"titolo aggiornato", "descrizione aggiornata", "richiedente aggiornato"};
@@ -948,13 +1147,25 @@ static void update_ticket(Request *r, Auth *a, sqlite3_int64 id) {
     }
     const char *old_due = json_object_get_string(json_object_object_get(current, "due_date"));
     if ((old_due == NULL) != (f.due_date == NULL) || (old_due && f.due_date && strcmp(old_due, f.due_date))) append_change(detail, sizeof(detail), "scadenza", old_due ? old_due : "Nessuna", f.due_date ? f.due_date : "Nessuna");
+    sqlite3_int64 old_job = json_object_get_int64(json_object_object_get(current, "job_id"));
+    sqlite3_int64 old_asset = json_object_get_int64(json_object_object_get(current, "asset_id"));
+    if (old_job != f.job_id) {
+        const char *old = json_object_get_string(json_object_object_get(current, "job_code"));
+        append_change(detail, sizeof(detail), "commessa", old ? old : "Nessuna", f.job_code ? f.job_code : "Nessuna");
+    }
+    if (old_asset != f.asset_id) {
+        const char *old = json_object_get_string(json_object_object_get(current, "asset_tag"));
+        append_change(detail, sizeof(detail), "asset", old ? old : "Nessuno", f.asset_tag ? f.asset_tag : "Nessuno");
+    }
     if (!*detail) bounded_copy(detail, sizeof(detail), "Salvataggio senza variazioni.");
     if (!add_history(id, a, "updated", detail) || !exec_sql("COMMIT")) goto fail;
+    if (f.references) json_object_put(f.references);
     json_object_put(current);
     json_object_put(input);
     ticket_response(r, 200, id);
     return;
 fail: exec_sql("ROLLBACK");
+if (f.references) json_object_put(f.references);
 json_object_put(current);
 json_object_put(input);
 db_error(r);
@@ -969,11 +1180,12 @@ static json_object *comment_json(sqlite3_stmt *st) {
     add_string(o, "created_at", column_text(st, 5));
     return o;
 }
-static void get_ticket(Request *r, sqlite3_int64 id) {
+static void get_ticket(Request *r, Auth *a, sqlite3_int64 id) {
     json_object *ticket = fetch_ticket(id);
     if (!ticket) { error_response(r, 404, "Ticket non trovato.");
     return;
     }
+    if (!punto_ticket_access(r, a, ticket)) { json_object_put(ticket); return; }
     json_object *o = json_object_new_object(), *comments = json_object_new_array(), *history = json_object_new_array();
     json_object_object_add(o, "ticket", ticket);
     json_object_object_add(o, "comments", comments);
@@ -1013,6 +1225,10 @@ static void create_comment(Request *r, Auth *a, sqlite3_int64 id) {
     error_response(r, 400, "Scrivi un commento di massimo 4000 caratteri.");
     return;
     }
+    json_object *current = fetch_ticket(id);
+    if (!current) { json_object_put(input); error_response(r, 404, "Ticket non trovato."); return; }
+    bool visible = punto_ticket_access(r, a, current); json_object_put(current);
+    if (!visible) { json_object_put(input); return; }
     if (!exec_sql("BEGIN IMMEDIATE")) { json_object_put(input);
     db_error(r);
     return;
@@ -1087,7 +1303,7 @@ static bool url_decode(const char *raw, char *out, size_t cap, bool plus) {
 }
 typedef struct {
     char search[801], status[32], priority[16], today[11], due_soon_end[11];
-    sqlite3_int64 assignee_id;
+    sqlite3_int64 assignee_id, job_id, asset_id;
     int assignee_mode, queue, sort, limit, offset;
 } Filters;
 
@@ -1195,6 +1411,10 @@ static bool read_filters(const char *query, Filters *f) {
                 bit = 256;
                 if (!valid_date(value)) return false;
                 bounded_copy(f->today, sizeof(f->today), value);
+            } else if (!strcmp(key, "job_id") || !strcmp(key, "asset_id")) {
+                bit = !strcmp(key, "job_id") ? 512 : 1024;
+                if (!parse_uint(value, LLONG_MAX, &number) || number < 1) return false;
+                if (bit == 512) f->job_id = number; else f->asset_id = number;
             } else {
                 return false;
             }
@@ -1209,12 +1429,13 @@ static bool read_filters(const char *query, Filters *f) {
 #define ACTIVE_SQL "t.status IN('open','in_progress','waiting')"
 #define FILTER_SQL \
     " WHERE (?1 IS NULL OR t.title LIKE ?1 ESCAPE '\\' OR t.description LIKE ?1 ESCAPE '\\' " \
-    "OR t.requester LIKE ?1 ESCAPE '\\' OR CAST(t.id AS TEXT) LIKE ?1 ESCAPE '\\') " \
+    "OR t.job_code LIKE ?1 ESCAPE '\\' OR t.job_name LIKE ?1 ESCAPE '\\' OR t.asset_tag LIKE ?1 ESCAPE '\\' OR t.asset_name LIKE ?1 ESCAPE '\\' OR t.requester LIKE ?1 ESCAPE '\\' OR CAST(t.id AS TEXT) LIKE ?1 ESCAPE '\\') " \
     "AND (?2 IS NULL OR t.status=?2) AND (?3 IS NULL OR t.priority=?3) " \
     "AND (?4=0 OR (?4=1 AND t.assignee_id=?5) OR (?4=2 AND t.assignee_id IS NULL)) " \
     "AND (?6=0 OR (" ACTIVE_SQL " AND (?6=1 OR (?6=2 AND t.assignee_id=?7) " \
     "OR (?6=3 AND t.due_date<?8) OR (?6=4 AND t.due_date BETWEEN ?8 AND ?9) " \
-    "OR (?6=5 AND t.assignee_id IS NULL)))) "
+    "OR (?6=5 AND t.assignee_id IS NULL)))) " \
+    "AND (?12=0 OR t.job_id=?12) AND (?13=0 OR t.asset_id=?13) AND " PUNTO_VISIBLE_SQL " "
 #define PRIORITY_ORDER_SQL "CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END"
 
 static void bind_filters(sqlite3_stmt *st, Filters *f, Auth *a) {
@@ -1236,6 +1457,8 @@ static void bind_filters(sqlite3_stmt *st, Filters *f, Auth *a) {
     sqlite3_bind_int64(st, 7, a->id);
     bind_text(st, 8, f->today);
     bind_text(st, 9, f->due_soon_end);
+    sqlite3_bind_int64(st, 12, f->job_id);
+    sqlite3_bind_int64(st, 13, f->asset_id);
 }
 
 static void list_tickets(Request *r, Auth *a) {
@@ -1249,6 +1472,9 @@ static void list_tickets(Request *r, Auth *a) {
         error_response(r, 400, "Filtri o paginazione non validi.");
         return;
     }
+    PuntoScope scope;
+    if (!punto_load_scope(r, a, &scope)) return;
+    OPENSSL_cleanse(&scope, sizeof(scope));
     json_object *o = json_object_new_object();
     json_object *items = json_object_new_array();
     json_object *stats = json_object_new_object();
@@ -1262,7 +1488,7 @@ static void list_tickets(Request *r, Auth *a) {
     for (size_t i = 0; i < 5; i++) add_int(stats, states[i], 0);
     /* Every count and row uses one database snapshot, independent of filtering. */
     if (!exec_sql("BEGIN")) goto fail;
-    sqlite3_stmt *st = prepare("SELECT status,count(*) FROM tickets GROUP BY status");
+    sqlite3_stmt *st = prepare("SELECT t.status,count(*) FROM tickets t WHERE " PUNTO_VISIBLE_SQL " GROUP BY t.status");
     if (!st) goto rollback;
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) add_int(stats, column_text(st, 0), sqlite3_column_int64(st, 1));
@@ -1270,7 +1496,7 @@ static void list_tickets(Request *r, Auth *a) {
     if (rc != SQLITE_DONE) goto rollback;
     st = prepare("SELECT count(*),coalesce(sum(t.assignee_id=?1),0),"
         "coalesce(sum(t.due_date<?2),0),coalesce(sum(t.due_date BETWEEN ?2 AND ?3),0),"
-        "coalesce(sum(t.assignee_id IS NULL),0) FROM tickets t WHERE " ACTIVE_SQL);
+        "coalesce(sum(t.assignee_id IS NULL),0) FROM tickets t WHERE " ACTIVE_SQL " AND " PUNTO_VISIBLE_SQL);
     if (!st) goto rollback;
     sqlite3_bind_int64(st, 1, a->id);
     bind_text(st, 2, f.today);
@@ -1312,6 +1538,7 @@ static const char *mime_type(const char *path) {
     if (!strcasecmp(ext, ".html")) return "text/html; charset=utf-8";
     if (!strcasecmp(ext, ".css")) return "text/css; charset=utf-8";
     if (!strcasecmp(ext, ".js")) return "text/javascript; charset=utf-8";
+    if (!strcasecmp(ext, ".json")) return "application/json; charset=utf-8";
     if (!strcasecmp(ext, ".svg")) return "image/svg+xml";
     if (!strcasecmp(ext, ".png")) return "image/png";
     if (!strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg")) return "image/jpeg";
@@ -1401,6 +1628,24 @@ static void dispatch(Request *r) {
     else error_response(r, 405, "Metodo non consentito.");
     return;
     }
+    if (!strcmp(r->path, "/api/auth/config")) {
+        if (!get) { error_response(r, 405, "Metodo non consentito."); return; }
+        json_object *o = json_object_new_object();
+        json_object_object_add(o, "sso", json_object_new_boolean(sso_origin_allowed(r)));
+        json_object_object_add(o, "local", json_object_new_boolean(oidc_local_enabled()));
+        if (oidc_users_managed()) {
+            json_object_object_add(o, "managed_users", json_object_new_boolean(true));
+            add_string(o, "users_admin_url", oidc_users_admin_url());
+        }
+        send_json(r, 200, o);
+        return;
+    }
+    if (!strcmp(r->path, "/auth/login") || !strcmp(r->path, "/auth/callback")) {
+        if (!get) { error_response(r, 405, "Metodo non consentito."); return; }
+        if (oidc_enabled() && !sso_origin_allowed(r)) { error_response(r, 403, "Usa l’indirizzo configurato per l’accesso aziendale."); return; }
+        if (!strcmp(r->path, "/auth/login")) sso_login(r); else sso_callback(r);
+        return;
+    }
     if (strncmp(r->path, "/api/", 5)) { if (get) static_file(r);
     else error_response(r, 405, "Metodo non consentito.");
     return;
@@ -1412,6 +1657,7 @@ static void dispatch(Request *r) {
     if (mutation && (!*r->csrf || !constant_equal(r->csrf, a.csrf))) { error_response(r, 403, "Token di sicurezza non valido. Ricarica la pagina.");
     return;
     }
+    if (punto_dispatch(r, &a, get, post)) return;
     if (!strcmp(r->path, "/api/session")) { if (get) session_response(r, &a, NULL);
     else error_response(r, 405, "Metodo non consentito.");
     return;
@@ -1421,6 +1667,7 @@ static void dispatch(Request *r) {
     return;
     }
     if (!strcmp(r->path, "/api/users")) { if (get) list_users(r, &a);
+    else if (post && oidc_users_managed()) error_response(r, 403, "Gestisci gli utenti in Keycloak.");
     else if (post && !strcmp(a.role, "admin")) create_user(r);
     else error_response(r, post ? 403 : 405, post ? "Sono richiesti i permessi di amministratore." : "Metodo non consentito.");
     return;
@@ -1432,12 +1679,13 @@ static void dispatch(Request *r) {
     }
     sqlite3_int64 id;
     const char *suffix;
-    if (path_id(r->path, "/api/users/", &id, &suffix) && !*suffix) { if (put && !strcmp(a.role, "admin")) update_user(r, id);
+    if (path_id(r->path, "/api/users/", &id, &suffix) && !*suffix) { if (put && oidc_users_managed()) error_response(r, 403, "Gestisci gli utenti in Keycloak.");
+    else if (put && !strcmp(a.role, "admin")) update_user(r, id);
     else error_response(r, put ? 403 : 405, put ? "Sono richiesti i permessi di amministratore." : "Metodo non consentito.");
     return;
     }
     if (path_id(r->path, "/api/tickets/", &id, &suffix)) {
-        if (!*suffix) { if (get) get_ticket(r, id);
+        if (!*suffix) { if (get) get_ticket(r, &a, id);
         else if (put) update_ticket(r, &a, id);
         else error_response(r, 405, "Metodo non consentito.");
         return;
@@ -1464,18 +1712,20 @@ static bool init_db(const char *path) {
     return false;
     }
     sqlite3_busy_timeout(db, 5000);
+    if (!exec_sql("PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE")) return false;
     sqlite3_stmt *version = prepare("PRAGMA user_version");
-    if (!version) return false;
+    if (!version) { exec_sql("ROLLBACK"); return false; }
     int version_rc = sqlite3_step(version);
     int schema_version = version_rc == SQLITE_ROW ? sqlite3_column_int(version, 0) : -1;
     sqlite3_finalize(version);
-    if (schema_version != 0 && schema_version != 1) {
+    if (schema_version < 0 || schema_version > 2) {
+        exec_sql("ROLLBACK");
         fprintf(stderr, "Versione archivio non supportata: %d. Usa un archivio dedicato ai ticket.\n", schema_version);
         return false;
     }
-    if (!exec_sql("PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;"
-        "CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL COLLATE NOCASE UNIQUE,role TEXT NOT NULL CHECK(role IN('admin','agent')),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));"
-        "DROP TABLE IF EXISTS main.sessions; CREATE TEMP TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,csrf TEXT NOT NULL,expires_at INTEGER NOT NULL);"
+    if (!exec_sql("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL COLLATE NOCASE UNIQUE,role TEXT NOT NULL CHECK(role IN('admin','agent')),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));"
+        "CREATE TABLE IF NOT EXISTS oidc_identities(issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),PRIMARY KEY(issuer,subject));"
+        "DROP TABLE IF EXISTS main.sessions; CREATE TEMP TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,csrf TEXT NOT NULL,expires_at INTEGER NOT NULL,origin TEXT NOT NULL);"
         "CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);"
         "CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',requester TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open' CHECK(status IN('open','in_progress','waiting','resolved','closed')),priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN('low','normal','high','urgent')),assignee_id INTEGER REFERENCES users(id),created_by INTEGER NOT NULL REFERENCES users(id),due_date TEXT,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),updated_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),revision INTEGER NOT NULL DEFAULT 1);"
         "CREATE INDEX IF NOT EXISTS tickets_updated_idx ON tickets(updated_at DESC,id DESC);"
@@ -1483,7 +1733,19 @@ static bool init_db(const char *path) {
         "CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY AUTOINCREMENT,ticket_id INTEGER NOT NULL REFERENCES tickets(id),author_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));"
         "CREATE INDEX IF NOT EXISTS comments_ticket_idx ON comments(ticket_id,id);"
         "CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT,ticket_id INTEGER NOT NULL REFERENCES tickets(id),actor_id INTEGER NOT NULL REFERENCES users(id),actor_name TEXT NOT NULL,action TEXT NOT NULL,detail TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));"
-        "CREATE INDEX IF NOT EXISTS history_ticket_idx ON history(ticket_id,id); PRAGMA user_version=1; COMMIT;")) return false;
+        "CREATE INDEX IF NOT EXISTS history_ticket_idx ON history(ticket_id,id);")) { exec_sql("ROLLBACK"); return false; }
+    if (schema_version < 2 && !exec_sql(
+        "ALTER TABLE tickets ADD COLUMN job_id INTEGER CHECK(job_id IS NULL OR job_id>0);"
+        "ALTER TABLE tickets ADD COLUMN job_code TEXT; ALTER TABLE tickets ADD COLUMN job_name TEXT;"
+        "ALTER TABLE tickets ADD COLUMN asset_id INTEGER CHECK(asset_id IS NULL OR asset_id>0);"
+        "ALTER TABLE tickets ADD COLUMN asset_tag TEXT; ALTER TABLE tickets ADD COLUMN asset_name TEXT;")) { exec_sql("ROLLBACK"); return false; }
+    if (!exec_sql("CREATE INDEX IF NOT EXISTS tickets_job_idx ON tickets(job_id); CREATE INDEX IF NOT EXISTS tickets_asset_idx ON tickets(asset_id);"
+        "CREATE TEMP TABLE punto_connections(token_hash TEXT PRIMARY KEY,pending_state TEXT,pending_until INTEGER,grant TEXT,connected_state TEXT,expires_at INTEGER,user_name TEXT);"
+        "CREATE TEMP TABLE punto_visible_jobs(job_id INTEGER PRIMARY KEY);"
+        "CREATE TEMP TABLE punto_access(singleton INTEGER PRIMARY KEY CHECK(singleton=1),connected INTEGER NOT NULL,all_jobs INTEGER NOT NULL);"
+        "INSERT INTO punto_access VALUES(1,0,0);"
+        "CREATE TEMP TRIGGER punto_session_delete AFTER DELETE ON sessions BEGIN DELETE FROM punto_connections WHERE token_hash=OLD.token_hash; END;"
+        "PRAGMA user_version=2; COMMIT;")) { exec_sql("ROLLBACK"); return false; }
     sqlite3_stmt *st = prepare("SELECT count(*) FROM users");
     if (!st) return false;
     int rc = sqlite3_step(st);
@@ -1546,17 +1808,57 @@ static bool valid_authority(const char *authority) {
     long long number;
     return !port || (parse_uint(port, 65535, &number) && number > 0);
 }
-static bool configure_origin(void) {
-    const char *origin = getenv("TICKETS_PUBLIC_ORIGIN");
-    if (!origin || !*origin) return true;
+static bool add_public_origin(const char *origin) {
+    if (public_origins_count >= PUBLIC_ORIGINS_MAX) return false;
+    PublicOrigin *entry = &public_origins[public_origins_count];
     size_t prefix = !strncmp(origin, "https://", 8) ? 8 : !strncmp(origin, "http://", 7) ? 7 : 0;
-    if (!prefix || strlen(origin) >= sizeof(public_origin) || !origin[prefix] || strlen(origin + prefix) >= sizeof(public_authority) || strpbrk(origin + prefix, "/?#@\\ \t\r\n")) return false;
+    if (!prefix || strlen(origin) >= sizeof(entry->origin) || !origin[prefix] || strlen(origin + prefix) >= sizeof(entry->authority) || strpbrk(origin + prefix, "/?#@\\ \t\r\n")) return false;
     for (const char *p = origin + prefix; *p; p++) if ((unsigned char)*p < 33 || (unsigned char)*p >= 127) return false;
     if (!valid_authority(origin + prefix)) return false;
-    bounded_copy(public_origin, sizeof(public_origin), origin);
-    bounded_copy(public_authority, sizeof(public_authority), origin + prefix);
-    secure_cookie = prefix == 8;
+    /* Host does not carry a scheme. Reject ambiguous (or duplicate) authorities. */
+    for (size_t i = 0; i < public_origins_count; i++)
+        if (!strcasecmp(origin + prefix, public_origins[i].authority)) return false;
+    bounded_copy(entry->origin, sizeof(entry->origin), origin);
+    bounded_copy(entry->authority, sizeof(entry->authority), origin + prefix);
+    entry->secure = prefix == 8;
+    public_origins_count++;
     return true;
+}
+static bool configure_origin(void) {
+    const char *primary = getenv("TICKETS_PUBLIC_ORIGIN");
+    const char *additional = getenv("TICKETS_ADDITIONAL_ORIGINS");
+    if (!primary || !*primary) return !additional || !*additional;
+    if (!add_public_origin(primary)) return false;
+    if (!additional || !*additional) return true;
+    const char *start = additional;
+    for (;;) {
+        const char *end = strchr(start, ',');
+        size_t length = end ? (size_t)(end - start) : strlen(start);
+        char origin[512];
+        if (!length || length >= sizeof(origin)) return false;
+        memcpy(origin, start, length);
+        origin[length] = 0;
+        if (!add_public_origin(origin)) return false;
+        if (!end) return true;
+        start = end + 1;
+    }
+}
+static bool configure_sso_origin(void) {
+    if (!oidc_enabled()) return true;
+    const char *redirect = getenv("OIDC_REDIRECT_URI");
+    if (!redirect) return false;
+    const char *scheme_end = strstr(redirect, "://");
+    const char *path = scheme_end ? strchr(scheme_end + 3, '/') : NULL;
+    if (!path || strcmp(path, "/auth/callback")) return false;
+    size_t length = (size_t)(path - redirect);
+    if (length >= sizeof(oidc_origin)) return false;
+    memcpy(oidc_origin, redirect, length);
+    oidc_origin[length] = 0;
+    if (!public_origins_count)
+        return !strncmp(oidc_origin, "http://", 7) && local_authority(oidc_origin + 7);
+    for (size_t i = 0; i < public_origins_count; i++)
+        if (!strcmp(oidc_origin, public_origins[i].origin)) return true;
+    return false;
 }
 static int open_listener(const char *bind_address) {
     char port[16];
@@ -1588,11 +1890,16 @@ int main(void) {
     if (!parse_uint(env_or("TICKETS_PORT", "8083"), 65535, &port) || port < 1) { fprintf(stderr, "TICKETS_PORT non valida.\n");
     return 1;
     } configured_port = (int)port;
-    if (!configure_origin()) { fprintf(stderr, "TICKETS_PUBLIC_ORIGIN deve essere una singola origine http(s), senza percorso o credenziali.\n");
+    if (!configure_origin()) { fprintf(stderr, "Origini Ticket non valide: configura TICKETS_PUBLIC_ORIGIN e al massimo 3 TICKETS_ADDITIONAL_ORIGINS http(s) separate da virgole, senza percorsi, credenziali o autorità duplicate.\n");
     return 1;
     }
     public_dir = env_or("TICKETS_PUBLIC_DIR", "public");
+    if (!oidc_init()) { fprintf(stderr, "Configurazione autenticazione Ticket non valida.\n"); return 1; }
+    if (!configure_sso_origin()) { fprintf(stderr, "OIDC_REDIRECT_URI deve usare un’origine Ticket configurata e il percorso /auth/callback.\n"); oidc_close(); return 1; }
+    if (!punto_client_open()) { fprintf(stderr, "Configurazione collegamento Punto non valida.\n"); oidc_close(); return 1; }
     if (!init_db(env_or("TICKETS_DB_PATH", "data/tickets.db"))) { if (db) sqlite3_close(db);
+    punto_client_close();
+    oidc_close();
     return 1;
     }
     /* Bootstrap material is no longer needed after initialization. */
@@ -1601,6 +1908,8 @@ int main(void) {
     listener = open_listener(bind_address);
     if (listener < 0) { perror("Ascolto ticket");
     sqlite3_close(db);
+    punto_client_close();
+    oidc_close();
     return 1;
     }
     struct sigaction action;
@@ -1635,5 +1944,7 @@ int main(void) {
     }
     if (listener >= 0) close(listener);
     sqlite3_close(db);
+    punto_client_close();
+    oidc_close();
     return 0;
 }

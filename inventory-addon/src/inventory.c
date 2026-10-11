@@ -274,6 +274,8 @@ static sqlite3_stmt *prepare(const char *sql) {
     if (sqlite3_prepare_v2(database, sql, -1, &statement, NULL) != SQLITE_OK) return NULL;
     return statement;
 }
+static bool directory_migrate(void);
+static bool subjects_migrate(void);
 static bool init_database(void) {
     if (sqlite3_open_v2(config.database, &database,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) return false;
@@ -282,7 +284,7 @@ static bool init_database(void) {
     if (!version) return false;
     int current = sqlite3_step(version) == SQLITE_ROW ? sqlite3_column_int(version, 0) : -1;
     sqlite3_finalize(version);
-    if (current < 0 || current > 3) return false;
+    if (current < 0 || current > 5) return false;
     if (!execute("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;BEGIN IMMEDIATE;")) return false;
     bool ok = true;
     if (current == 0) ok = execute(
@@ -316,11 +318,35 @@ static bool init_database(void) {
         "CREATE TABLE inventory_import_previews(preview_id TEXT PRIMARY KEY,actor_id INTEGER NOT NULL CHECK(actor_id>0),"
         "created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0 CHECK(used IN (0,1)),plan TEXT NOT NULL);"
         "CREATE INDEX inventory_import_previews_expiry ON inventory_import_previews(expires_at);");
+    if (ok && current < 4) ok = execute(
+        "CREATE TABLE inventory_places(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL CHECK(kind IN ('site','department','location')),"
+        "name TEXT NOT NULL,parent_id INTEGER REFERENCES inventory_places(id),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),"
+        "version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),actor_id INTEGER NOT NULL CHECK(actor_id>0),created_at TEXT NOT NULL,updated_at TEXT NOT NULL);"
+        "CREATE UNIQUE INDEX inventory_places_unique ON inventory_places(kind,name COLLATE NOCASE,COALESCE(parent_id,0));"
+        "CREATE INDEX inventory_places_page ON inventory_places(kind,active,id);"
+        "CREATE TABLE asset_context(asset_id INTEGER PRIMARY KEY REFERENCES assets(id),assignee_user_id INTEGER CHECK(assignee_user_id>0),assignee_user_name TEXT NOT NULL DEFAULT '',"
+        "site_id INTEGER REFERENCES inventory_places(id),site_name TEXT NOT NULL DEFAULT '',department_id INTEGER REFERENCES inventory_places(id),department_name TEXT NOT NULL DEFAULT '',"
+        "location_id INTEGER REFERENCES inventory_places(id),location_name TEXT NOT NULL DEFAULT '');"
+        "CREATE INDEX asset_context_user ON asset_context(assignee_user_id,asset_id);"
+        "CREATE TABLE asset_custody(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER NOT NULL REFERENCES assets(id),user_id INTEGER NOT NULL CHECK(user_id>0),user_name TEXT NOT NULL,"
+        "checkout_on TEXT NOT NULL,due_on TEXT NOT NULL DEFAULT '',condition_out TEXT NOT NULL,notes_out TEXT NOT NULL DEFAULT '',actor_id INTEGER NOT NULL CHECK(actor_id>0),created_at TEXT NOT NULL,"
+        "site_id INTEGER REFERENCES inventory_places(id),site_name TEXT NOT NULL DEFAULT '',department_id INTEGER REFERENCES inventory_places(id),department_name TEXT NOT NULL DEFAULT '',location_id INTEGER REFERENCES inventory_places(id),location_name TEXT NOT NULL DEFAULT '',"
+        "active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),returned_on TEXT,condition_in TEXT,notes_in TEXT,returned_actor_id INTEGER,returned_at TEXT);"
+        "CREATE UNIQUE INDEX asset_custody_active ON asset_custody(asset_id) WHERE active=1;"
+        "CREATE INDEX asset_custody_page ON asset_custody(asset_id,id);"
+        "CREATE TABLE asset_verifications(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER NOT NULL REFERENCES assets(id),verified_on TEXT NOT NULL,condition TEXT NOT NULL,"
+        "observed_location_id INTEGER REFERENCES inventory_places(id),observed_location_name TEXT NOT NULL DEFAULT '',expected_location_id INTEGER REFERENCES inventory_places(id),expected_location_name TEXT NOT NULL DEFAULT '',"
+        "location_matches INTEGER CHECK(location_matches IN (0,1)),notes TEXT NOT NULL DEFAULT '',actor_id INTEGER NOT NULL CHECK(actor_id>0),created_at TEXT NOT NULL);"
+        "CREATE INDEX asset_verifications_page ON asset_verifications(asset_id,id);");
+    if (ok && current < 5) ok = directory_migrate() && subjects_migrate();
     if (ok) ok = execute(
         "CREATE INDEX IF NOT EXISTS assets_status_id ON assets(status,id);"
         "CREATE INDEX IF NOT EXISTS assets_type_id ON assets(asset_type,id);"
         "CREATE INDEX IF NOT EXISTS asset_history_asset_id ON asset_history(asset_id,id);"
-        "PRAGMA user_version=3;");
+        "CREATE INDEX IF NOT EXISTS asset_context_site ON asset_context(site_id,asset_id);"
+        "CREATE INDEX IF NOT EXISTS asset_context_department ON asset_context(department_id,asset_id);"
+        "CREATE INDEX IF NOT EXISTS asset_verifications_latest ON asset_verifications(asset_id,verified_on DESC,id DESC);"
+        "PRAGMA user_version=5;");
     if (ok) ok = execute("COMMIT");
     if (!ok) (void)execute("ROLLBACK");
     return ok;
@@ -334,6 +360,8 @@ static sqlite3_int64 allocated_seats(sqlite3_int64 id, bool *error) {
     sqlite3_finalize(s);
     return count;
 }
+static bool custody_enrich(json_object *asset);
+static bool custody_asset_compatible(json_object *old, const char *type, const char *const *values);
 static json_object *asset_row(sqlite3_stmt *s) {
     json_object *asset = json_object_new_object();
     addint(asset, "id", sqlite3_column_int64(s, 0));
@@ -362,6 +390,7 @@ static json_object *asset_row(sqlite3_stmt *s) {
         json_object_object_add(usage, "expired", json_object_new_boolean(license_expired(details)));
         json_object_object_add(asset, "license_usage", usage);
     }
+    if (!custody_enrich(asset)) { json_object_put(asset); return NULL; }
     return asset;
 }
 static json_object *load_asset(sqlite3_int64 id, bool *error) {
@@ -604,6 +633,9 @@ static json_object *save_asset(sqlite3_int64 id, Form *form, int *status) {
     for (size_t i = 0; i < 5; i++) if (!strcmp(type,asset_types[i])) known_type = true;
     if (!known_type) { code = 400; message = "Tipologia del bene non valida."; goto fail; }
     bool type_changed = old && strcmp(type,jstr(old,"asset_type"));
+    if (old && !custody_asset_compatible(old,type,values)) {
+        code = 409; message = "Usare assegnazione, consegna o restituzione per modificare i dati strutturati del bene."; goto fail;
+    }
     if (old && !has_field(form,"details") && !type_changed) {
         json_object *v = NULL; json_object_object_get_ex(old,"details",&v); details = json_object_get(v);
     } else if (!old && !has_field(form,"asset_type") && !has_field(form,"details")) details = json_object_new_object();
@@ -669,14 +701,18 @@ fail:
     if (asset) json_object_put(asset);
     return failure(status,code,message);
 }
+#include "inventory_operations.inc"
+
 static bool page_query(const char *query, bool history, Form *form, int *limit, sqlite3_int64 *after) {
-    static const char *const allowed[] = {"limit", "after_id", "q", "status", "asset_type"};
+    static const char *const allowed[] = {"limit", "after_id", "q", "status", "asset_type", "assignee_user_id", "site_id", "department_id", "attention", "verification_days", "today", "person_id", "identity_id"};
     if (!form_parse(query, form)) return false;
-    bool ok = only_fields(form, allowed, history ? 2 : 5);
+    bool ok = only_fields(form, allowed, history ? 2 : sizeof(allowed)/sizeof(allowed[0]));
     *limit = 30;
     *after = 0;
     if (has_field(form, "limit") && !number(field(form, "limit"), 1, 100, limit)) ok = false;
     if (has_field(form, "after_id") && !integer(field(form, "after_id"), 1, INT64_MAX, after)) ok = false;
+    sqlite3_int64 assignee = 0;
+    if (has_field(form,"assignee_user_id") && !integer(field(form,"assignee_user_id"),1,INT64_MAX,&assignee)) ok=false;
     if (strlen(field(form, "q")) > 200 || !utf8_text(field(form, "q"), false)) ok = false;
     if (has_field(form, "status")) {
         bool valid = false;
@@ -688,6 +724,7 @@ static bool page_query(const char *query, bool history, Form *form, int *limit, 
         for (int i = 0; i < 5; i++) if (!strcmp(field(form,"asset_type"),asset_types[i])) valid = true;
         if (!valid) ok = false;
     }
+    if (!history && !operational_filter_valid(form)) ok=false;
     if (!ok) form_free(form);
     return ok;
 }
@@ -696,12 +733,9 @@ static json_object *list_assets(const char *query, int *status) {
     int limit;
     sqlite3_int64 after;
     if (!page_query(query, false, &form, &limit, &after)) return failure(status, 400, "Filtri inventario non validi.");
-    sqlite3_stmt *s = prepare("SELECT " ASSET_COLUMNS " FROM assets WHERE (?1=0 OR id<?1) AND (?2='' OR status=?2) AND (?5='' OR asset_type=?5) AND (?3='' OR instr(lower(asset_tag),lower(?3))>0 OR instr(lower(name),lower(?3))>0 OR instr(lower(category),lower(?3))>0 OR instr(lower(serial_number),lower(?3))>0 OR instr(lower(manufacturer),lower(?3))>0 OR instr(lower(model),lower(?3))>0 OR instr(lower(location),lower(?3))>0 OR instr(lower(assignee),lower(?3))>0 OR instr(lower(notes),lower(?3))>0 OR EXISTS(SELECT 1 FROM json_each(assets.details) typed WHERE typed.type='text' AND instr(lower(typed.value),lower(?3))>0)) ORDER BY id DESC LIMIT ?4");
+    sqlite3_stmt *s = prepare(OPERATIONAL_CTE FILTERED_CTE "SELECT " ASSET_COLUMNS " FROM filtered ORDER BY id DESC LIMIT ?4");
     json_object *totals = summary();
-    bool ok = s && totals && sqlite3_bind_int64(s, 1, after) == SQLITE_OK &&
-        sqlite3_bind_text(s, 2, field(&form, "status"), -1, SQLITE_TRANSIENT) == SQLITE_OK &&
-        sqlite3_bind_text(s, 3, field(&form, "q"), -1, SQLITE_TRANSIENT) == SQLITE_OK && sqlite3_bind_int(s, 4, limit+1) == SQLITE_OK &&
-        sqlite3_bind_text(s, 5, field(&form, "asset_type"), -1, SQLITE_TRANSIENT) == SQLITE_OK;
+    bool ok = s && totals && operational_filter_bind(s,&form,after,limit+1);
     form_free(&form);
     if (!ok) {
         sqlite3_finalize(s);
@@ -1184,6 +1218,9 @@ static int receive_request(SSL *tls, Request *request) {
 
 #include "inventory_csv.inc"
 #include "inventory_due.inc"
+#include "inventory_custody.inc"
+#include "inventory_directory.inc"
+#include "inventory_subjects.inc"
 
 static json_object *route(Request *request, const char *address, int *status) {
     bool health = !strcmp(request->path, "/healthz") && !strcmp(request->method, "GET") && !request->length;
@@ -1223,6 +1260,31 @@ static json_object *route(Request *request, const char *address, int *status) {
         if (!get) return failure(status,405,"Le scadenze sono consultabili in sola lettura.");
         return list_due(query,status);
     }
+    if (!strcmp(request->path,"/v1/dashboard")) {
+        if (!get) return failure(status,405,"Il cruscotto è consultabile in sola lettura.");
+        return operational_dashboard(query,status);
+    }
+    if (!strcmp(request->path,"/v1/operational-due")) {
+        if (!get) return failure(status,405,"Gli adempimenti sono consultabili in sola lettura.");
+        return operational_due(query,status);
+    }
+    json_object *directory_result=subjects_route(request,query,status);
+    if (!directory_result) directory_result=directory_route(request,query,status);
+    if (directory_result) return directory_result;
+    if (!strcmp(request->path,"/v1/places") || !strncmp(request->path,"/v1/places/",11)) {
+        sqlite3_int64 place_id=0;
+        if (request->path[10]=='/' && !integer(request->path+11,1,INT64_MAX,&place_id))
+            return failure(status,400,"Identificativo anagrafica non valido.");
+        if (get) {
+            if (place_id) return failure(status,405,"Consultare le anagrafiche tramite l'elenco.");
+            return list_places(query,status);
+        }
+        if (*query) return failure(status,400,"Parametri inattesi per l'anagrafica.");
+        if (strcasecmp(request->content_type,"application/x-www-form-urlencoded")) return failure(status,415,"Formato richiesto: application/x-www-form-urlencoded.");
+        Form form;
+        if (!form_parse(request->body,&form)) return failure(status,400,"Modulo non valido o campi duplicati.");
+        json_object *o=save_place(place_id,&form,status); form_free(&form); return o;
+    }
     if (!strcmp(request->path,"/v1/import/preview") || !strcmp(request->path,"/v1/import/commit")) {
         if (!post) return failure(status,405,"L'importazione richiede POST.");
         if (*query) return failure(status,400,"Parametri inattesi per l'importazione.");
@@ -1235,6 +1297,8 @@ static json_object *route(Request *request, const char *address, int *status) {
     }
     sqlite3_int64 id = 0;
     bool history = false, relations = false;
+    const char *custody_operation=NULL;
+    bool custody_log=false,verification_log=false;
     sqlite3_int64 remove_id = 0;
     if (!strcmp(request->path, "/v1/assets")) {
         if (get) return list_assets(query, status);
@@ -1244,6 +1308,9 @@ static json_object *route(Request *request, const char *address, int *status) {
             *suffix++ = 0;
             if (!strcmp(suffix,"history")) history = true;
             else if (!strcmp(suffix,"relations")) relations = true;
+            else if (!strcmp(suffix,"custody")) custody_log=true;
+            else if (!strcmp(suffix,"verifications")) verification_log=true;
+            else if (!strcmp(suffix,"context") || !strcmp(suffix,"checkout") || !strcmp(suffix,"checkin") || !strcmp(suffix,"verify")) custody_operation=suffix;
             else if (!strncmp(suffix,"relations/",10)) {
                 char *relation_identifier = suffix+10, *remove = strchr(relation_identifier,'/');
                 if (!remove || strcmp(remove,"/remove")) return failure(status,404,"Percorso inventario non trovato.");
@@ -1253,6 +1320,11 @@ static json_object *route(Request *request, const char *address, int *status) {
             } else return failure(status,404,"Percorso inventario non trovato.");
         }
         if (!integer(identifier, 1, INT64_MAX, &id)) return failure(status, 400, "Identificativo del bene non valido.");
+        if (custody_log || verification_log) {
+            if (!get) return failure(status,405,"Lo storico è consultabile in sola lettura.");
+            return custody_history(id,verification_log,query,status);
+        }
+        if (custody_operation && get) return failure(status,405,"L'operazione richiede POST.");
         if (relations && get) {
             if (remove_id) return failure(status,405,"La rimozione richiede POST.");
             return list_relations(id,query,status);
@@ -1273,7 +1345,7 @@ static json_object *route(Request *request, const char *address, int *status) {
     if (strcasecmp(request->content_type, "application/x-www-form-urlencoded")) return failure(status, 415, "Formato richiesto: application/x-www-form-urlencoded.");
     Form form;
     if (!form_parse(request->body, &form)) return failure(status, 400, "Modulo non valido o campi duplicati.");
-    json_object *o = relations ? save_relation(id,remove_id,&form,status) : save_asset(id, &form, status);
+    json_object *o = custody_operation ? custody_mutation(id,custody_operation,&form,status) : relations ? save_relation(id,remove_id,&form,status) : save_asset(id, &form, status);
     form_free(&form);
     return o;
 }

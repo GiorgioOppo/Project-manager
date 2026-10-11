@@ -39,6 +39,10 @@ class ServerIntegrationTests(unittest.TestCase):
         (public / "styles.css").write_text("body { color: #123456; }", encoding="utf-8")
         (public / "login.js").write_text("/* fixture login script */", encoding="utf-8")
         (public / "app.js").write_text("/* fixture app script */", encoding="utf-8")
+        (public / "i18n.js").write_text("/* fixture locale runtime */", encoding="utf-8")
+        (public / "i18n.css").write_text("/* fixture language selector */", encoding="utf-8")
+        (public / "locales").mkdir()
+        (public / "locales/en.json").write_text('{"Accedi":"Sign in"}', encoding="utf-8")
         (Path(cls.fixture.name) / "secret.txt").write_text("fixture-secret", encoding="utf-8")
 
         with socket.socket() as reserved:
@@ -129,7 +133,10 @@ class ServerIntegrationTests(unittest.TestCase):
         self.assertIn("text/html", headers.get("Content-Type", ""))
         for path, content_type in (("/styles.css", "text/css"),
                                    ("/login.js", "javascript"),
-                                   ("/app.js", "javascript")):
+                                   ("/app.js", "javascript"),
+                                   ("/i18n.js", "javascript"),
+                                   ("/i18n.css", "text/css"),
+                                   ("/locales/en.json", "application/json")):
             with self.subTest(path=path):
                 status, headers, body = self.request("GET", path)
                 self.assertEqual(status, 200)

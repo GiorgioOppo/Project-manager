@@ -1,5 +1,7 @@
 # Esempi di analisi del lavoro e dei costi
 
+**Italiano** | [English](../en/prod/esempi-analisi-e-costi.md)
+
 Il dataset seguente è interamente sintetico. Serve per capire e verificare le cinque viste di **Analisi**; non descrive dati presenti nell’installazione e non è stato inserito durante la redazione. Gli importi sono in EUR e i totali sono stati verificati con calcoli interi, applicando l’arrotondamento della singola registrazione usato dal server.
 
 ## 1. Dati di partenza

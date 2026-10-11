@@ -4,6 +4,9 @@ CPPFLAGS += -D_POSIX_C_SOURCE=200809L
 CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c src/organization.c src/alerts.c src/mail_client.c src/calendar_client.c src/work_board.c src/inventory_client.c
+SOURCES += auth/oidc.c src/ticket_bridge.c
+CPPFLAGS += $(shell pkg-config --cflags openssl)
+LDLIBS += $(shell pkg-config --libs openssl)
 CPPFLAGS += $(shell pkg-config --cflags json-c)
 LDLIBS += -lcurl $(shell pkg-config --libs json-c)
 UNAME_S := $(shell uname -s)
@@ -25,7 +28,7 @@ endif
 .PHONY: all run test clean FORCE
 all: build/punto
 
-build/$(DB_BACKEND)/punto: $(SOURCES) $(wildcard src/*.h) Makefile
+build/$(DB_BACKEND)/punto: $(SOURCES) $(wildcard src/*.h auth/*.h) Makefile
 	mkdir -p build/$(DB_BACKEND)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) -o $@ $(LDLIBS)
 
@@ -49,5 +52,5 @@ tickets:
 run-tickets: tickets
 	cd ticket-app && ./build/punto-tickets
 
-test-tickets: tickets
-	python3 -m unittest discover -s tests -p 'test_tickets.py' -v
+test-tickets: tickets build/punto
+	python3 -m unittest discover -s tests -p 'test_ticket*.py' -v

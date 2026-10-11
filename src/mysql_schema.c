@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MYSQL_SCHEMA_VERSION 9
+#define MYSQL_SCHEMA_VERSION 10
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -172,6 +172,16 @@ static bool ensure_inventory_alerts(Db *database) {
         "ALTER TABLE alert_rules ADD COLUMN days_before INT NOT NULL DEFAULT 30,"
         "ADD CONSTRAINT alert_rules_days_before CHECK(days_before BETWEEN 1 AND 365)",
         NULL,NULL,NULL) != DB_OK)) return false;
+    okay = db_prepare_v2(database,
+        "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='alert_rules' AND COLUMN_NAME='verification_days'", -1, &statement, NULL) == DB_OK &&
+        db_step(statement) == DB_ROW;
+    bool has_interval = okay && db_column_int64(statement, 0) == 1;
+    db_finalize(statement); statement = NULL;
+    if (!okay || (!has_interval && db_exec(database,
+        "ALTER TABLE alert_rules ADD COLUMN verification_days INT NOT NULL DEFAULT 90,"
+        "ADD CONSTRAINT alert_rules_verification_days CHECK(verification_days BETWEEN 1 AND 365)",
+        NULL,NULL,NULL) != DB_OK)) return false;
     if (db_prepare_v2(database,
         "SELECT t.CONSTRAINT_NAME,c.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS t "
         "JOIN information_schema.CHECK_CONSTRAINTS c ON c.CONSTRAINT_SCHEMA=t.CONSTRAINT_SCHEMA "
@@ -198,8 +208,9 @@ static bool ensure_inventory_alerts(Db *database) {
         for (const char *p=name; *p; p++) if (!isalnum((unsigned char)*p) && *p!='_') okay=false;
         if (!okay) break;
         found=true;
-        expanded = !strcmp(normalized,"typein'invalid_job','missing_hours','inventory_due'");
-        if (!expanded && strcmp(normalized,"typein'invalid_job','missing_hours'")) { okay=false; break; }
+        expanded = !strcmp(normalized,"typein'invalid_job','missing_hours','inventory_due','inventory_return','inventory_verification'");
+        if (!expanded && strcmp(normalized,"typein'invalid_job','missing_hours'") &&
+            strcmp(normalized,"typein'invalid_job','missing_hours','inventory_due'")) { okay=false; break; }
         strcpy(restriction,name);
     }
     db_finalize(statement);
@@ -207,7 +218,7 @@ static bool ensure_inventory_alerts(Db *database) {
     if (expanded) return true;
     char ddl[512];
     int length=snprintf(ddl,sizeof(ddl),"ALTER TABLE alert_rules DROP CHECK `%s`,"
-        "ADD CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due'))",restriction);
+        "ADD CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due','inventory_return','inventory_verification'))",restriction);
     return length>0 && (size_t)length<sizeof(ddl) && db_exec(database,ddl,NULL,NULL,NULL)==DB_OK;
 }
 
@@ -233,6 +244,15 @@ bool mysql_schema_prepare(void) {
         "password_hash BINARY(32) NOT NULL,salt BINARY(16) NOT NULL,"
         "UNIQUE KEY users_email(email),"
         "CHECK(role IN ('manager','worker')),CHECK(active IN (0,1))"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        /* Exact provider keys; binary columns keep the composite index below
+           InnoDB's key-size limit without weakening subject uniqueness. */
+        "CREATE TABLE IF NOT EXISTS oidc_identities ("
+        "issuer VARBINARY(1023) NOT NULL,subject VARBINARY(255) NOT NULL,"
+        "user_id BIGINT NOT NULL,PRIMARY KEY(issuer,subject),"
+        "UNIQUE KEY oidc_identities_user(user_id),"
+        "CONSTRAINT oidc_identities_user_fk FOREIGN KEY(user_id) REFERENCES users(id)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS suppliers ("
@@ -409,9 +429,10 @@ bool mysql_schema_prepare(void) {
         "last_run_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,"
         "last_run_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,last_event_id BIGINT NOT NULL DEFAULT 0,"
         "KEY alert_rules_owner(owner_id,id),CONSTRAINT alert_rules_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),"
-        "days_before INT NOT NULL DEFAULT 30,"
-        "CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due')),"
+        "days_before INT NOT NULL DEFAULT 30,verification_days INT NOT NULL DEFAULT 90,"
+        "CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due','inventory_return','inventory_verification')),"
         "CONSTRAINT alert_rules_days_before CHECK(days_before BETWEEN 1 AND 365),"
+        "CONSTRAINT alert_rules_verification_days CHECK(verification_days BETWEEN 1 AND 365),"
         "CHECK(CHAR_LENGTH(run_time)=5),CHECK(enabled IN (0,1)),"
         "CHECK(last_event_id>=0)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 

@@ -1,5 +1,7 @@
 # Sviluppo e test
 
+**Italiano** | [English](../en/tehnical/sviluppo-test.md)
+
 Questa guida descrive strumenti e test presenti l’**11 ottobre 2026**. I comandi sono da eseguire dalla radice del repository. I risultati del nuovo modulo sono nel [verbale attività dell'11 ottobre](verifica-attivita-2026-10-11.md); le istruzioni qui sotto non attestano da sole l'esecuzione di una prova. Il [README principale](../../README.md) contiene il contesto del progetto; [architettura](architettura.md) descrive i componenti.
 
 ## Toolchain e backend

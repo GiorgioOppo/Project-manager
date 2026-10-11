@@ -1,5 +1,7 @@
 # Installazione e configurazione
 
+**Italiano** | [English](../en/tehnical/installazione-configurazione.md)
+
 Guida verificata sui file del repository il **11 ottobre 2026**. I comandi presuppongono la directory radice del progetto. [Architettura](architettura.md) e [rete e sicurezza](rete-sicurezza.md) descrivono cosa viene avviato; il [README principale](../../README.md) offre l'ingresso rapido.
 
 ## Requisiti
@@ -123,7 +125,7 @@ ID, redirect e segreto Google vanno configurati insieme; configurazioni parziali
 
 ## Aggiornamento dei servizi esistenti
 
-Prima di aggiornare, salvare un backup coerente come descritto in [operazioni](operazioni-backup-ripristino.md), conservare le credenziali e verificare se il nuovo codice contiene migrazioni. Lo schema corrente è 9; avviare una versione precedente non esegue una migrazione inversa.
+Prima di aggiornare, salvare un backup coerente come descritto in [operazioni](operazioni-backup-ripristino.md), conservare le credenziali e verificare se il nuovo codice contiene migrazioni. Lo schema corrente è 10; avviare una versione precedente non esegue una migrazione inversa.
 
 Se l’installazione usa ancora i precedenti nomi Compose, seguire prima la [migrazione della nomenclatura](nomi-servizi-e-immagini.md). Le identità nuove non devono partire accanto ai vecchi container con gli stessi IP e volumi.
 
@@ -164,7 +166,7 @@ La chiave `calendar-token-key` serve a decifrare il database già scritto. Non p
 
 ## Modalità nativa per sviluppo
 
-Servono un compilatore C11, make, Python 3 per i test, `pkg-config`, SQLite, libcurl e json-c. La derivazione password usa Security/CommonCrypto su macOS e OpenSSL su Linux. Gli addon richiedono inoltre OpenSSL; Calendar richiede pthread.
+Servono un compilatore C11, make, Python 3 per i test, `pkg-config`, SQLite, libcurl, json-c e OpenSSL 3 (anche su macOS, per la verifica OIDC). La derivazione password usa Security/CommonCrypto su macOS e OpenSSL su Linux. Gli addon richiedono inoltre OpenSSL; Calendar richiede pthread. L’integrazione opzionale [Keycloak](keycloak.md) usa un realm comune per Punto e Ticket, con client e collegamenti utente separati.
 
 ```sh
 make

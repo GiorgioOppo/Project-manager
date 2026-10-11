@@ -1,5 +1,7 @@
 # Attività, Kanban e registro dei blocchi
 
+**Italiano** | [English](../en/prod/attivita-kanban-e-blocchi.md)
+
 Stato documentato: **11 ottobre 2026**, schema dati **8**.
 
 Il modulo **Attività e blocchi** organizza il lavoro all'interno delle commesse. Un'attività descrive un risultato da ottenere; un blocco descrive un impedimento da affrontare. Questa prima consegna comprende attività, sottoattività, bacheca e registro dei blocchi. Dipendenze, pianificazione del carico, rischi probabilistici e collegamento delle ore alle singole attività restano sviluppi successivi.

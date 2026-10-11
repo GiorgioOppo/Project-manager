@@ -1,12 +1,14 @@
 "use strict";
 
-(() => {
+(async () => {
+  if (window.PuntoI18n) await window.PuntoI18n.ready;
+  const { t, locale } = window.PuntoI18n || { t: (source, values = []) => source.replace(/\{(\d+)\}/g, (_, index) => values[index]), locale: "it-IT" };
   const $ = (id) => document.getElementById(id);
-  const states = { planned: "Da avviare", active: "In corso", paused: "In pausa", completed: "Completata", cancelled: "Annullata" };
-  const roles = { manager: "Gestore", worker: "Operatore" };
-  const contractStates = { draft: "Bozza", active: "Attivo", expired: "Scaduto", closed: "Chiuso", cancelled: "Annullato" };
+  const states = { planned: t("Da avviare"), active: t("In corso"), paused: t("In pausa"), completed: t("Completata"), cancelled: t("Annullata") };
+  const roles = { manager: t("Gestore"), worker: t("Operatore") };
+  const contractStates = { draft: t("Bozza"), active: t("Attivo"), expired: t("Scaduto"), closed: t("Chiuso"), cancelled: t("Annullato") };
   const tabs = ["jobs", "work-board", "inventory", "hours", "reports", "notifications", "alerts", "suppliers", "contracts", "users", "organization", "audit"];
-  const reportViews = { periodo: { api: "date", label: "Per periodo", title: "Il lavoro nel periodo" }, commesse: { api: "job", label: "Per commessa", title: "Il lavoro per commessa" }, utenti: { api: "user", label: "Per utente", title: "Il lavoro per utente" }, costi: { api: "cost", label: "Valore contratti", title: "Valori contrattuali e lavoro registrato" }, "costo-ore": { api: "labor_cost", label: "Costo delle ore", title: "Il costo stimato delle ore" } };
+  const reportViews = { periodo: { api: "date", label: t("Per periodo"), title: t("Il lavoro nel periodo") }, commesse: { api: "job", label: t("Per commessa"), title: t("Il lavoro per commessa") }, utenti: { api: "user", label: t("Per utente"), title: t("Il lavoro per utente") }, costi: { api: "cost", label: t("Valore contratti"), title: t("Valori contrattuali e lavoro registrato") }, "costo-ore": { api: "labor_cost", label: t("Costo delle ore"), title: t("Il costo stimato delle ore") } };
   const state = { session: null, sessionRequest: 0, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
   Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, deleteJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
   Object.assign(state, { organizationGroups: [], organizationRoles: [], organizationUsers: [], organizationReady: false, organizationLoading: false, organizationRequest: 0, selectedGroup: null, groupMembers: [], groupMembersReady: false, groupMembersRequest: 0, organizationBusy: false, organizationConfirm: null, assignmentGroups: [], assignmentRoles: [], groupGrants: [], editingGroupGrant: null, revokeGroupGrant: null });
@@ -14,9 +16,11 @@
   Object.assign(state, { laborRates: [], laborRateUsers: [], laborRatesReady: false, laborRatesLoading: false, laborRatesRequest: 0, editingLaborRate: null, routeHash: null });
   Object.assign(state, { alertRules: [], alertUsers: [], alertRulesReady: false, alertRulesLoading: false, alertRulesRequest: 0, editingAlertRule: null, runningAlertRule: null, alertSmtpConfigured: false, notifications: [], notificationsReady: false, notificationsLoading: false, notificationsRequest: 0, notificationsUnread: 0, readingNotifications: new Set() });
   const alertTypes = {
-    invalid_job: { label: "Commessa inesistente", description: "Controlla i tentativi rifiutati di registrare ore su commesse inesistenti o eliminate. Le ore di questi tentativi non sono state salvate." },
-    missing_hours: { label: "Ore giornaliere mancanti", description: "Controlla le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore reali dalla fine della giornata in Europe/Rome. Il monitoraggio parte dalla creazione della regola." },
-    inventory_due: { label: "Scadenze inventario", description: "Controlla garanzie, manutenzioni, scadenze e rinnovi delle licenze. Include le date già superate; esclude beni dismessi o smarriti. Ogni destinatario riceve un solo avviso per asset, tipo di scadenza, data e anticipo impostato." }
+    invalid_job: { label: t("Commessa inesistente"), description: t("Controlla i tentativi rifiutati di registrare ore su commesse inesistenti o eliminate. Le ore di questi tentativi non sono state salvate.") },
+    missing_hours: { label: t("Ore giornaliere mancanti"), description: t("Controlla le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore reali dalla fine della giornata in Europe/Rome. Il monitoraggio parte dalla creazione della regola.") },
+    inventory_due: { label: t("Scadenze inventario"), description: t("Controlla garanzie, manutenzioni, scadenze e rinnovi delle licenze. Include le date già superate; esclude beni dismessi o smarriti. Ogni destinatario riceve un solo avviso per asset, tipo di scadenza, data e anticipo impostato.") },
+    inventory_return: { label: t("Restituzioni inventario scadute"), description: t("Controlla le consegne ancora aperte dal giorno successivo alla restituzione prevista. Esclude beni dismessi o smarriti; ogni nuova consegna può generare un nuovo avviso.") },
+    inventory_verification: { label: t("Verifiche inventario"), description: t("Controlla i beni materiali mai verificati e quelli la cui ultima verifica ha raggiunto l’intervallo impostato. Esclude beni dismessi o smarriti; una nuova verifica avvia un nuovo intervallo.") }
   };
   const busyDialogs = new Set();
   let noticeTimer;
@@ -35,7 +39,7 @@
 
   function minutesLabel(minutes) {
     const value = Number(minutes) || 0;
-    return `${Math.floor(value / 60)} h ${String(value % 60).padStart(2, "0")} min`;
+    return t("{0} h {1} min", [Math.floor(value / 60), String(value % 60).padStart(2, "0")]);
   }
 
   function dateLabel(value) {
@@ -43,25 +47,25 @@
     const date = new Date(0);
     date.setFullYear(year, month - 1, day);
     date.setHours(12, 0, 0, 0);
-    return date.toLocaleDateString("it-IT", { day: "numeric", month: "long", year: "numeric" });
+    return date.toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" });
   }
 
   function hoursToMinutes(value) {
     const normalized = value.trim().replace(",", ".");
     if (/^\d{1,2}:\d{2}$/.test(normalized)) {
       const [hours, minutes] = normalized.split(":").map(Number);
-      if (minutes > 59) throw new Error("Dopo i due punti inserisci i minuti, da 00 a 59.");
+      if (minutes > 59) throw new Error(t("Dopo i due punti inserisci i minuti, da 00 a 59."));
       const total = hours * 60 + minutes;
-      if (total < 1 || total > 1440) throw new Error("Inserisci una durata da 1 minuto a 24 ore.");
+      if (total < 1 || total > 1440) throw new Error(t("Inserisci una durata da 1 minuto a 24 ore."));
       return total;
     }
-    if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) throw new Error("Inserisci le ore come 1,5 oppure 1:30.");
+    if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) throw new Error(t("Inserisci le ore come 1,5 oppure 1:30."));
     const [whole, fraction = ""] = normalized.split(".");
     const denominator = 10n ** BigInt(fraction.length);
     const numerator = BigInt((whole || "0") + fraction) * 60n;
-    if (numerator % denominator !== 0n) throw new Error("La durata deve corrispondere a minuti interi. Usa ad esempio 0:15 per 15 minuti.");
+    if (numerator % denominator !== 0n) throw new Error(t("La durata deve corrispondere a minuti interi. Usa ad esempio 0:15 per 15 minuti."));
     const minutes = Number(numerator / denominator);
-    if (minutes < 1 || minutes > 1440) throw new Error("Inserisci una durata da 1 minuto a 24 ore.");
+    if (minutes < 1 || minutes > 1440) throw new Error(t("Inserisci una durata da 1 minuto a 24 ore."));
     return minutes;
   }
 
@@ -74,8 +78,8 @@
 
   function redirectToLogin() {
     const hash = window.location.hash;
-    const retained = hash.length <= 2048 && /^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) ? hash : "";
-    window.location.replace("/" + retained);
+    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash)) ? hash : "";
+    window.location.replace(window.PuntoI18n ? window.PuntoI18n.url("/" + retained) : "/" + retained);
   }
 
   async function api(path, options = {}) {
@@ -87,30 +91,31 @@
       if (response.status === 401) {
         if (/^\/api\/inventory(?:\/|$|\?)/.test(path)) resetInventory();
         redirectToLogin();
-        throw new Error("La sessione è scaduta. Accedi di nuovo.");
+        throw new Error(t("La sessione è scaduta. Accedi di nuovo."));
       }
       let data;
-      try { data = await response.json(); } catch (_) { throw new Error("Il server ha restituito una risposta non valida. Riprova."); }
+      try { data = await response.json(); } catch (_) { throw new Error(t("Il server ha restituito una risposta non valida. Riprova.")); }
       if (!response.ok || data.ok === false) {
         const workResourceUnavailable = [403, 404].includes(response.status) && /^\/api\/(?:work-board|tasks|blockers)(?:\/|$|\?)/.test(path);
         if (workResourceUnavailable) {
           resetWorkBoard(true);
-          showNotice(data.error || "La risorsa non è più disponibile. Seleziona una commessa abilitata.", true);
+          showNotice((data.error ? t(data.error) : "") || t("La risorsa non è più disponibile. Seleziona una commessa abilitata."), true);
         }
         if (response.status === 403) {
           if (/^\/api\/inventory(?:\/|$|\?)/.test(path)) resetInventory();
-          showNotice(data.error || "Il tuo account non è abilitato a questa operazione.", true);
+          showNotice((data.error ? t(data.error) : "") || t("Il tuo account non è abilitato a questa operazione."), true);
           if (path !== "/api/session") refreshSession().catch(() => {});
         }
-        const error = new Error(data.error || (response.status === 403 ? "Il tuo account non è abilitato a questa operazione." : "Non siamo riusciti a completare l’operazione. Riprova."));
+        const error = new Error((data.error ? t(data.error) : "") || (response.status === 403 ? t("Il tuo account non è abilitato a questa operazione.") : t("Non siamo riusciti a completare l’operazione. Riprova.")));
         error.status = response.status;
+        error.sourceMessage = data.error;
         throw error;
       }
       if (fetchOptions.method && fetchOptions.method !== "GET" && /^\/api\/(?:time-entries|jobs|users|contracts|suppliers|groups|job-roles|labor-rates)(?:\/|$|\?)/.test(path)) invalidateReports();
       return data;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("Il server sta impiegando troppo tempo. Controlla la connessione e riprova.");
-      if (error instanceof TypeError) throw new Error("Non riusciamo a raggiungere il server. Controlla la connessione e riprova.");
+      if (error.name === "AbortError") throw new Error(t("Il server sta impiegando troppo tempo. Controlla la connessione e riprova."));
+      if (error instanceof TypeError) throw new Error(t("Non riusciamo a raggiungere il server. Controlla la connessione e riprova."));
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -119,6 +124,34 @@
 
   function post(path, fields) {
     return api(path, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }, body: new URLSearchParams(fields) });
+  }
+
+  function ticketAppURL(kind = "", id = null, create = false) {
+    if (!state.session?.tickets?.configured) return null;
+    const url = new URL(state.session.tickets.origin);
+    if (kind && id) url.searchParams.set(kind + "_id", String(id));
+    if (create) url.searchParams.set("new", "1");
+    return window.PuntoI18n ? window.PuntoI18n.url(url.href) : url.href;
+  }
+
+  function ticketAppLink(label, kind, id, create = false) {
+    const link = node("a", "row-button", label);
+    link.href = ticketAppURL(kind, id, create);
+    return link;
+  }
+
+  async function connectTicketSession(connectionState) {
+    if (state.ticketConnecting) return;
+    if (!state.session?.tickets?.configured) { showNotice(t("Il collegamento a Ticket non è configurato su Punto."), true); return; }
+    state.ticketConnecting = true;
+    showNotice(t("Collegamento della sessione Punto a Ticket…"));
+    try {
+      const data = await post("/api/integrations/tickets/grant", { state: connectionState });
+      const target = new URL(data.url);
+      if (target.origin !== new URL(state.session.tickets.origin).origin || target.pathname !== "/" || !/^#punto_grant=[a-f0-9]{64}&state=[a-f0-9]{64}$/.test(target.hash)) throw new Error(t("Il collegamento restituito non è valido."));
+      window.location.assign(window.PuntoI18n ? window.PuntoI18n.url(target.href) : target.href);
+    } catch (error) { showNotice(error.message + t(" Torna a Ticket e ripeti Collega Punto."), true); }
+    finally { state.ticketConnecting = false; }
   }
 
   function showNotice(message, isError = false) {
@@ -139,9 +172,27 @@
     return state.session?.permissions?.[permission] === true;
   }
 
+  function renderIdentityManagement() {
+    const link = $("keycloak-users-link");
+    link.hidden = state.session?.role !== "manager" || !state.usersAdminURL;
+    if (state.usersAdminURL) link.href = state.usersAdminURL;
+    else link.removeAttribute("href");
+  }
+
+  async function loadIdentityManagement() {
+    const configuration = await api("/api/auth/config");
+    state.usersAdminURL = null;
+    if (configuration.managed_users && typeof configuration.users_admin_url === "string" && configuration.users_admin_url) {
+      const target = new URL(configuration.users_admin_url);
+      if (target.protocol !== "https:" || target.username || target.password) throw new Error(t("Configurazione accesso non disponibile. Riprova."));
+      state.usersAdminURL = target.href;
+    }
+    renderIdentityManagement();
+  }
+
   function requirePermission(permission) {
     if (can(permission)) return true;
-    showNotice("Il tuo account non è abilitato a questa operazione.", true);
+    showNotice(t("Il tuo account non è abilitato a questa operazione."), true);
     return false;
   }
 
@@ -195,6 +246,7 @@
       $("report-rates-error-text").textContent = "";
     }
     state.session = session;
+    renderIdentityManagement();
     if (!isReportManager()) state.reportFilters.userId = "";
     if (!availableReportViews().includes(state.reportView)) state.reportView = "periodo";
     renderReportControls();
@@ -202,7 +254,9 @@
     $("session-name").title = session.name || session.email;
     $("session-email").textContent = session.email;
     $("session-email").title = session.email;
-    $("session-role").textContent = roles[session.role] || "Operatore";
+    $("tickets-app-link").hidden = !session.tickets?.configured;
+    if (session.tickets?.configured) $("tickets-app-link").href = ticketAppURL();
+    $("session-role").textContent = roles[session.role] || t("Operatore");
     $("session-role").hidden = false;
     $("user-avatar").textContent = (session.name || session.email || "P").charAt(0).toUpperCase();
     $("new-job").hidden = !can("manage_jobs");
@@ -230,8 +284,8 @@
     document.querySelector(".jobs-table").classList.toggle("jobs-with-assignments", can("manage_assignments"));
     $("entries-actions-heading").hidden = !can("edit_time_entries");
     document.querySelector(".entries-table").classList.toggle("entries-readonly", !can("edit_time_entries"));
-    $("permission-hint").textContent = can("manage_jobs") ? "Gestore · Gestisci commesse, contratti, fornitori e persone. Ogni modifica ha la sua traccia." : "Operatore · Registra il lavoro sulle commesse abilitate per te. Le ore inserite restano nel tuo registro.";
-    $("jobs-panel-description").textContent = can("manage_jobs") ? "Dal primo passo all’ultimo dettaglio, tutto sotto controllo." : "Le commesse abilitate per te, pronte per registrare il lavoro svolto.";
+    $("permission-hint").textContent = can("manage_jobs") ? t("Gestore · Gestisci commesse, contratti, fornitori e persone. Ogni modifica ha la sua traccia.") : t("Operatore · Registra il lavoro sulle commesse abilitate per te. Le ore inserite restano nel tuo registro.");
+    $("jobs-panel-description").textContent = can("manage_jobs") ? t("Dal primo passo all’ultimo dettaglio, tutto sotto controllo.") : t("Le commesse abilitate per te, pronte per registrare il lavoro svolto.");
     if (!can("manage_jobs")) {
       state.openEntryAfterJob = false;
       if ($("job-dialog").open) $("job-dialog").close();
@@ -336,9 +390,9 @@
       $("panel-" + tab).hidden = !selected;
     });
     $("workspace-summary").hidden = ["reports", "alerts", "notifications", "work-board", "inventory"].includes(name);
-    const title = name === "reports" ? "Analisi · " + reportViews[state.reportView].label : $("tab-" + name).querySelector("span").textContent;
+    const title = name === "reports" ? t("Analisi · ") + reportViews[state.reportView].label : $("tab-" + name).querySelector("span").textContent;
     $("workspace-current-view").textContent = title;
-    document.title = title + " · punto";
+    document.title = title + t(" · punto");
     if (updateRoute) {
       if (name === "reports") writeReportRoute();
       else if (window.location.hash !== "#" + name) window.history.pushState(null, "", "#" + name);
@@ -378,11 +432,11 @@
   }
 
   function reportFilterError(filters) {
-    if (!validDate(filters.from) || !validDate(filters.to)) return "Scegli una data iniziale e una data finale valide.";
-    if (filters.from > filters.to) return "La data finale deve essere uguale o successiva alla data iniziale.";
-    if (reportDayNumber(filters.to) - reportDayNumber(filters.from) + 1 > 366) return "Seleziona un periodo di massimo 366 giorni, comprese le date iniziale e finale.";
+    if (!validDate(filters.from) || !validDate(filters.to)) return t("Scegli una data iniziale e una data finale valide.");
+    if (filters.from > filters.to) return t("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (reportDayNumber(filters.to) - reportDayNumber(filters.from) + 1 > 366) return t("Seleziona un periodo di massimo 366 giorni, comprese le date iniziale e finale.");
     for (const id of [filters.jobId, filters.userId]) {
-      if (id && (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) return "Il collegamento contiene un filtro non valido. Azzera i filtri e riprova.";
+      if (id && (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) return t("Il collegamento contiene un filtro non valido. Azzera i filtri e riprova.");
     }
     return "";
   }
@@ -420,7 +474,7 @@
       select.append(option);
     }
     if (selected && !items.some((item) => String(item.id) === selected)) {
-      const unavailable = node("option", "", `Filtro selezionato (#${selected}) · da verificare`);
+      const unavailable = node("option", "", t("Filtro selezionato (#{0}) · da verificare", [selected]));
       unavailable.value = selected;
       select.append(unavailable);
     }
@@ -441,7 +495,7 @@
     }
     $("report-view").setAttribute("aria-labelledby", "report-tab-" + state.reportView);
     $("report-title").textContent = reportViews[state.reportView].title;
-    $("report-scope").textContent = manager ? "Vista dello spazio di lavoro: tutti gli utenti, oppure la persona selezionata. I totali riguardano soltanto i filtri applicati." : "Vista personale: soltanto le ore del tuo account, comprese quelle già registrate sulle commesse non più abilitate.";
+    $("report-scope").textContent = manager ? t("Vista dello spazio di lavoro: tutti gli utenti, oppure la persona selezionata. I totali riguardano soltanto i filtri applicati.") : t("Vista personale: soltanto le ore del tuo account, comprese quelle già registrate sulle commesse non più abilitate.");
     $("report-cost-notice").hidden = state.reportView !== "costi";
     $("report-labor-notice").hidden = state.reportView !== "costo-ore";
     $("report-rates").hidden = state.reportView !== "costo-ore" || !manager;
@@ -449,8 +503,8 @@
     $("report-from").value = state.reportFilters.from;
     $("report-to").value = state.reportFilters.to;
     const options = state.reportData?.options || {};
-    reportSelectOptions("report-job", options.jobs || [], state.reportFilters.jobId, manager ? "Tutte le commesse" : "Tutte le tue commesse con ore", (job) => `${job.code} · ${job.name}`);
-    reportSelectOptions("report-user", manager ? options.users || [] : [], manager ? state.reportFilters.userId : "", "Tutti gli utenti", (user) => `${user.name || user.email}${user.active ? "" : " · Disattivato"}`);
+    reportSelectOptions("report-job", options.jobs || [], state.reportFilters.jobId, manager ? t("Tutte le commesse") : t("Tutte le tue commesse con ore"), (job) => `${job.code} · ${job.name}`);
+    reportSelectOptions("report-user", manager ? options.users || [] : [], manager ? state.reportFilters.userId : "", t("Tutti gli utenti"), (user) => `${user.name || user.email}${user.active ? "" : t(" · Disattivato")}`);
   }
 
   function writeReportRoute(replace = false) {
@@ -467,6 +521,16 @@
     const hash = window.location.hash.slice(1);
     state.routeHash = window.location.hash;
     if (hash === "main-content") return;
+    const connection = /^ticket-connect\?state=([a-f0-9]{64})$/.exec(hash);
+    if (connection) { selectTab("jobs", false, false); connectTicketSession(connection[1]); return; }
+    const jobRoute = /^jobs\?job_id=([1-9]\d*)$/.exec(hash);
+    if (jobRoute && Number.isSafeInteger(Number(jobRoute[1]))) {
+      state.linkedJobId = Number(jobRoute[1]); selectTab("jobs", false, false); renderJobs(); return;
+    }
+    const assetRoute = /^inventory\?asset_id=([1-9]\d*)$/.exec(hash);
+    if (assetRoute && Number.isSafeInteger(Number(assetRoute[1]))) {
+      selectTab("inventory", false, false); openInventoryDetail(Number(assetRoute[1])); return;
+    }
     if (!hash.startsWith("analisi")) {
       const name = availableTabs().includes(hash) ? hash : "jobs";
       selectTab(name, false, false);
@@ -490,8 +554,8 @@
     state.reportView = view;
     renderReportControls();
     writeReportRoute();
-    $("workspace-current-view").textContent = "Analisi · " + reportViews[view].label;
-    document.title = "Analisi · " + reportViews[view].label + " · punto";
+    $("workspace-current-view").textContent = t("Analisi · ") + reportViews[view].label;
+    document.title = t("Analisi · ") + reportViews[view].label + t(" · punto");
     if (moveFocus) $("report-tab-" + view).focus();
     refreshReports();
     if (view === "costo-ore") refreshLaborRates();
@@ -536,30 +600,30 @@
     $("report-total-users").textContent = String(summary.user_count);
     const filters = state.reportFilters;
     const labels = [filters.from === filters.to ? dateLabel(filters.from) : `${dateLabel(filters.from)} – ${dateLabel(filters.to)}`];
-    if (filters.jobId) labels.push($("report-job").selectedOptions[0]?.textContent || "Commessa selezionata");
-    if (isReportManager() && filters.userId) labels.push($("report-user").selectedOptions[0]?.textContent || "Utente selezionato");
-    labels.push(data.scope === "personal" ? "Le tue ore" : "Tutte le ore filtrate");
+    if (filters.jobId) labels.push($("report-job").selectedOptions[0]?.textContent || t("Commessa selezionata"));
+    if (isReportManager() && filters.userId) labels.push($("report-user").selectedOptions[0]?.textContent || t("Utente selezionato"));
+    labels.push(data.scope === "personal" ? t("Le tue ore") : t("Tutte le ore filtrate"));
     $("report-caption").textContent = labels.join(" · ");
     $("report-cost-summary").hidden = !cost;
     $("report-labor-summary").hidden = !labor;
     if (cost) {
       $("report-known-value").textContent = euroLabel(summary.known_value_cents);
-      $("report-contract-count").textContent = `${summary.contract_count} ${Number(summary.contract_count) === 1 ? "contratto distinto collegato" : "contratti distinti collegati"} alle ore filtrate. Ogni contratto viene contato una sola volta.`;
-      $("report-unpriced-count").textContent = Number(summary.unpriced_contract_count) > 0 ? `${summary.unpriced_contract_count} ${Number(summary.unpriced_contract_count) === 1 ? "contratto senza valore indicato" : "contratti senza valore indicato"}: importo sconosciuto, escluso dal totale noto.` : "Tutti i contratti elencati hanno un valore indicato.";
-      $("report-uncontracted-hours").textContent = `${minutesLabel(summary.uncontracted_minutes)} su commesse senza contratto. Queste ore sono comprese nei totali del periodo.`;
+      $("report-contract-count").textContent = t("{0} {1} alle ore filtrate. Ogni contratto viene contato una sola volta.", [summary.contract_count, Number(summary.contract_count) === 1 ? t("contratto distinto collegato") : t("contratti distinti collegati")]);
+      $("report-unpriced-count").textContent = Number(summary.unpriced_contract_count) > 0 ? t("{0} {1}: importo sconosciuto, escluso dal totale noto.", [summary.unpriced_contract_count, Number(summary.unpriced_contract_count) === 1 ? t("contratto senza valore indicato") : t("contratti senza valore indicato")]) : t("Tutti i contratti elencati hanno un valore indicato.");
+      $("report-uncontracted-hours").textContent = t("{0} su commesse senza contratto. Queste ore sono comprese nei totali del periodo.", [minutesLabel(summary.uncontracted_minutes)]);
     }
     if (labor) {
-      const estimated = Number(summary.priced_minutes) > 0 ? euroLabel(summary.estimated_cost_cents) : "Non disponibile";
+      const estimated = Number(summary.priced_minutes) > 0 ? euroLabel(summary.estimated_cost_cents) : t("Non disponibile");
       $("report-estimated-cost").textContent = estimated;
-      $("report-priced-hours").textContent = `${minutesLabel(summary.priced_minutes)} coperte da tariffa.`;
-      $("report-unpriced-hours").textContent = Number(summary.unpriced_minutes) > 0 ? `${minutesLabel(summary.unpriced_minutes)} senza tariffa valida: la stima è ${Number(summary.priced_minutes) > 0 ? "parziale" : "non disponibile"}. Le ore senza tariffa non vengono considerate a costo zero.` : "Tutte le ore filtrate sono coperte da tariffa.";
+      $("report-priced-hours").textContent = t("{0} coperte da tariffa.", [minutesLabel(summary.priced_minutes)]);
+      $("report-unpriced-hours").textContent = Number(summary.unpriced_minutes) > 0 ? t("{0} senza tariffa valida: la stima è {1}. Le ore senza tariffa non vengono considerate a costo zero.", [minutesLabel(summary.unpriced_minutes), Number(summary.priced_minutes) > 0 ? t("parziale") : t("non disponibile")]) : t("Tutte le ore filtrate sono coperte da tariffa.");
     }
     const headers = {
-      periodo: ["Giorno", "Ore", "Registrazioni", "Commesse", "Utenti"],
-      commesse: ["Commessa", "Cliente", "Stato", "Ore", "Registrazioni", "Utenti"],
-      utenti: ["Utente", "Accesso", "Ore", "Registrazioni", "Commesse"],
-      costi: ["Contratto", "Fornitore", "Validità contrattuale", "Valore contrattuale", "Stato", "Commesse con ore", "Ore nel periodo"],
-      "costo-ore": ["Utente", "Commessa", "Ore", "Registrazioni", "Copertura tariffa", "Costo stimato (EUR)"]
+      periodo: [t("Giorno"), t("Ore"), t("Registrazioni"), t("Commesse"), t("Utenti")],
+      commesse: [t("Commessa"), t("Cliente"), t("Stato"), t("Ore"), t("Registrazioni"), t("Utenti")],
+      utenti: [t("Utente"), t("Accesso"), t("Ore"), t("Registrazioni"), t("Commesse")],
+      costi: [t("Contratto"), t("Fornitore"), t("Validità contrattuale"), t("Valore contrattuale"), t("Stato"), t("Commesse con ore"), t("Ore nel periodo")],
+      "costo-ore": [t("Utente"), t("Commessa"), t("Ore"), t("Registrazioni"), t("Copertura tariffa"), t("Costo stimato (EUR)")]
     };
     const heading = node("tr");
     for (const label of headers[state.reportView]) {
@@ -574,7 +638,7 @@
       const row = node("tr");
       if (state.reportView === "periodo") {
         const day = reportCell();
-        day.append(reportDrilldown(dateLabel(item.date), `Vedi le commesse del ${dateLabel(item.date)}`, () => {
+        day.append(reportDrilldown(dateLabel(item.date), t("Vedi le commesse del {0}", [dateLabel(item.date)]), () => {
           state.reportFilters = { ...state.reportFilters, from: item.date, to: item.date };
           state.reportDefaultsPending = false;
           chooseReportView("commesse");
@@ -582,7 +646,7 @@
         row.append(day, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.job_count), true), reportCell(String(item.user_count), true));
       } else if (state.reportView === "commesse") {
         const identity = reportCell();
-        identity.append(reportDrilldown(item.name, `Vedi il periodo per la commessa ${item.code}`, () => {
+        identity.append(reportDrilldown(item.name, t("Vedi il periodo per la commessa {0}", [item.code]), () => {
           state.reportFilters.jobId = String(item.job_id);
           chooseReportView("periodo");
         }), node("span", "report-secondary", item.code));
@@ -591,25 +655,25 @@
         row.append(identity, reportCell(item.client || "—"), status, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.user_count), true));
       } else if (state.reportView === "utenti") {
         const identity = reportCell();
-        if (isReportManager()) identity.append(reportDrilldown(item.name || item.email, `Vedi le commesse di ${item.name || item.email}`, () => {
+        if (isReportManager()) identity.append(reportDrilldown(item.name || item.email, t("Vedi le commesse di {0}", [item.name || item.email]), () => {
           state.reportFilters.userId = String(item.user_id);
           chooseReportView("commesse");
         }));
         else identity.append(node("strong", "", item.name || item.email));
         identity.append(node("span", "report-secondary", item.email));
-        row.append(identity, reportCell(item.active ? "Attivo" : "Disattivato"), reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.job_count), true));
+        row.append(identity, reportCell(item.active ? t("Attivo") : t("Disattivato")), reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.job_count), true));
       } else if (cost) {
         const identity = reportCell();
         identity.append(node("strong", "", item.title), node("span", "report-secondary", item.code));
-        const value = item.value_cents === null || item.value_cents === undefined ? "Non indicato" : euroLabel(item.value_cents);
+        const value = item.value_cents === null || item.value_cents === undefined ? t("Non indicato") : euroLabel(item.value_cents);
         row.append(identity, reportCell(item.supplier_name || "—"), reportCell(contractPeriod(item)), reportCell(value, true), reportCell(contractStates[item.status] || item.status), reportCell(String(item.job_count), true), reportCell(minutesLabel(item.minutes), true));
       } else {
         const identity = reportCell();
         identity.append(node("strong", "", item.name || item.email), node("span", "report-secondary", item.email));
         const job = reportCell();
         job.append(node("strong", "", item.job_name), node("span", "report-secondary", item.code));
-        const coverage = Number(item.priced_minutes) > 0 ? `${minutesLabel(item.priced_minutes)} coperte${Number(item.unpriced_minutes) > 0 ? " · " + minutesLabel(item.unpriced_minutes) + " scoperte" : ""}` : "Nessuna tariffa valida";
-        const amount = Number(item.priced_minutes) > 0 && item.cost_cents !== null ? euroLabel(item.cost_cents) + (Number(item.unpriced_minutes) > 0 ? " · Parziale" : "") : "Non disponibile";
+        const coverage = Number(item.priced_minutes) > 0 ? `${minutesLabel(item.priced_minutes)} coperte${Number(item.unpriced_minutes) > 0 ? " · " + minutesLabel(item.unpriced_minutes) + " scoperte" : ""}` : t("Nessuna tariffa valida");
+        const amount = Number(item.priced_minutes) > 0 && item.cost_cents !== null ? euroLabel(item.cost_cents) + (Number(item.unpriced_minutes) > 0 ? t(" · Parziale") : "") : t("Non disponibile");
         row.append(identity, job, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(coverage), reportCell(amount, true));
       }
       $("report-body").append(row);
@@ -617,7 +681,7 @@
     $("report-table-caption").textContent = `${reportViews[state.reportView].title}. ${$("report-caption").textContent}`;
     $("report-table-wrap").hidden = rows.length === 0;
     $("report-empty").hidden = rows.length !== 0;
-    $("report-empty-text").textContent = cost && Number(summary.uncontracted_minutes) > 0 ? "Le ore filtrate appartengono a commesse senza contratto: non è disponibile un valore contrattuale da mostrare." : "Non ci sono registrazioni per questi filtri. Prova un altro periodo oppure azzera i filtri.";
+    $("report-empty-text").textContent = cost && Number(summary.uncontracted_minutes) > 0 ? t("Le ore filtrate appartengono a commesse senza contratto: non è disponibile un valore contrattuale da mostrare.") : t("Non ci sono registrazioni per questi filtri. Prova un altro periodo oppure azzera i filtri.");
     $("report-results").hidden = false;
   }
 
@@ -645,7 +709,7 @@
     try {
       const data = await api("/api/reports?" + query.toString());
       if (request !== state.reportRequest || state.activeTab !== "reports" || view !== state.reportView) return;
-      if (!data.summary || !Array.isArray(data.rows) || !data.options || data.view !== reportViews[view].api || data.from !== filters.from || data.to !== filters.to || !isReportManager() && data.scope !== "personal") throw new Error("Il server ha restituito un’analisi non valida. Riprova.");
+      if (!data.summary || !Array.isArray(data.rows) || !data.options || data.view !== reportViews[view].api || data.from !== filters.from || data.to !== filters.to || !isReportManager() && data.scope !== "personal") throw new Error(t("Il server ha restituito un’analisi non valida. Riprova."));
       if (validDate(data.today)) {
         state.reportToday = data.today;
         if (state.reportDefaultsPending) {
@@ -683,8 +747,8 @@
       const identity = reportCell();
       identity.append(node("strong", "", rate.user_name || rate.user_email), node("span", "report-secondary", rate.user_email));
       const actions = reportCell();
-      actions.append(action("Modifica", `Modifica tariffa di ${rate.user_name || rate.user_email} dal ${dateLabel(rate.starts_on)}`, () => openLaborRate(rate)));
-      row.append(identity, reportCell(euroLabel(rate.hourly_cents) + " / ora", true), reportCell(dateLabel(rate.starts_on)), reportCell(rate.ends_on ? dateLabel(rate.ends_on) : "Senza scadenza"), actions);
+      actions.append(action(t("Modifica"), t("Modifica tariffa di {0} dal {1}", [rate.user_name || rate.user_email, dateLabel(rate.starts_on)]), () => openLaborRate(rate)));
+      row.append(identity, reportCell(euroLabel(rate.hourly_cents) + t(" / ora"), true), reportCell(dateLabel(rate.starts_on)), reportCell(rate.ends_on ? dateLabel(rate.ends_on) : t("Senza scadenza")), actions);
       $("report-rates-body").append(row);
     }
     $("report-rates-table-wrap").hidden = state.laborRates.length === 0;
@@ -704,7 +768,7 @@
     try {
       const [data, users] = await Promise.all([api("/api/labor-rates"), api("/api/users")]);
       if (request !== state.laborRatesRequest || !isReportManager()) return;
-      if (!Array.isArray(data.rates) || !Array.isArray(users.users)) throw new Error("Il server ha restituito un elenco tariffe non valido. Riprova.");
+      if (!Array.isArray(data.rates) || !Array.isArray(users.users)) throw new Error(t("Il server ha restituito un elenco tariffe non valido. Riprova."));
       state.laborRates = data.rates;
       state.laborRateUsers = users.users;
       state.laborRatesReady = true;
@@ -730,15 +794,15 @@
     $("labor-rate-hourly").setCustomValidity("");
     $("labor-rate-to").setCustomValidity("");
     $("labor-rate-error").hidden = true;
-    $("labor-rate-dialog-title").textContent = rate ? "Modifica tariffa oraria" : "Nuova tariffa oraria";
-    $("labor-rate-save").textContent = rate ? "Salva modifiche" : "Crea tariffa";
-    reportSelectOptions("labor-rate-user", state.laborRateUsers, rate ? String(rate.user_id) : "", "Seleziona un utente", (user) => `${user.name || user.email}${user.active ? "" : " · Disattivato"}`);
+    $("labor-rate-dialog-title").textContent = rate ? t("Modifica tariffa oraria") : t("Nuova tariffa oraria");
+    $("labor-rate-save").textContent = rate ? t("Salva modifiche") : t("Crea tariffa");
+    reportSelectOptions("labor-rate-user", state.laborRateUsers, rate ? String(rate.user_id) : "", t("Seleziona un utente"), (user) => `${user.name || user.email}${user.active ? "" : t(" · Disattivato")}`);
     $("labor-rate-user").disabled = Boolean(rate);
     $("labor-rate-from").value = rate?.starts_on || state.reportToday || localDate(new Date());
     $("labor-rate-to").value = rate?.ends_on || "";
     if (rate) {
       const cents = BigInt(rate.hourly_cents);
-      $("labor-rate-hourly").value = `${cents / 100n},${String(cents % 100n).padStart(2, "0")}`;
+      $("labor-rate-hourly").value = `${cents / 100n}${new Intl.NumberFormat(locale).formatToParts(1.1).find((part) => part.type === "decimal").value}${String(cents % 100n).padStart(2, "0")}`;
     }
     $("labor-rate-dialog").showModal();
     $(rate ? "labor-rate-hourly" : "labor-rate-user").focus();
@@ -751,7 +815,7 @@
       $("stat-jobs").textContent = state.jobs.length;
       $("nav-jobs-count").textContent = state.jobs.length;
       $("jobs-count").textContent = state.jobs.length;
-      $("stat-active-caption").textContent = active === 1 ? "Una commessa prende forma" : "Il lavoro che prende forma";
+      $("stat-active-caption").textContent = active === 1 ? t("Una commessa prende forma") : t("Il lavoro che prende forma");
     }
     if (state.todayMinutes !== null) {
       const h = Math.floor(state.todayMinutes / 60);
@@ -759,7 +823,7 @@
       $("stat-today").replaceChildren(node("span", "", h), node("span", "unit", "h"));
       if (m > 0) $("stat-today").append(node("span", "minute-value", String(m).padStart(2, "0")), node("span", "unit", "m"));
       $("stat-today").setAttribute("aria-label", minutesLabel(state.todayMinutes));
-      $("stat-today-caption").textContent = state.todayCount === 1 ? "1 registrazione nella giornata" : `${state.todayCount} registrazioni nella giornata`;
+      $("stat-today-caption").textContent = state.todayCount === 1 ? t("1 registrazione nella giornata") : t("{0} registrazioni nella giornata", [state.todayCount]);
     }
   }
 
@@ -781,46 +845,59 @@
 
   function renderJobs() {
     if (!state.jobsReady) return;
+    if (state.linkedJobId) {
+      const linked = state.jobs.find((job) => job.id === state.linkedJobId);
+      if (linked) { $("job-search").value = linked.code; $("job-filter").value = ""; }
+      else showNotice(t("La commessa collegata non è disponibile o non è abilitata per il tuo account."), true);
+      state.focusLinkedJob = linked?.id || null; state.linkedJobId = null;
+    }
     $("jobs-loading").hidden = true;
-    const search = $("job-search").value.trim().toLocaleLowerCase("it-IT");
+    const search = $("job-search").value.trim().toLocaleLowerCase(locale);
     const filter = $("job-filter").value;
-    const jobs = state.jobs.filter((job) => (!filter || job.status === filter) && [job.code, job.name, job.client, ...(can("manage_contracts") ? [job.contract_code, job.contract_title, job.supplier_name] : [])].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
+    const jobs = state.jobs.filter((job) => (!filter || job.status === filter) && [job.code, job.name, job.client, ...(can("manage_contracts") ? [job.contract_code, job.contract_title, job.supplier_name] : [])].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
     $("jobs-body").replaceChildren();
     for (const job of jobs) {
       const row = node("tr");
+      row.dataset.jobId = String(job.id);
       const nameCell = node("td");
       nameCell.append(jobIdentity(job.code, job.name));
-      if (isCommonJob(job)) nameCell.querySelector(".job-identity").append(node("span", "job-kind-badge job-kind-common", "Comune · tutti gli utenti"));
-      if (can("manage_contracts") && job.contract_id) nameCell.querySelector(".job-identity").append(node("span", "job-contract-label", `Contratto ${job.contract_code || job.contract_id}${job.supplier_name ? " · " + job.supplier_name : ""}`));
+      if (isCommonJob(job)) nameCell.querySelector(".job-identity").append(node("span", "job-kind-badge job-kind-common", t("Comune · tutti gli utenti")));
+      if (can("manage_contracts") && job.contract_id) nameCell.querySelector(".job-identity").append(node("span", "job-contract-label", t("Contratto {0}{1}", [job.contract_code || job.contract_id, job.supplier_name ? " · " + job.supplier_name : ""])));
       const clientCell = node("td", job.client ? "" : "no-value", job.client || "—");
       const statusCell = node("td");
-      statusCell.append(node("span", "status-badge status-" + (Object.hasOwn(states, job.status) ? job.status : "planned"), states[job.status] || "Da avviare"));
+      statusCell.append(node("span", "status-badge status-" + (Object.hasOwn(states, job.status) ? job.status : "planned"), states[job.status] || t("Da avviare")));
       const hoursCell = node("td", "hours-cell", minutesLabel(job.total_minutes));
       const actionsCell = node("td");
       const actions = node("div", "row-actions");
-      actions.append(action("Attività", "Apri attività e blocchi di " + job.name, () => { if (state.workBusy) return; resetWorkBoard(true); state.workJobId = String(job.id); selectTab("work-board"); }), node("span", "row-divider"));
-      if (can("manage_jobs")) actions.append(action("Modifica", "Modifica la commessa " + job.name, () => openJob(job)), node("span", "row-divider"));
+      actions.append(action(t("Attività"), t("Apri attività e blocchi di ") + job.name, () => { if (state.workBusy) return; resetWorkBoard(true); state.workJobId = String(job.id); selectTab("work-board"); }), node("span", "row-divider"));
+      if (state.session?.tickets?.configured) actions.append(ticketAppLink(t("Ticket ↗"), "job", job.id), node("span", "row-divider"), ticketAppLink(t("+ Ticket"), "job", job.id, true), node("span", "row-divider"));
+      if (can("manage_jobs")) actions.append(action(t("Modifica"), t("Modifica la commessa ") + job.name, () => openJob(job)), node("span", "row-divider"));
       if (can("manage_assignments")) {
         const count = Number(job.assigned_users) || 0;
         const groupCount = Number(job.assigned_groups) || 0;
-        actions.append(action("Abilitazioni · " + count + (groupCount ? " + " + groupCount + " gruppi" : ""), "Gestisci le abilitazioni della commessa " + job.name + ": " + count + " utenti e " + groupCount + " gruppi", () => openAssignments(job)), node("span", "row-divider"));
+        actions.append(action(t("Abilitazioni · ") + count + (groupCount ? " + " + groupCount + t(" gruppi") : ""), t("Gestisci le abilitazioni della commessa ") + job.name + ": " + count + t(" utenti e ") + groupCount + t(" gruppi"), () => openAssignments(job)), node("span", "row-divider"));
       }
-      if (canLogTime(job)) actions.append(action("+ Ore", "Registra ore per " + job.name, () => openEntry(null, job.id)));
-      else actions.append(node("span", "readonly-job-label", "Sola consultazione"));
+      if (canLogTime(job)) actions.append(action(t("+ Ore"), t("Registra ore per ") + job.name, () => openEntry(null, job.id)));
+      else actions.append(node("span", "readonly-job-label", t("Sola consultazione")));
       actionsCell.append(actions);
       row.append(nameCell, clientCell, statusCell, hoursCell, actionsCell);
       $("jobs-body").append(row);
+    }
+    if (state.focusLinkedJob) {
+      const linked = $("jobs-body").querySelector(`[data-job-id="${state.focusLinkedJob}"]`);
+      if (linked) { linked.tabIndex = -1; linked.focus(); linked.scrollIntoView({ block: "center" }); }
+      state.focusLinkedJob = null;
     }
     const empty = jobs.length === 0;
     const noJobs = state.jobs.length === 0;
     $("jobs-table-wrap").hidden = empty;
     $("jobs-empty").hidden = !empty;
     $("jobs-table-footer").hidden = empty;
-    $("jobs-empty-title").textContent = noJobs ? can("manage_jobs") ? "La prossima commessa parte da qui." : "Nessuna commessa abilitata." : "Nessuna commessa corrisponde alla ricerca.";
-    $("jobs-empty-description").textContent = noJobs ? can("manage_jobs") ? "Aggiungi la prima commessa, scegli il suo stato e inizia a registrare il lavoro." : "Un gestore deve abilitarti a una commessa prima che tu possa registrare il lavoro svolto. Le ore già inserite restano nel tuo registro." : "Prova con un altro nome, codice o cliente, oppure cambia il filtro di stato.";
+    $("jobs-empty-title").textContent = noJobs ? can("manage_jobs") ? t("La prossima commessa parte da qui.") : t("Nessuna commessa abilitata.") : t("Nessuna commessa corrisponde alla ricerca.");
+    $("jobs-empty-description").textContent = noJobs ? can("manage_jobs") ? t("Aggiungi la prima commessa, scegli il suo stato e inizia a registrare il lavoro.") : t("Un gestore deve abilitarti a una commessa prima che tu possa registrare il lavoro svolto. Le ore già inserite restano nel tuo registro.") : t("Prova con un altro nome, codice o cliente, oppure cambia il filtro di stato.");
     $("empty-new-job").hidden = !noJobs || !can("manage_jobs");
     $("clear-filters").hidden = noJobs;
-    $("jobs-visible-count").textContent = `${jobs.length} ${jobs.length === 1 ? "commessa" : "commesse"}${jobs.length !== state.jobs.length ? " su " + state.jobs.length : ""}`;
+    $("jobs-visible-count").textContent = `${jobs.length} ${jobs.length === 1 ? t("commessa") : t("commesse")}${jobs.length !== state.jobs.length ? t(" su ") + state.jobs.length : ""}`;
     ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => { $(id).hidden = !can("manage_jobs") && !state.jobs.some(canLogTime); });
     if ($("entry-dialog").open) renderEntryJobs($("entry-job").value, true);
     renderStats();
@@ -836,7 +913,7 @@
 
   function renderEntryJobs(selectedId = "", notifyUnavailable = false) {
     const writableJobs = state.jobs.filter(canLogTime);
-    const options = [node("option", "", writableJobs.length ? "Seleziona una commessa" : "Nessuna commessa abilitata")];
+    const options = [node("option", "", writableJobs.length ? t("Seleziona una commessa") : t("Nessuna commessa abilitata"))];
     options[0].value = "";
     for (const job of writableJobs) {
       const option = node("option", "", `${job.code} · ${job.name}`);
@@ -847,8 +924,8 @@
     $("entry-job").replaceChildren(...options);
     $("entry-job").value = selectionAvailable ? String(selectedId) : "";
     if (notifyUnavailable && selectedId && !selectionAvailable) {
-      const nextStep = writableJobs.length ? "Scegli una commessa abilitata." : "Chiedi a un gestore di abilitarti a una commessa.";
-      dialogError("entry-error", new Error(`La commessa selezionata non è più abilitata alla registrazione delle ore. ${nextStep} Data, ore e nota sono conservate.`));
+      const nextStep = writableJobs.length ? t("Scegli una commessa abilitata.") : t("Chiedi a un gestore di abilitarti a una commessa.");
+      dialogError("entry-error", new Error(t("La commessa selezionata non è più abilitata alla registrazione delle ore. {0} Data, ore e nota sono conservate.", [nextStep])));
     }
   }
 
@@ -861,13 +938,13 @@
       const nameCell = node("td");
       nameCell.append(jobIdentity(entry.job_code, entry.job_name));
       const noteCell = node("td", entry.note ? "entry-note" : "no-value", entry.note || "—");
-      noteCell.title = entry.note || "Nessuna nota";
+      noteCell.title = entry.note || t("Nessuna nota");
       const hoursCell = node("td", "hours-cell", minutesLabel(entry.minutes));
       row.append(nameCell, noteCell, hoursCell);
       if (can("edit_time_entries")) {
         const actionsCell = node("td");
         const actions = node("div", "row-actions");
-        actions.append(action("Modifica", "Modifica le ore per " + entry.job_name, () => openEntry(entry)), node("span", "row-divider"), action("Elimina", "Elimina le ore per " + entry.job_name, () => openDelete(entry), true));
+        actions.append(action(t("Modifica"), t("Modifica le ore per ") + entry.job_name, () => openEntry(entry)), node("span", "row-divider"), action(t("Elimina"), t("Elimina le ore per ") + entry.job_name, () => openDelete(entry), true));
         actionsCell.append(actions);
         row.append(actionsCell);
       }
@@ -876,7 +953,7 @@
     $("entries-table-wrap").hidden = state.entries.length === 0;
     $("entries-empty").hidden = state.entries.length !== 0;
     $("day-total").textContent = minutesLabel(state.entries.reduce((sum, entry) => sum + Number(entry.minutes), 0));
-    $("day-entries-count").textContent = `${state.entries.length} ${state.entries.length === 1 ? "registrazione" : "registrazioni"}`;
+    $("day-entries-count").textContent = `${state.entries.length} ${state.entries.length === 1 ? t("registrazione") : t("registrazioni")}`;
     $("go-today").disabled = state.selectedDate === localDate(new Date());
     renderStats();
   }
@@ -891,34 +968,34 @@
       const identityCell = node("td");
       const identity = node("div", "job-identity");
       identity.append(node("strong", "", user.name), node("span", "", user.email));
-      if (user.email === state.session.email) identity.append(node("span", "user-self", "Il tuo account"));
+      if (user.email === state.session.email) identity.append(node("span", "user-self", t("Il tuo account")));
       identityCell.append(identity);
       const roleCell = node("td");
-      roleCell.append(node("span", "role-badge", roles[user.role] || "Operatore"));
+      roleCell.append(node("span", "role-badge", roles[user.role] || t("Operatore")));
       const accessCell = node("td");
-      accessCell.append(node("span", "status-badge " + (user.active ? "status-active" : "status-cancelled"), user.active ? "Attivo" : "Disattivato"));
+      accessCell.append(node("span", "status-badge " + (user.active ? "status-active" : "status-cancelled"), user.active ? t("Attivo") : t("Disattivato")));
       const actionsCell = node("td");
-      actionsCell.append(action("Modifica", "Modifica l’utente " + user.name, () => openUser(user)));
+      actionsCell.append(action(t("Modifica"), t("Modifica l’utente ") + user.name, () => openUser(user)));
       row.append(identityCell, roleCell, accessCell, actionsCell);
       $("users-body").append(row);
     }
     $("users-count").textContent = state.users.length;
     const active = state.users.filter((user) => user.active).length;
-    $("users-active-count").textContent = `${active} ${active === 1 ? "utente attivo" : "utenti attivi"}`;
+    $("users-active-count").textContent = `${active} ${active === 1 ? t("utente attivo") : t("utenti attivi")}`;
   }
 
   function euroLabel(cents) {
     if (cents === null || cents === undefined || cents === "") return "—";
-    return new Intl.NumberFormat("it-IT", { style: "currency", currency: "EUR" }).format(Number(cents) / 100);
+    return new Intl.NumberFormat(locale, { style: "currency", currency: "EUR" }).format(Number(cents) / 100);
   }
 
   function valueToCents(value) {
     const normalized = value.trim().replace(",", ".");
     if (!normalized) return "";
-    if (!/^\d{1,10}(?:\.\d{1,2})?$/.test(normalized)) throw new Error("Inserisci un importo positivo, senza separatori delle migliaia e con al massimo due decimali.");
+    if (!/^\d{1,10}(?:\.\d{1,2})?$/.test(normalized)) throw new Error(t("Inserisci un importo positivo, senza separatori delle migliaia e con al massimo due decimali."));
     const [whole, fraction = ""] = normalized.split(".");
     const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
-    if (cents > 999999999999n) throw new Error("Il valore massimo è 9.999.999.999,99 €.");
+    if (cents > 999999999999n) throw new Error(t("Il valore massimo è 9.999.999.999,99 €."));
     return String(cents);
   }
 
@@ -928,9 +1005,9 @@
 
   function renderSuppliers() {
     if (!can("manage_suppliers") || !state.suppliersReady) return;
-    const search = $("supplier-search").value.trim().toLocaleLowerCase("it-IT");
+    const search = $("supplier-search").value.trim().toLocaleLowerCase(locale);
     const filter = $("supplier-filter").value;
-    const suppliers = state.suppliers.filter((supplier) => (!filter || String(Number(activeSupplier(supplier))) === filter) && [supplier.code, supplier.name, supplier.vat_number].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
+    const suppliers = state.suppliers.filter((supplier) => (!filter || String(Number(activeSupplier(supplier))) === filter) && [supplier.code, supplier.name, supplier.vat_number].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
     $("suppliers-body").replaceChildren();
     for (const supplier of suppliers) {
       const row = node("tr");
@@ -940,45 +1017,45 @@
       contact.append(node("span", "", supplier.email || "—"));
       if (supplier.phone) contact.append(node("span", "", supplier.phone));
       const status = node("td");
-      status.append(node("span", "status-badge " + (activeSupplier(supplier) ? "status-active" : "status-cancelled"), activeSupplier(supplier) ? "Attivo" : "Disattivato"));
+      status.append(node("span", "status-badge " + (activeSupplier(supplier) ? "status-active" : "status-cancelled"), activeSupplier(supplier) ? t("Attivo") : t("Disattivato")));
       const actions = node("td");
-      actions.append(action("Modifica", "Modifica il fornitore " + supplier.name, () => openSupplier(supplier)));
+      actions.append(action(t("Modifica"), t("Modifica il fornitore ") + supplier.name, () => openSupplier(supplier)));
       row.append(identity, node("td", supplier.vat_number ? "" : "no-value", supplier.vat_number || "—"), contact, status, actions);
       $("suppliers-body").append(row);
     }
     $("suppliers-count").textContent = state.suppliers.length;
     $("suppliers-table-wrap").hidden = suppliers.length === 0;
     $("suppliers-empty").hidden = suppliers.length !== 0;
-    $("suppliers-empty-title").textContent = state.suppliers.length ? "Nessun fornitore corrisponde alla ricerca." : "Il primo partner parte da qui.";
-    $("suppliers-empty-text").textContent = state.suppliers.length ? "Cambia la ricerca o il filtro di stato." : "Censisci un fornitore per associarlo ai tuoi contratti.";
-    $("suppliers-visible-count").textContent = `${suppliers.length} di ${state.suppliers.length} fornitori`;
+    $("suppliers-empty-title").textContent = state.suppliers.length ? t("Nessun fornitore corrisponde alla ricerca.") : t("Il primo partner parte da qui.");
+    $("suppliers-empty-text").textContent = state.suppliers.length ? t("Cambia la ricerca o il filtro di stato.") : t("Censisci un fornitore per associarlo ai tuoi contratti.");
+    $("suppliers-visible-count").textContent = t("{0} di {1} fornitori", [suppliers.length, state.suppliers.length]);
   }
 
   function contractPeriod(contract) {
     if (contract.starts_on && contract.ends_on) return `${dateLabel(contract.starts_on)} – ${dateLabel(contract.ends_on)}`;
-    if (contract.starts_on) return `Dal ${dateLabel(contract.starts_on)}`;
-    if (contract.ends_on) return `Fino al ${dateLabel(contract.ends_on)}`;
-    return "Non specificata";
+    if (contract.starts_on) return t("Dal {0}", [dateLabel(contract.starts_on)]);
+    if (contract.ends_on) return t("Fino al {0}", [dateLabel(contract.ends_on)]);
+    return t("Non specificata");
   }
 
   function renderContracts() {
     if (!can("manage_contracts") || !state.contractsReady) return;
-    const search = $("contract-search").value.trim().toLocaleLowerCase("it-IT");
+    const search = $("contract-search").value.trim().toLocaleLowerCase(locale);
     const filter = $("contract-filter").value;
-    const contracts = state.contracts.filter((contract) => (!filter || contract.status === filter) && [contract.code, contract.title, contract.supplier_name].some((value) => (value || "").toLocaleLowerCase("it-IT").includes(search)));
+    const contracts = state.contracts.filter((contract) => (!filter || contract.status === filter) && [contract.code, contract.title, contract.supplier_name].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
     $("contracts-body").replaceChildren();
     for (const contract of contracts) {
       const row = node("tr");
       const identity = node("td");
       const info = jobIdentity(contract.code, contract.title);
-      info.querySelector(".job-identity").append(node("span", "contract-supplier-label", contract.supplier_name || "Fornitore non disponibile"));
+      info.querySelector(".job-identity").append(node("span", "contract-supplier-label", contract.supplier_name || t("Fornitore non disponibile")));
       identity.append(info);
       const status = node("td");
       const statusClass = { draft: "planned", active: "active", expired: "paused", closed: "completed", cancelled: "cancelled" }[contract.status] || "planned";
       status.append(node("span", "status-badge status-" + statusClass, contractStates[contract.status] || contract.status));
       const actionsCell = node("td");
       const actions = node("div", "row-actions");
-      actions.append(action("Modifica", "Modifica il contratto " + contract.title, () => openContract(contract)), node("span", "row-divider"), action(`PDF · ${Number(contract.documents_count) || 0}`, "Apri i documenti del contratto " + contract.title, () => openDocuments(contract)));
+      actions.append(action(t("Modifica"), t("Modifica il contratto ") + contract.title, () => openContract(contract)), node("span", "row-divider"), action(t("PDF · {0}", [Number(contract.documents_count) || 0]), t("Apri i documenti del contratto ") + contract.title, () => openDocuments(contract)));
       actionsCell.append(actions);
       row.append(identity, node("td", "contract-period", contractPeriod(contract)), node("td", "contract-value", euroLabel(contract.value_cents)), status, actionsCell);
       $("contracts-body").append(row);
@@ -986,9 +1063,9 @@
     $("contracts-count").textContent = state.contracts.length;
     $("contracts-table-wrap").hidden = contracts.length === 0;
     $("contracts-empty").hidden = contracts.length !== 0;
-    $("contracts-empty-title").textContent = state.contracts.length ? "Nessun contratto corrisponde alla ricerca." : "Ogni commessa ha un punto di partenza.";
-    $("contracts-empty-text").textContent = state.contracts.length ? "Cambia la ricerca o il filtro di stato." : "Crea un contratto e raccogli i documenti del tuo accordo.";
-    $("contracts-visible-count").textContent = `${contracts.length} di ${state.contracts.length} contratti`;
+    $("contracts-empty-title").textContent = state.contracts.length ? t("Nessun contratto corrisponde alla ricerca.") : t("Ogni commessa ha un punto di partenza.");
+    $("contracts-empty-text").textContent = state.contracts.length ? t("Cambia la ricerca o il filtro di stato.") : t("Crea un contratto e raccogli i documenti del tuo accordo.");
+    $("contracts-visible-count").textContent = t("{0} di {1} contratti", [contracts.length, state.contracts.length]);
   }
 
   async function refreshRegistry(kind) {
@@ -1004,7 +1081,7 @@
     try {
       const data = await api("/api/" + kind);
       if (request !== state[kind + "Request"] || !can(permission)) return false;
-      if (!Array.isArray(data[kind])) throw new Error("Il server ha restituito un elenco non valido. Riprova.");
+      if (!Array.isArray(data[kind])) throw new Error(t("Il server ha restituito un elenco non valido. Riprova."));
       state[kind] = data[kind];
       state[kind + "Ready"] = true;
       if (kind === "suppliers") {
@@ -1032,7 +1109,7 @@
 
   function renderJobContracts(initial = false) {
     const current = initial ? state.editingJob?.contract_id || "" : $("job-contract").value;
-    const first = node("option", "", "Nessun contratto");
+    const first = node("option", "", t("Nessun contratto"));
     first.value = "";
     const options = state.contracts.filter((contract) => !["closed", "cancelled"].includes(contract.status) || String(contract.id) === String(current)).map((contract) => {
       const option = node("option", "", `${contract.code} · ${contract.title} · ${contractStates[contract.status] || contract.status}`);
@@ -1040,14 +1117,14 @@
       return option;
     });
     if (current && !options.some((option) => String(option.value) === String(current))) {
-      const fallback = node("option", "", `${state.editingJob?.contract_code || "Contratto"} · ${state.editingJob?.contract_title || "Collegamento esistente"}`);
+      const fallback = node("option", "", `${state.editingJob?.contract_code || t("Contratto")} · ${state.editingJob?.contract_title || t("Collegamento esistente")}`);
       fallback.value = current;
       options.push(fallback);
     }
     $("job-contract").replaceChildren(first, ...options);
     $("job-contract").value = current;
     $("job-contract").disabled = !state.contractsReady || busyDialogs.has("job-dialog");
-    $("job-contract-help").textContent = state.contractsReady ? "Collega la commessa a un contratto censito. I contratti chiusi o annullati conservano i collegamenti esistenti." : "Caricamento dell’elenco dei contratti necessario per salvare la commessa.";
+    $("job-contract-help").textContent = state.contractsReady ? t("Collega la commessa a un contratto censito. I contratti chiusi o annullati conservano i collegamenti esistenti.") : t("Caricamento dell’elenco dei contratti necessario per salvare la commessa.");
     $("job-contract-retry").hidden = state.contractsReady;
     $("job-save").disabled = !state.contractsReady || busyDialogs.has("job-dialog");
   }
@@ -1058,7 +1135,7 @@
     if (!$("job-dialog").open || !can("manage_jobs")) return;
     renderJobContracts();
     $("job-contract-retry").disabled = false;
-    if (!loaded && !state.contractsReady) $("job-contract-help").textContent = "L’elenco dei contratti non è disponibile. Ricaricalo prima di salvare.";
+    if (!loaded && !state.contractsReady) $("job-contract-help").textContent = t("L’elenco dei contratti non è disponibile. Ricaricalo prima di salvare.");
   }
 
   function openSupplier(supplier = null) {
@@ -1066,8 +1143,8 @@
     $("supplier-form").reset();
     $("supplier-error").hidden = true;
     $("supplier-id").value = supplier?.id || "";
-    $("supplier-dialog-title").textContent = supplier ? "Modifica fornitore" : "Nuovo fornitore";
-    $("supplier-save").textContent = supplier ? "Salva modifiche" : "Crea fornitore";
+    $("supplier-dialog-title").textContent = supplier ? t("Modifica fornitore") : t("Nuovo fornitore");
+    $("supplier-save").textContent = supplier ? t("Salva modifiche") : t("Crea fornitore");
     if (supplier) {
       ["code", "name", "vat_number", "email", "phone", "address", "notes"].forEach((key) => { $("supplier-" + key).value = supplier[key] || ""; });
       $("supplier-active").value = activeSupplier(supplier) ? "1" : "0";
@@ -1078,15 +1155,15 @@
 
   function renderContractSuppliers(initial = false) {
     const current = initial ? state.editingContract?.supplier_id || "" : $("contract-supplier").value;
-    const first = node("option", "", "Seleziona un fornitore attivo");
+    const first = node("option", "", t("Seleziona un fornitore attivo"));
     first.value = "";
     const options = state.suppliers.filter((supplier) => activeSupplier(supplier) || String(supplier.id) === String(state.editingContract?.supplier_id)).map((supplier) => {
-      const option = node("option", "", `${supplier.code} · ${supplier.name}${activeSupplier(supplier) ? "" : " (disattivato)"}`);
+      const option = node("option", "", `${supplier.code} · ${supplier.name}${activeSupplier(supplier) ? "" : t(" (disattivato)")}`);
       option.value = supplier.id;
       return option;
     });
     if (current && !options.some((option) => String(option.value) === String(current))) {
-      const fallback = node("option", "", state.editingContract?.supplier_name || "Fornitore del contratto");
+      const fallback = node("option", "", state.editingContract?.supplier_name || t("Fornitore del contratto"));
       fallback.value = current;
       options.push(fallback);
     }
@@ -1095,7 +1172,7 @@
     $("contract-supplier").disabled = !state.suppliersReady || busyDialogs.has("contract-dialog");
     $("contract-save").disabled = !state.suppliersReady || busyDialogs.has("contract-dialog");
     $("contract-supplier-retry").hidden = state.suppliersReady;
-    $("contract-supplier-help").textContent = !state.suppliersReady ? "Caricamento dell’elenco dei fornitori necessario per salvare il contratto." : options.length ? "Puoi scegliere un fornitore attivo. Il fornitore già collegato resta disponibile in modifica." : "Crea prima un fornitore attivo nella sezione Fornitori.";
+    $("contract-supplier-help").textContent = !state.suppliersReady ? t("Caricamento dell’elenco dei fornitori necessario per salvare il contratto.") : options.length ? t("Puoi scegliere un fornitore attivo. Il fornitore già collegato resta disponibile in modifica.") : t("Crea prima un fornitore attivo nella sezione Fornitori.");
   }
 
   async function loadContractSuppliers() {
@@ -1104,7 +1181,7 @@
     if (!$("contract-dialog").open || !can("manage_contracts")) return;
     renderContractSuppliers();
     $("contract-supplier-retry").disabled = false;
-    if (!loaded && !state.suppliersReady) $("contract-supplier-help").textContent = "L’elenco dei fornitori non è disponibile. Ricaricalo prima di salvare.";
+    if (!loaded && !state.suppliersReady) $("contract-supplier-help").textContent = t("L’elenco dei fornitori non è disponibile. Ricaricalo prima di salvare.");
   }
 
   function openContract(contract = null) {
@@ -1115,13 +1192,13 @@
     $("contract-ends_on").setCustomValidity("");
     $("contract-error").hidden = true;
     $("contract-id").value = contract?.id || "";
-    $("contract-dialog-title").textContent = contract ? "Modifica contratto" : "Nuovo contratto";
-    $("contract-save").textContent = contract ? "Salva modifiche" : "Crea contratto";
+    $("contract-dialog-title").textContent = contract ? t("Modifica contratto") : t("Nuovo contratto");
+    $("contract-save").textContent = contract ? t("Salva modifiche") : t("Crea contratto");
     if (contract) {
       ["code", "title", "status", "starts_on", "ends_on", "notes"].forEach((key) => { $("contract-" + key).value = contract[key] || ""; });
       if (contract.value_cents !== null && contract.value_cents !== undefined && contract.value_cents !== "") {
         const cents = BigInt(contract.value_cents);
-        $("contract-value").value = `${cents / 100n},${String(cents % 100n).padStart(2, "0")}`;
+        $("contract-value").value = `${cents / 100n}${new Intl.NumberFormat(locale).formatToParts(1.1).find((part) => part.type === "decimal").value}${String(cents % 100n).padStart(2, "0")}`;
       }
     }
     renderContractSuppliers(true);
@@ -1131,7 +1208,7 @@
   }
 
   function fileSize(bytes) {
-    return Number(bytes) < 1024 * 1024 ? `${(Number(bytes) / 1024).toLocaleString("it-IT", { maximumFractionDigits: 1 })} KiB` : `${(Number(bytes) / (1024 * 1024)).toLocaleString("it-IT", { maximumFractionDigits: 2 })} MiB`;
+    return Number(bytes) < 1024 * 1024 ? t("{0} KiB", [(Number(bytes) / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })]) : t("{0} MiB", [(Number(bytes) / (1024 * 1024)).toLocaleString(locale, { maximumFractionDigits: 2 })]);
   }
 
   function renderDocuments() {
@@ -1141,9 +1218,9 @@
       const item = node("li", "document-item");
       const info = node("div", "document-identity");
       info.append(node("strong", "", document.file_name), node("span", "", `${fileSize(document.byte_size)} · ${auditTime(document.created_at)}`));
-      const link = node("a", "row-button document-download", "Scarica PDF");
+      const link = node("a", "row-button document-download", t("Scarica PDF"));
       link.href = `/api/contract-documents/${encodeURIComponent(document.id)}/download`;
-      link.setAttribute("aria-label", "Scarica il documento " + document.file_name);
+      link.setAttribute("aria-label", t("Scarica il documento ") + document.file_name);
       item.append(info, link);
       $("documents-list").append(item);
     }
@@ -1163,7 +1240,7 @@
     try {
       const data = await api(`/api/contracts/${encodeURIComponent(id)}/documents`);
       if (request !== state.documentsRequest || !can("manage_contracts")) return;
-      if (!Array.isArray(data.documents)) throw new Error("Il server ha restituito un elenco non valido. Riprova.");
+      if (!Array.isArray(data.documents)) throw new Error(t("Il server ha restituito un elenco non valido. Riprova."));
       state.documents = data.documents;
       state.documentsReady = true;
       renderDocuments();
@@ -1183,7 +1260,7 @@
     state.documentsReady = false;
     $("document-form").reset();
     $("document-file").setCustomValidity("");
-    $("documents-dialog-title").textContent = "PDF · " + contract.code;
+    $("documents-dialog-title").textContent = t("PDF · ") + contract.code;
     $("documents-dialog-description").textContent = contract.title + ". Scarica i documenti originali o aggiungi un PDF all’archivio.";
     $("documents-dialog").showModal();
     loadDocuments();
@@ -1191,17 +1268,17 @@
 
   function assignmentPeriod(assignment) {
     if (assignment.starts_on && assignment.ends_on) return `${dateLabel(assignment.starts_on)} – ${dateLabel(assignment.ends_on)}`;
-    if (assignment.starts_on) return `Dal ${dateLabel(assignment.starts_on)}, senza scadenza`;
-    if (assignment.ends_on) return `Fino al ${dateLabel(assignment.ends_on)}`;
-    return "Da subito, senza scadenza";
+    if (assignment.starts_on) return t("Dal {0}, senza scadenza", [dateLabel(assignment.starts_on)]);
+    if (assignment.ends_on) return t("Fino al {0}", [dateLabel(assignment.ends_on)]);
+    return t("Da subito, senza scadenza");
   }
 
   function assignmentStatus(assignment) {
     const today = localDate(new Date());
-    if (!assignment.active) return ["Utente disattivato", "cancelled"];
-    if (assignment.starts_on && assignment.starts_on > today) return ["Programmata", "planned"];
-    if (assignment.ends_on && assignment.ends_on < today) return ["Scaduta", "completed"];
-    return ["Abilitato", "active"];
+    if (!assignment.active) return [t("Utente disattivato"), "cancelled"];
+    if (assignment.starts_on && assignment.starts_on > today) return [t("Programmata"), "planned"];
+    if (assignment.ends_on && assignment.ends_on < today) return [t("Scaduta"), "completed"];
+    return [t("Abilitato"), "active"];
   }
 
   function setAssignmentBusy(busy) {
@@ -1212,20 +1289,20 @@
     $("assignment-save").disabled = busy || !state.assignmentsReady;
     $("group-grant-group").disabled = busy || Boolean(state.editingGroupGrant) || !state.assignmentsReady;
     $("group-grant-save").disabled = busy || !state.assignmentsReady || state.assignmentGroups.length === 0;
-    $("group-grant-save").textContent = busy ? "Salvataggio…" : state.editingGroupGrant ? "Salva abilitazione gruppo" : "Abilita gruppo";
-    $("assignment-save").textContent = busy ? "Salvataggio…" : state.editingAssignment ? "Salva abilitazione" : "Abilita utente";
-    $("assignment-revoke-save").textContent = busy ? "Revoca in corso…" : "Conferma revoca";
+    $("group-grant-save").textContent = busy ? t("Salvataggio…") : state.editingGroupGrant ? t("Salva abilitazione gruppo") : t("Abilita gruppo");
+    $("assignment-save").textContent = busy ? t("Salvataggio…") : state.editingAssignment ? t("Salva abilitazione") : t("Abilita utente");
+    $("assignment-revoke-save").textContent = busy ? t("Revoca in corso…") : t("Conferma revoca");
   }
 
   function resetAssignmentForm(assignment = null) {
     state.editingAssignment = assignment;
     $("assignment-form").reset();
     $("assignment-end").setCustomValidity("");
-    const first = node("option", "", "Seleziona un utente attivo");
+    const first = node("option", "", t("Seleziona un utente attivo"));
     first.value = "";
     const users = state.assignmentUsers.filter((user) => user.active || assignment && Number(user.id) === Number(assignment.user_id));
     const options = users.map((user) => {
-      const option = node("option", "", `${user.name} · ${user.email}${user.active ? "" : " (disattivato)"}`);
+      const option = node("option", "", `${user.name} · ${user.email}${user.active ? "" : t(" (disattivato)")}`);
       option.value = user.id;
       return option;
     });
@@ -1236,7 +1313,7 @@
       $("assignment-start").value = assignment.starts_on || "";
       $("assignment-end").value = assignment.ends_on || "";
     }
-    $("assignment-form-title").textContent = assignment ? "Modifica abilitazione utente" : "Abilita un utente";
+    $("assignment-form-title").textContent = assignment ? t("Modifica abilitazione utente") : t("Abilita un utente");
     $("assignment-reset").hidden = !assignment;
     setAssignmentBusy(busyDialogs.has("assignment-dialog"));
   }
@@ -1252,11 +1329,11 @@
       identity.append(node("strong", "", assignment.name), node("span", "assignment-email", assignment.email));
       const [label, status] = assignmentStatus(assignment);
       const meta = node("div", "assignment-meta");
-      meta.append(node("span", "job-access-role", assignment.role_name || "Collaboratore"), node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(assignment)));
-      if (assignment.role === "manager") meta.append(node("span", "field-help", "Gestore · ha già accesso a tutte le commesse"));
+      meta.append(node("span", "job-access-role", (["reader", "contributor"].includes(assignment.role_code) ? t(assignment.role_name) : assignment.role_name) || t("Collaboratore")), node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(assignment)));
+      if (assignment.role === "manager") meta.append(node("span", "field-help", t("Gestore · ha già accesso a tutte le commesse")));
       identity.append(meta);
       const controls = node("div", "row-actions");
-      const editButton = action("Modifica", "Modifica abilitazione di " + assignment.name, () => {
+      const editButton = action(t("Modifica"), t("Modifica abilitazione di ") + assignment.name, () => {
         if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
         state.revokeAssignment = null;
         $("assignment-revoke").hidden = true;
@@ -1264,14 +1341,14 @@
         $("assignment-start").focus();
       });
       editButton.disabled = !assignment.active;
-      if (!assignment.active) editButton.title = "Riattiva l’utente nella sezione Utenti per modificare l’abilitazione.";
+      if (!assignment.active) editButton.title = t("Riattiva l’utente nella sezione Utenti per modificare l’abilitazione.");
       editButton.dataset.assignmentInactive = assignment.active ? "0" : "1";
-      controls.append(editButton, action("Revoca", "Revoca abilitazione di " + assignment.name, () => {
+      controls.append(editButton, action(t("Revoca"), t("Revoca abilitazione di ") + assignment.name, () => {
         if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
         state.revokeAssignment = assignment;
         state.revokeGroupGrant = null;
         $("group-grant-revoke").hidden = true;
-        $("assignment-revoke-description").textContent = `Revocare l’abilitazione di ${assignment.name}? ${isCommonJob(state.assignmentJob) ? "La commessa è comune: l’utente attivo manterrà il diritto di consultarla e registrare le proprie ore." : assignment.role === "manager" ? "Come gestore manterrà l’accesso alla commessa." : "L’accesso diretto sarà revocato; eventuali abilitazioni ricevute tramite gruppi resteranno valide. Le ore già registrate saranno conservate."}`;
+        $("assignment-revoke-description").textContent = t("Revocare l’abilitazione di {0}? {1}", [assignment.name, isCommonJob(state.assignmentJob) ? t("La commessa è comune: l’utente attivo manterrà il diritto di consultarla e registrare le proprie ore.") : assignment.role === "manager" ? t("Come gestore manterrà l’accesso alla commessa.") : t("L’accesso diretto sarà revocato; eventuali abilitazioni ricevute tramite gruppi resteranno valide. Le ore già registrate saranno conservate.")]);
         $("assignment-revoke").hidden = false;
         $("assignment-revoke-cancel").focus();
       }, true));
@@ -1288,7 +1365,7 @@
     const jobId = state.assignmentJob.id;
     state.assignmentsReady = false;
     $("assignment-loading").hidden = false;
-    $("assignment-loading").textContent = "Caricamento delle abilitazioni…";
+    $("assignment-loading").textContent = t("Caricamento delle abilitazioni…");
     $("assignment-error").hidden = true;
     $("assignment-retry-wrap").hidden = true;
     setAssignmentBusy(busyDialogs.has("assignment-dialog"));
@@ -1323,9 +1400,9 @@
     state.groupGrants = [];
     state.assignmentsReady = false;
     state.revokeAssignment = null;
-    $("assignment-dialog-title").textContent = "Abilitazioni · " + job.code;
+    $("assignment-dialog-title").textContent = t("Abilitazioni · ") + job.code;
     $("assignment-dialog-description").textContent = isCommonJob(job) ? `${job.name}. Commessa comune: tutti gli utenti attivi possono consultarla e registrare le proprie ore. Le abilitazioni specifiche saranno applicate se la commessa smette di essere comune.` : `${job.name}. Scegli chi può utilizzare questa commessa. Una revoca conserva tutte le ore già registrate.`;
-    $("assignment-empty").textContent = isCommonJob(job) ? "Nessuna abilitazione specifica. Questa commessa è già disponibile a tutti gli utenti attivi." : "Nessun utente abilitato. Aggiungi una persona dal modulo qui sotto. I gestori hanno comunque accesso a tutte le commesse.";
+    $("assignment-empty").textContent = isCommonJob(job) ? t("Nessuna abilitazione specifica. Questa commessa è già disponibile a tutti gli utenti attivi.") : t("Nessun utente abilitato. Aggiungi una persona dal modulo qui sotto. I gestori hanno comunque accesso a tutte le commesse.");
     $("assignment-list").replaceChildren();
     $("assignment-empty").hidden = true;
     $("assignment-revoke").hidden = true;
@@ -1341,7 +1418,7 @@
 
   function fillRoleSelect(id, catalogue, selected = 2) {
     const options = catalogue.map((role) => {
-      const option = node("option", "", `${role.name} · ${role.can_log_time ? "consulta e registra ore" : "sola consultazione"}`);
+      const option = node("option", "", `${role.builtin ? t(role.name) : role.name} · ${role.can_log_time ? t("consulta e registra ore") : t("sola consultazione")}`);
       option.value = role.id;
       return option;
     });
@@ -1362,7 +1439,7 @@
   }
 
   function orderedGroups(groups = state.organizationGroups) {
-    return [...groups].sort((left, right) => groupPath(left, groups).localeCompare(groupPath(right, groups), "it-IT"));
+    return [...groups].sort((left, right) => groupPath(left, groups).localeCompare(groupPath(right, groups), locale));
   }
 
   function groupDescendsFrom(group, ancestorId) {
@@ -1391,7 +1468,7 @@
     $("groups-empty").hidden = state.organizationGroups.length > 0;
     const seen = new Set();
     const appendBranch = (parentId, parentList) => {
-      const children = state.organizationGroups.filter((group) => (group.parent_id === null || group.parent_id === "" ? null : Number(group.parent_id)) === parentId).sort((a, b) => a.name.localeCompare(b.name, "it-IT"));
+      const children = state.organizationGroups.filter((group) => (group.parent_id === null || group.parent_id === "" ? null : Number(group.parent_id)) === parentId).sort((a, b) => a.name.localeCompare(b.name, locale));
       for (const group of children) {
         if (seen.has(Number(group.id))) continue;
         seen.add(Number(group.id));
@@ -1400,7 +1477,7 @@
         button.type = "button";
         button.setAttribute("aria-pressed", String(Number(state.selectedGroup?.id) === Number(group.id)));
         button.append(node("span", "group-tree-name", group.name), node("span", "group-tree-count", String(Number(group.members_count) || 0)));
-        button.setAttribute("aria-label", `${group.name}, ${Number(group.members_count) || 0} membri diretti`);
+        button.setAttribute("aria-label", t("{0}, {1} membri diretti", [group.name, Number(group.members_count) || 0]));
         button.addEventListener("click", () => {
           if (state.organizationBusy) return;
           state.selectedGroup = group;
@@ -1423,16 +1500,16 @@
     const group = state.selectedGroup;
     $("group-detail-actions").hidden = !group;
     $("group-members-content").hidden = !group;
-    $("group-detail-title").textContent = group ? group.name : "Seleziona un gruppo";
-    $("group-detail-path").textContent = group ? groupPath(group) : "Seleziona un gruppo nell’albero per gestire i suoi membri diretti.";
+    $("group-detail-title").textContent = group ? group.name : t("Seleziona un gruppo");
+    $("group-detail-path").textContent = group ? groupPath(group) : t("Seleziona un gruppo nell’albero per gestire i suoi membri diretti.");
     $("job-roles-list").replaceChildren();
     for (const role of state.organizationRoles) {
       const item = node("li", "job-role-card");
       const identity = node("div");
-      identity.append(node("strong", "", role.name), node("span", "assignment-email", role.code), node("p", "field-help", role.can_log_time ? "Consulta e registra le proprie ore" : "Sola consultazione"));
+      identity.append(node("strong", "", role.builtin ? t(role.name) : role.name), node("span", "assignment-email", role.code), node("p", "field-help", role.can_log_time ? t("Consulta e registra le proprie ore") : t("Sola consultazione")));
       item.append(identity);
-      if (role.builtin) item.append(node("span", "job-access-role", "Predefinito"));
-      else if (can("manage_job_roles")) item.append(action("Modifica", "Modifica il ruolo " + role.name, () => openJobRole(role)));
+      if (role.builtin) item.append(node("span", "job-access-role", t("Predefinito")));
+      else if (can("manage_job_roles")) item.append(action(t("Modifica"), t("Modifica il ruolo ") + role.name, () => openJobRole(role)));
       $("job-roles-list").append(item);
     }
     $("new-job-role").hidden = !can("manage_job_roles");
@@ -1479,19 +1556,19 @@
     for (const member of state.groupMembers) {
       const item = node("li", "organization-member");
       const identity = node("div", "assignment-identity");
-      identity.append(node("strong", "", member.name), node("span", "assignment-email", member.email), node("span", "field-help", `${roles[member.role] || "Operatore"}${member.active ? "" : " · Disattivato"}`));
-      item.append(identity, action("Rimuovi", "Rimuovi " + member.name + " dal gruppo", () => {
+      identity.append(node("strong", "", member.name), node("span", "assignment-email", member.email), node("span", "field-help", `${roles[member.role] || t("Operatore")}${member.active ? "" : t(" · Disattivato")}`));
+      item.append(identity, action(t("Rimuovi"), t("Rimuovi ") + member.name + t(" dal gruppo"), () => {
         const group = state.selectedGroup;
-        confirmOrganization(`Rimuovere ${member.name} da ${group.name}? Le abilitazioni ricevute da questo gruppo e dai suoi gruppi padre non saranno più applicate tramite questa appartenenza. Altre appartenenze e abilitazioni dirette restano valide.`, async () => {
+        confirmOrganization(t("Rimuovere {0} da {1}? Le abilitazioni ricevute da questo gruppo e dai suoi gruppi padre non saranno più applicate tramite questa appartenenza. Altre appartenenze e abilitazioni dirette restano valide.", [member.name, group.name]), async () => {
           await api(`/api/groups/${encodeURIComponent(group.id)}/members/${encodeURIComponent(member.user_id)}`, { method: "DELETE" });
-          showNotice("Utente rimosso dal gruppo. Le ore già registrate sono conservate.");
+          showNotice(t("Utente rimosso dal gruppo. Le ore già registrate sono conservate."));
           await refreshOrganization(group.id);
         });
       }, true));
       $("group-members").append(item);
     }
     $("group-members-empty").hidden = state.groupMembers.length !== 0;
-    const first = node("option", "", "Seleziona un utente attivo");
+    const first = node("option", "", t("Seleziona un utente attivo"));
     first.value = "";
     const options = state.organizationUsers.filter((user) => user.active && !state.groupMembers.some((member) => Number(member.user_id) === Number(user.id))).map((user) => {
       const option = node("option", "", `${user.name} · ${user.email}`);
@@ -1534,7 +1611,7 @@
     $("group-error").hidden = true;
     $("group-id").value = group?.id || "";
     $("group-name").value = group?.name || "";
-    const first = node("option", "", "Primo livello");
+    const first = node("option", "", t("Primo livello"));
     first.value = "";
     const options = orderedGroups().filter((candidate) => !group || !groupDescendsFrom(candidate, group.id)).map((candidate) => {
       const option = node("option", "", groupPath(candidate));
@@ -1543,8 +1620,8 @@
     });
     $("group-parent").replaceChildren(first, ...options);
     $("group-parent").value = group ? group.parent_id || "" : state.selectedGroup?.id || "";
-    $("group-dialog-title").textContent = group ? "Modifica gruppo" : "Nuovo gruppo";
-    $("group-save").textContent = group ? "Salva modifiche" : "Crea gruppo";
+    $("group-dialog-title").textContent = group ? t("Modifica gruppo") : t("Nuovo gruppo");
+    $("group-save").textContent = group ? t("Salva modifiche") : t("Crea gruppo");
     $("group-dialog").showModal();
     $("group-name").focus();
   }
@@ -1557,8 +1634,8 @@
     $("job-role-code").value = role?.code || "";
     $("job-role-name").value = role?.name || "";
     $("job-role-log-time").value = role?.can_log_time ? "1" : "0";
-    $("job-role-dialog-title").textContent = role ? "Modifica ruolo commessa" : "Nuovo ruolo commessa";
-    $("job-role-save").textContent = role ? "Salva modifiche" : "Crea ruolo";
+    $("job-role-dialog-title").textContent = role ? t("Modifica ruolo commessa") : t("Nuovo ruolo commessa");
+    $("job-role-save").textContent = role ? t("Salva modifiche") : t("Crea ruolo");
     $("job-role-dialog").showModal();
     $("job-role-code").focus();
   }
@@ -1575,7 +1652,7 @@
     state.editingGroupGrant = grant;
     $("group-grant-form").reset();
     $("group-grant-end").setCustomValidity("");
-    const first = node("option", "", "Seleziona un gruppo");
+    const first = node("option", "", t("Seleziona un gruppo"));
     first.value = "";
     const options = orderedGroups(state.assignmentGroups).map((group) => {
       const option = node("option", "", groupPath(group, state.assignmentGroups));
@@ -1589,7 +1666,7 @@
       $("group-grant-start").value = grant.starts_on || "";
       $("group-grant-end").value = grant.ends_on || "";
     }
-    $("group-grant-form-title").textContent = grant ? "Modifica abilitazione gruppo" : "Abilita un gruppo";
+    $("group-grant-form-title").textContent = grant ? t("Modifica abilitazione gruppo") : t("Abilita un gruppo");
     $("group-grant-reset").hidden = !grant;
     setAssignmentBusy(busyDialogs.has("assignment-dialog"));
   }
@@ -1604,21 +1681,21 @@
       identity.append(node("strong", "", group ? groupPath(group, state.assignmentGroups) : grant.group_name));
       const [label, status] = assignmentStatus({ ...grant, active: true });
       const meta = node("div", "assignment-meta");
-      meta.append(node("span", "job-access-role", grant.role_name), node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(grant)));
+      meta.append(node("span", "job-access-role", ["reader", "contributor"].includes(grant.role_code) ? t(grant.role_name) : grant.role_name), node("span", "status-badge status-" + status, label), node("span", "assignment-period", assignmentPeriod(grant)));
       identity.append(meta);
       const controls = node("div", "row-actions");
-      controls.append(action("Modifica", "Modifica abilitazione del gruppo " + grant.group_name, () => {
+      controls.append(action(t("Modifica"), t("Modifica abilitazione del gruppo ") + grant.group_name, () => {
         if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
         state.revokeGroupGrant = null;
         $("group-grant-revoke").hidden = true;
         resetGroupGrantForm(grant);
         $("group-grant-role").focus();
-      }), action("Revoca", "Revoca abilitazione del gruppo " + grant.group_name, () => {
+      }), action(t("Revoca"), t("Revoca abilitazione del gruppo ") + grant.group_name, () => {
         if (!requirePermission("manage_assignments") || busyDialogs.has("assignment-dialog")) return;
         state.revokeGroupGrant = grant;
         state.revokeAssignment = null;
         $("assignment-revoke").hidden = true;
-        $("group-grant-revoke-text").textContent = `Revocare l’abilitazione di ${grant.group_name} e dei suoi sottogruppi? ${isCommonJob(state.assignmentJob) ? "La commessa è comune: tutti gli utenti attivi manterranno il diritto di consultarla e registrare le proprie ore." : "Eventuali abilitazioni dirette o ricevute da altri gruppi restano valide. Le ore già registrate sono conservate."}`;
+        $("group-grant-revoke-text").textContent = t("Revocare l’abilitazione di {0} e dei suoi sottogruppi? {1}", [grant.group_name, isCommonJob(state.assignmentJob) ? t("La commessa è comune: tutti gli utenti attivi manterranno il diritto di consultarla e registrare le proprie ore.") : t("Eventuali abilitazioni dirette o ricevute da altri gruppi restano valide. Le ore già registrate sono conservate.")]);
         $("group-grant-revoke").hidden = false;
         $("group-grant-revoke-cancel").focus();
       }, true));
@@ -1652,15 +1729,15 @@
     ["alert-rules-count", "notifications-count", "nav-notifications-count"].forEach((id) => { $(id).textContent = "0"; });
     $("nav-notifications-count").hidden = true;
     $("alert-rule-form").reset();
-    $("notifications-summary").textContent = "Caricamento delle notifiche…";
+    $("notifications-summary").textContent = t("Caricamento delle notifiche…");
     $("notifications-empty").hidden = true;
     $("notifications-error").hidden = true;
   }
 
-  function alertDateTime(value, fallback = "Non ancora eseguita") {
+  function alertDateTime(value, fallback = t("Non ancora eseguita")) {
     if (!value) return fallback;
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(locale, { timeZone: "Europe/Rome", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
   function setAlertRulesBusy() {
@@ -1679,32 +1756,33 @@
       const item = node("li", "alert-rule-card");
       const heading = node("div", "alert-rule-heading");
       const enabled = rule.enabled === true || rule.enabled === 1;
-      heading.append(node("h4", "", rule.name), node("span", "status-badge " + (enabled ? "status-active" : "status-paused"), enabled ? "Attiva" : "Sospesa"));
+      heading.append(node("h4", "", rule.name), node("span", "status-badge " + (enabled ? "status-active" : "status-paused"), enabled ? t("Attiva") : t("Sospesa")));
       const recipients = (rule.recipient_user_ids || []).map((id) => {
         const user = state.alertUsers.find((candidate) => String(candidate.id) === String(id));
-        return user ? user.name || user.email : "Utente #" + id;
+        return user ? user.name || user.email : t("Utente #") + id;
       });
       const emails = rule.recipient_emails || [];
       const meta = node("dl", "alert-rule-details");
       const fields = [
-        ["Controllo", alertTypes[rule.type]?.label || rule.type],
-        ["Esecuzione", `Ogni giorno alle ${rule.run_time} · Europe/Rome`],
-        ["Notifiche nell’app", recipients.length ? recipients.join(", ") : "Nessun destinatario nell’app"],
-        ["Email", emails.length ? emails.join(", ") + (state.alertSmtpConfigured ? "" : " · invii in attesa") : "Nessun destinatario email"],
-        ["Ultima esecuzione", alertDateTime(rule.last_run_at)],
-        ["Prossima esecuzione", enabled ? alertDateTime(rule.next_run_at, "In programmazione") : "Sospesa"]
+        [t("Controllo"), alertTypes[rule.type]?.label || rule.type],
+        [t("Esecuzione"), t("Ogni giorno alle {0} · Europe/Rome", [rule.run_time])],
+        [t("Notifiche nell’app"), recipients.length ? recipients.join(", ") : t("Nessun destinatario nell’app")],
+        [t("Email"), emails.length ? emails.join(", ") + (state.alertSmtpConfigured ? "" : t(" · invii in attesa")) : t("Nessun destinatario email")],
+        [t("Ultima esecuzione"), alertDateTime(rule.last_run_at)],
+        [t("Prossima esecuzione"), enabled ? alertDateTime(rule.next_run_at, t("In programmazione")) : t("Sospesa")]
       ];
-      if (rule.type === "inventory_due") fields.splice(1,0,["Anticipo",`${rule.days_before} giorni · comprese scadenze superate`]);
+      if (rule.type === "inventory_due") fields.splice(1,0,[t("Anticipo"),t("{0} giorni · comprese scadenze superate", [rule.days_before])]);
+      if (rule.type === "inventory_verification") fields.splice(1,0,[t("Intervallo verifiche"),t("{0} giorni", [rule.verification_days || 90])]);
       for (const [label, value] of fields) meta.append(node("dt", "", label), node("dd", "", value));
       const controls = node("div", "row-actions");
-      controls.append(action("Modifica", "Modifica la regola " + rule.name, () => openAlertRule(rule)));
-      controls.append(action(state.runningAlertRule === rule.id ? "Controllo in corso…" : "Esegui ora", "Esegui ora la regola " + rule.name, () => runAlertRule(rule)));
+      controls.append(action(t("Modifica"), t("Modifica la regola ") + rule.name, () => openAlertRule(rule)));
+      controls.append(action(state.runningAlertRule === rule.id ? t("Controllo in corso…") : t("Esegui ora"), t("Esegui ora la regola ") + rule.name, () => runAlertRule(rule)));
       item.append(heading, meta, controls);
       $("alert-rules-list").append(item);
     }
     $("alert-rules-count").textContent = state.alertRules.length;
     $("alert-rules-empty").hidden = !state.alertRulesReady || state.alertRules.length > 0;
-    $("alerts-mail-status").textContent = state.alertSmtpConfigured ? "Il canale email è configurato. Le notifiche nell’app restano disponibili nella sezione Notifiche." : "Email non configurata: gli invii vengono messi in attesa e non vengono spediti. Le notifiche nell’app sono disponibili subito.";
+    $("alerts-mail-status").textContent = state.alertSmtpConfigured ? t("Il canale email è configurato. Le notifiche nell’app restano disponibili nella sezione Notifiche.") : t("Email non configurata: gli invii vengono messi in attesa e non vengono spediti. Le notifiche nell’app sono disponibili subito.");
     setAlertRulesBusy();
   }
 
@@ -1719,7 +1797,7 @@
     try {
       const data = await api("/api/alert-rules");
       if (request !== state.alertRulesRequest || !isAlertManager()) return;
-      if (!Array.isArray(data.rules) || !Array.isArray(data.users)) throw new Error("Il server ha restituito un elenco regole non valido. Riprova.");
+      if (!Array.isArray(data.rules) || !Array.isArray(data.users)) throw new Error(t("Il server ha restituito un elenco regole non valido. Riprova."));
       state.alertRules = data.rules;
       state.alertUsers = data.users;
       state.alertSmtpConfigured = data.smtp_configured === true;
@@ -1741,11 +1819,14 @@
 
   function renderAlertRuleTypeHelp() {
     $("alert-rule-type-help").textContent = alertTypes[$("alert-rule-type").value]?.description || "";
-    const inventory = $("alert-rule-type").value === "inventory_due";
-    $("alert-rule-days-field").hidden = !inventory;
-    $("alert-rule-days").disabled = !inventory;
-    $("alert-rule-days").required = inventory;
-    $("alert-recipients-help").textContent = inventory ? "Seleziona fino a 50 utenti attivi. Tutti i destinatari selezionati ricevono le scadenze dell’inventario aziendale." : "Seleziona fino a 50 utenti attivi. Gli operatori ricevono soltanto avvisi che li riguardano; i gestori possono ricevere gli avvisi di tutti.";
+    const type = $("alert-rule-type").value, due = type === "inventory_due", verification = type === "inventory_verification";
+    $("alert-rule-days-field").hidden = !due;
+    $("alert-rule-days").disabled = !due;
+    $("alert-rule-days").required = due;
+    $("alert-rule-verification-field").hidden = !verification;
+    $("alert-rule-verification-days").disabled = !verification;
+    $("alert-rule-verification-days").required = verification;
+    $("alert-recipients-help").textContent = type.startsWith("inventory_") ? t("Seleziona fino a 50 utenti attivi. Tutti i destinatari selezionati ricevono gli avvisi dell’inventario aziendale.") : t("Seleziona fino a 50 utenti attivi. Gli operatori ricevono soltanto avvisi che li riguardano; i gestori possono ricevere gli avvisi di tutti.");
   }
 
   function openAlertRule(rule = null, type = "missing_hours") {
@@ -1754,18 +1835,19 @@
     $("alert-rule-form").reset();
     $("alert-rule-error").hidden = true;
     $("alert-rule-emails").setCustomValidity("");
-    $("alert-rule-dialog-title").textContent = rule ? "Modifica regola" : "Nuova regola";
-    $("alert-rule-save").textContent = rule ? "Salva modifiche" : "Crea regola";
+    $("alert-rule-dialog-title").textContent = rule ? t("Modifica regola") : t("Nuova regola");
+    $("alert-rule-save").textContent = rule ? t("Salva modifiche") : t("Crea regola");
     $("alert-rule-type").value = rule?.type || type;
     $("alert-rule-name").value = rule?.name || alertTypes[type]?.label || "";
     $("alert-rule-time").value = rule?.run_time || "09:00";
     $("alert-rule-days").value = rule?.days_before || 30;
+    $("alert-rule-verification-days").value = rule?.verification_days || 90;
     $("alert-rule-enabled").checked = rule ? rule.enabled === true || rule.enabled === 1 : true;
     $("alert-rule-emails").value = (rule?.recipient_emails || []).join("\n");
-    $("alert-rule-emails-help").textContent = state.alertSmtpConfigured ? "Fino a 50 indirizzi separati da virgole o righe." : "Fino a 50 indirizzi separati da virgole o righe. Email non configurata: gli invii resteranno in attesa, senza spedizione.";
+    $("alert-rule-emails-help").textContent = state.alertSmtpConfigured ? t("Fino a 50 indirizzi separati da virgole o righe.") : t("Fino a 50 indirizzi separati da virgole o righe. Email non configurata: gli invii resteranno in attesa, senza spedizione.");
     const selected = new Set((rule?.recipient_user_ids || []).map(String));
     const users = [...state.alertUsers];
-    for (const id of selected) if (!users.some((user) => String(user.id) === id)) users.push({ id, name: "Utente #" + id, unavailable: true });
+    for (const id of selected) if (!users.some((user) => String(user.id) === id)) users.push({ id, name: t("Utente #") + id, unavailable: true });
     $("alert-rule-users").replaceChildren();
     for (const user of users) {
       const label = node("label", "alert-recipient-option");
@@ -1776,11 +1858,11 @@
       checkbox.dataset.unavailable = user.unavailable ? "1" : "0";
       const identity = node("span");
       identity.append(node("strong", "", user.name || user.email));
-      identity.append(node("span", "", user.unavailable ? "Non più attivo: deselezionalo per salvare" : `${user.email} · ${roles[user.role] || "Operatore"}`));
+      identity.append(node("span", "", user.unavailable ? t("Non più attivo: deselezionalo per salvare") : `${user.email} · ${roles[user.role] || t("Operatore")}`));
       label.append(checkbox, identity);
       $("alert-rule-users").append(label);
     }
-    if (!users.length) $("alert-rule-users").append(node("p", "field-help", "Nessun utente attivo disponibile. Puoi impostare destinatari email in attesa di configurazione."));
+    if (!users.length) $("alert-rule-users").append(node("p", "field-help", t("Nessun utente attivo disponibile. Puoi impostare destinatari email in attesa di configurazione.")));
     renderAlertRuleTypeHelp();
     $("alert-rule-dialog").showModal();
     $("alert-rule-name").focus();
@@ -1788,9 +1870,9 @@
 
   function alertRecipientEmails() {
     const emails = [...new Set($("alert-rule-emails").value.split(/[,\r\n]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
-    if (emails.length > 50) throw new Error("Inserisci al massimo 50 indirizzi email.");
+    if (emails.length > 50) throw new Error(t("Inserisci al massimo 50 indirizzi email."));
     for (const email of emails) {
-      if (email.length > 254 || /[^\x21-\x7e]/.test(email) || !/^[^\s@,;<>]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z0-9-]{2,}$/i.test(email) || email.includes("..")) throw new Error(`L’indirizzo “${email}” non è valido. Separa gli indirizzi con virgole o righe.`);
+      if (email.length > 254 || /[^\x21-\x7e]/.test(email) || !/^[^\s@,;<>]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z0-9-]{2,}$/i.test(email) || email.includes("..")) throw new Error(t("L’indirizzo “{0}” non è valido. Separa gli indirizzi con virgole o righe.", [email]));
     }
     return emails;
   }
@@ -1810,7 +1892,7 @@
       state.notificationsLoading = false;
       const count = Number(result.notifications_created) || 0;
       const queued = Number(result.emails_queued) || 0;
-      showNotice(`Controllo completato: ${count} ${count === 1 ? "nuova notifica nell’app" : "nuove notifiche nell’app"}.${queued ? ` ${queued} email in attesa; nessun invio effettuato.` : ""}`);
+      showNotice(t("Controllo completato: {0} {1}.{2}", [count, count === 1 ? t("nuova notifica nell’app") : t("nuove notifiche nell’app"), queued ? t(" {0} email in attesa; nessun invio effettuato.", [queued]) : ""]));
       await Promise.all([refreshAlertRules(), refreshNotifications()]);
     } catch (error) {
       if (isAlertManager() && state.session.email === email) showNotice(error.message, true);
@@ -1822,34 +1904,53 @@
     }
   }
 
+  function notificationMessage(notification) {
+    const message = notification.message || "";
+    let match;
+    if (notification.event_kind === "missing_hours" && (match = /^(.*): il (\d{4}-\d{2}-\d{2}) risultano registrati (\d+) minuti su 480 previsti\. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa\.$/s.exec(message))) {
+      return t("{0}: il {1} risultano registrati {2} minuti su 480 previsti. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa.", [match[1], dateLabel(match[2]), Number(match[3]).toLocaleString(locale)]);
+    }
+    if (notification.event_kind === "invalid_job" && (match = /^(.*) ha tentato di registrare (\d+) minuti il (\d{4}-\d{2}-\d{2}) sulla commessa inesistente #(\d+)\. La registrazione è stata rifiutata\.$/s.exec(message))) {
+      return t("{0} ha tentato di registrare {1} minuti il {2} sulla commessa inesistente #{3}. La registrazione è stata rifiutata.", [match[1], Number(match[2]).toLocaleString(locale), dateLabel(match[3]), match[4]]);
+    }
+    if (notification.event_kind === "inventory_due" && (match = /^(.*) — (.*)\. (Garanzia|Manutenzione|Licenza|Rinnovo): (\d{4}-\d{2}-\d{2}) \((scadenza oggi|scadenza (superata da|tra) (\d+) giorni)\)\.$/s.exec(message))) {
+      const timing = match[5] === t("scadenza oggi") ? t("scadenza oggi") : match[6] === "tra" ? t("scadenza tra {0} giorni", [match[7]]) : t("scadenza superata da {0} giorni", [match[7]]);
+      return `${match[1]} — ${match[2]}. ${t(match[3])}: ${dateLabel(match[4])} (${timing}).`;
+    }
+    if (notification.event_kind === "inventory_return" && (match = /^(.*) — (.*)\. Restituzione prevista il (\d{4}-\d{2}-\d{2}): in ritardo da (\d+) giorni\.$/s.exec(message))) return t("{0} — {1}. Restituzione prevista il {2}: in ritardo da {3} giorni.", [match[1], match[2], dateLabel(match[3]), match[4]]);
+    if (notification.event_kind === "inventory_verification" && (match = /^(.*) — (.*)\. Il bene non è mai stato verificato: occorre una verifica inventario\.$/s.exec(message))) return t("{0} — {1}. Il bene non è mai stato verificato: occorre una verifica inventario.", [match[1], match[2]]);
+    if (notification.event_kind === "inventory_verification" && (match = /^(.*) — (.*)\. Verifica da ripetere entro il (\d{4}-\d{2}-\d{2}): intervallo di (\d+) giorni (superato|raggiunto oggi)\.$/s.exec(message))) return match[5] === "superato" ? t("{0} — {1}. Verifica da ripetere entro il {2}: intervallo di {3} giorni superato.", [match[1], match[2], dateLabel(match[3]), match[4]]) : t("{0} — {1}. Verifica da ripetere entro il {2}: intervallo di {3} giorni raggiunto oggi.", [match[1], match[2], dateLabel(match[3]), match[4]]);
+    return message;
+  }
+
   function renderNotifications() {
     $("notifications-list").replaceChildren();
     for (const notification of state.notifications) {
       const unread = !notification.read_at;
       const item = node("li", "notification-card" + (unread ? " is-unread" : ""));
       const heading = node("div", "notification-heading");
-      const title = node("h3", "", notification.title);
+      const title = node("h3", "", t(notification.title));
       heading.append(title);
-      if (unread) heading.append(node("span", "notification-new-label", "Da leggere"));
+      if (unread) heading.append(node("span", "notification-new-label", t("Da leggere")));
       const created = node("time", "", alertDateTime(notification.created_at, ""));
       created.dateTime = notification.created_at;
-      item.append(heading, node("p", "notification-message", notification.message), created);
-      if (notification.work_date && validDate(notification.work_date)) item.append(node("p", "notification-context", "Giornata: " + dateLabel(notification.work_date)));
-      if (notification.event_kind === "inventory_due" && Number.isSafeInteger(notification.asset_id) && notification.asset_id > 0) {
-        item.append(action("Apri asset", "Apri l’asset relativo alla notifica", () => { selectTab("inventory"); openInventoryDetail(notification.asset_id); }));
+      item.append(heading, node("p", "notification-message", notificationMessage(notification)), created);
+      if (notification.work_date && validDate(notification.work_date)) item.append(node("p", "notification-context", t("Giornata: ") + dateLabel(notification.work_date)));
+      if (["inventory_due", "inventory_return", "inventory_verification"].includes(notification.event_kind) && Number.isSafeInteger(notification.asset_id) && notification.asset_id > 0) {
+        item.append(action(t("Apri asset"), t("Apri l’asset relativo alla notifica"), () => { selectTab("inventory"); openInventoryDetail(notification.asset_id); }));
       }
       if (unread) {
-        const button = action(state.readingNotifications.has(notification.id) ? "Aggiornamento…" : "Segna come letta", "Segna come letta: " + notification.title, () => markNotificationRead(notification));
+        const button = action(state.readingNotifications.has(notification.id) ? t("Aggiornamento…") : t("Segna come letta"), t("Segna come letta: ") + t(notification.title), () => markNotificationRead(notification));
         button.disabled = state.readingNotifications.has(notification.id);
         item.append(button);
-      } else item.append(node("span", "notification-read-label", "Letta il " + alertDateTime(notification.read_at, "")));
+      } else item.append(node("span", "notification-read-label", t("Letta il ") + alertDateTime(notification.read_at, "")));
       $("notifications-list").append(item);
     }
     $("notifications-count").textContent = state.notifications.length;
     $("nav-notifications-count").textContent = state.notificationsUnread;
-    $("nav-notifications-count").setAttribute("aria-label", `${state.notificationsUnread} notifiche non lette`);
+    $("nav-notifications-count").setAttribute("aria-label", t("{0} notifiche non lette", [state.notificationsUnread]));
     $("nav-notifications-count").hidden = state.notificationsUnread === 0;
-    $("notifications-summary").textContent = (state.notifications.length === 100 ? "Sono mostrati gli ultimi 100 avvisi. " : "") + (state.notificationsUnread ? `${state.notificationsUnread} ${state.notificationsUnread === 1 ? "notifica da leggere" : "notifiche da leggere"}.` : "Hai letto tutti gli avvisi ricevuti.");
+    $("notifications-summary").textContent = (state.notifications.length === 100 ? t("Sono mostrati gli ultimi 100 avvisi. ") : "") + (state.notificationsUnread ? `${state.notificationsUnread} ${state.notificationsUnread === 1 ? t("notifica da leggere") : t("notifiche da leggere")}.` : t("Hai letto tutti gli avvisi ricevuti."));
     $("notifications-empty").hidden = !state.notificationsReady || state.notifications.length > 0;
   }
 
@@ -1864,7 +1965,7 @@
     try {
       const data = await api("/api/notifications");
       if (request !== state.notificationsRequest) return;
-      if (!Array.isArray(data.notifications) || !Number.isInteger(data.unread_count) || data.unread_count < 0) throw new Error("Il server ha restituito un elenco notifiche non valido. Riprova.");
+      if (!Array.isArray(data.notifications) || !Number.isInteger(data.unread_count) || data.unread_count < 0) throw new Error(t("Il server ha restituito un elenco notifiche non valido. Riprova."));
       state.notifications = data.notifications;
       state.notificationsUnread = data.unread_count;
       state.notificationsReady = true;
@@ -1873,7 +1974,7 @@
       if (request === state.notificationsRequest) {
         $("notifications-error-text").textContent = error.message;
         $("notifications-error").hidden = false;
-        if (!state.notificationsReady) $("notifications-summary").textContent = "Le notifiche non sono disponibili. Riprova a caricarle.";
+        if (!state.notificationsReady) $("notifications-summary").textContent = t("Le notifiche non sono disponibili. Riprova a caricarle.");
       }
     } finally {
       if (request === state.notificationsRequest) {
@@ -1914,41 +2015,41 @@
   }
 
   const auditActions = {
-    "tasks.create": "Attività creata", "tasks.update": "Attività aggiornata", "tasks.delete": "Attività eliminata",
-    "blockers.create": "Blocco segnalato", "blockers.update": "Blocco aggiornato", "blockers.delete": "Blocco eliminato", "blockers.task_detached": "Blocco scollegato dall’attività eliminata",
-    "jobs.create": "Commessa creata", "jobs.update": "Commessa aggiornata", "jobs.delete": "Commessa e ore eliminate",
-    "time_entries.create": "Ore registrate", "time_entries.update": "Ore aggiornate", "time_entries.delete": "Ore eliminate",
-    "assignments.create": "Utente abilitato", "assignments.update": "Abilitazione aggiornata", "assignments.delete": "Abilitazione revocata",
-    "suppliers.create": "Fornitore creato", "suppliers.update": "Fornitore aggiornato",
-    "contracts.create": "Contratto creato", "contracts.update": "Contratto aggiornato", "contract_documents.create": "PDF contrattuale archiviato",
-    "labor_rates.create": "Tariffa oraria creata", "labor_rates.update": "Tariffa oraria aggiornata",
-    "alert_rules.create": "Regola alert creata", "alert_rules.update": "Regola alert aggiornata", "alert_rules.run": "Controllo alert eseguito", "alert_rules.trigger": "Controllo alert automatico eseguito",
-    "groups.create": "Gruppo creato", "groups.update": "Gruppo aggiornato", "groups.delete": "Gruppo eliminato",
-    "group_members.create": "Utente aggiunto al gruppo", "group_members.delete": "Utente rimosso dal gruppo",
-    "job_roles.create": "Ruolo commessa creato", "job_roles.update": "Ruolo commessa aggiornato",
-    "group_grants.create": "Gruppo abilitato", "group_grants.update": "Abilitazione gruppo aggiornata", "group_grants.delete": "Abilitazione gruppo revocata",
-    "users.create": "Utente creato", "users.update": "Utente aggiornato", "system.migration": "Database aggiornato"
+    "tasks.create": t("Attività creata"), "tasks.update": t("Attività aggiornata"), "tasks.delete": t("Attività eliminata"),
+    "blockers.create": t("Blocco segnalato"), "blockers.update": t("Blocco aggiornato"), "blockers.delete": t("Blocco eliminato"), "blockers.task_detached": t("Blocco scollegato dall’attività eliminata"),
+    "jobs.create": t("Commessa creata"), "jobs.update": t("Commessa aggiornata"), "jobs.delete": t("Commessa e ore eliminate"),
+    "time_entries.create": t("Ore registrate"), "time_entries.update": t("Ore aggiornate"), "time_entries.delete": t("Ore eliminate"),
+    "assignments.create": t("Utente abilitato"), "assignments.update": t("Abilitazione aggiornata"), "assignments.delete": t("Abilitazione revocata"),
+    "suppliers.create": t("Fornitore creato"), "suppliers.update": t("Fornitore aggiornato"),
+    "contracts.create": t("Contratto creato"), "contracts.update": t("Contratto aggiornato"), "contract_documents.create": t("PDF contrattuale archiviato"),
+    "labor_rates.create": t("Tariffa oraria creata"), "labor_rates.update": t("Tariffa oraria aggiornata"),
+    "alert_rules.create": t("Regola alert creata"), "alert_rules.update": t("Regola alert aggiornata"), "alert_rules.run": t("Controllo alert eseguito"), "alert_rules.trigger": t("Controllo alert automatico eseguito"),
+    "groups.create": t("Gruppo creato"), "groups.update": t("Gruppo aggiornato"), "groups.delete": t("Gruppo eliminato"),
+    "group_members.create": t("Utente aggiunto al gruppo"), "group_members.delete": t("Utente rimosso dal gruppo"),
+    "job_roles.create": t("Ruolo commessa creato"), "job_roles.update": t("Ruolo commessa aggiornato"),
+    "group_grants.create": t("Gruppo abilitato"), "group_grants.update": t("Abilitazione gruppo aggiornata"), "group_grants.delete": t("Abilitazione gruppo revocata"),
+    "users.create": t("Utente creato"), "users.update": t("Utente aggiornato"), "system.migration": t("Database aggiornato")
   };
-  const auditTypes = { task: "Attività", blocker: "Blocco", job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", labor_rate: "Tariffa oraria", alert_rule: "Regola alert", group: "Gruppo", group_member: "Membro gruppo", job_role: "Ruolo commessa", group_grant: "Abilitazione gruppo", system: "Sistema" };
+  const auditTypes = { task: t("Attività"), blocker: t("Blocco"), job: t("Commessa"), time_entry: t("Registrazione ore"), assignment: t("Abilitazione"), user: t("Utente"), supplier: t("Fornitore"), contract: t("Contratto"), contract_document: t("Documento contrattuale"), labor_rate: t("Tariffa oraria"), alert_rule: t("Regola alert"), group: t("Gruppo"), group_member: t("Membro gruppo"), job_role: t("Ruolo commessa"), group_grant: t("Abilitazione gruppo"), system: t("Sistema") };
   const auditLabels = {
-    task_id: "ID attività", assigned_user_id: "ID responsabile", assigned_user_name: "Responsabile", owner_name: "Responsabile", priority: "Priorità", impact: "Impatto", next_action: "Prossima azione", due_date: "Scadenza", revision: "Revisione", created_by: "ID autore", deleted_tasks: "Attività eliminate", deleted_blockers: "Blocchi eliminati",
-    parent_id: "ID gruppo padre", group_id: "ID gruppo", group_name: "Gruppo", role_id: "ID ruolo commessa", role_code: "Codice ruolo", role_name: "Ruolo commessa", can_log_time: "Può registrare ore", builtin: "Ruolo predefinito", id: "ID", user_id: "ID utente", job_id: "ID commessa", owner_id: "ID autore", owner: "Account", email: "Email", name: "Nome", role: "Ruolo", active: "Accesso attivo",
-    title: "Titolo", supplier_id: "ID fornitore", supplier_name: "Fornitore", contract_id: "ID contratto", contract_code: "Codice contratto", contract_title: "Contratto", vat_number: "Partita IVA", phone: "Telefono", address: "Indirizzo", notes: "Note", value_cents: "Valore", hourly_cents: "Tariffa oraria", currency: "Valuta", file_name: "Nome documento", byte_size: "Dimensione",
-    type: "Tipo di controllo", run_time: "Orario giornaliero", enabled: "Regola attiva", recipient_user_ids: "ID destinatari nell’app", recipient_emails: "Destinatari email", recipient_email_count: "Numero destinatari email", recipient_user_count: "Numero destinatari nell’app", notifications_created: "Notifiche create", emails_queued: "Email in attesa", last_run_at: "Ultima esecuzione", last_run_on: "Giorno ultima esecuzione", next_run_at: "Prossima esecuzione", created_at: "Creata il", updated_at: "Aggiornata il",
-    code: "Codice", status: "Stato", description: "Descrizione", client: "Cliente", is_common: "Commessa comune", deleted_time_entries: "Registrazioni ore eliminate", deleted_minutes: "Ore eliminate", deleted_assignments: "Abilitazioni utenti eliminate", deleted_group_grants: "Abilitazioni gruppi eliminate", date: "Giornata", minutes: "Ore lavorate", starts_on: "Abilitato dal", ends_on: "Abilitato fino al",
-    user_name: "Utente", user_email: "Email utente", job_name: "Commessa", job_code: "Codice commessa", note: "Attività / nota", version: "Versione", schema_version: "Versione database", migrated_entries: "Registrazioni migrate", migrated_users: "Utenti migrati", mapped_entries: "Registrazioni collegate agli utenti", archived_entries: "Registrazioni storiche conservate"
+    task_id: t("ID attività"), assigned_user_id: t("ID responsabile"), assigned_user_name: t("Responsabile"), owner_name: t("Responsabile"), priority: t("Priorità"), impact: t("Impatto"), next_action: t("Prossima azione"), due_date: t("Scadenza"), revision: t("Revisione"), created_by: t("ID autore"), deleted_tasks: t("Attività eliminate"), deleted_blockers: t("Blocchi eliminati"),
+    parent_id: t("ID gruppo padre"), group_id: t("ID gruppo"), group_name: t("Gruppo"), role_id: t("ID ruolo commessa"), role_code: t("Codice ruolo"), role_name: t("Ruolo commessa"), can_log_time: t("Può registrare ore"), builtin: t("Ruolo predefinito"), id: "ID", user_id: t("ID utente"), job_id: t("ID commessa"), owner_id: t("ID autore"), owner: t("Account"), email: t("Email"), name: t("Nome"), role: t("Ruolo"), active: t("Accesso attivo"),
+    title: t("Titolo"), supplier_id: t("ID fornitore"), supplier_name: t("Fornitore"), contract_id: t("ID contratto"), contract_code: t("Codice contratto"), contract_title: t("Contratto"), vat_number: t("Partita IVA"), phone: t("Telefono"), address: t("Indirizzo"), notes: t("Note"), value_cents: t("Valore"), hourly_cents: t("Tariffa oraria"), currency: t("Valuta"), file_name: t("Nome documento"), byte_size: t("Dimensione"),
+    type: t("Tipo di controllo"), run_time: t("Orario giornaliero"), enabled: t("Regola attiva"), recipient_user_ids: t("ID destinatari nell’app"), recipient_emails: t("Destinatari email"), recipient_email_count: t("Numero destinatari email"), recipient_user_count: t("Numero destinatari nell’app"), notifications_created: t("Notifiche create"), emails_queued: t("Email in attesa"), last_run_at: t("Ultima esecuzione"), last_run_on: t("Giorno ultima esecuzione"), next_run_at: t("Prossima esecuzione"), created_at: t("Creata il"), updated_at: t("Aggiornata il"),
+    code: t("Codice"), status: t("Stato"), description: t("Descrizione"), client: t("Cliente"), is_common: t("Commessa comune"), deleted_time_entries: t("Registrazioni ore eliminate"), deleted_minutes: t("Ore eliminate"), deleted_assignments: t("Abilitazioni utenti eliminate"), deleted_group_grants: t("Abilitazioni gruppi eliminate"), date: t("Giornata"), minutes: t("Ore lavorate"), starts_on: t("Abilitato dal"), ends_on: t("Abilitato fino al"),
+    user_name: t("Utente"), user_email: t("Email utente"), job_name: t("Commessa"), job_code: t("Codice commessa"), note: t("Attività / nota"), version: t("Versione"), schema_version: t("Versione database"), migrated_entries: t("Registrazioni migrate"), migrated_users: t("Utenti migrati"), mapped_entries: t("Registrazioni collegate agli utenti"), archived_entries: t("Registrazioni storiche conservate")
   };
 
   function auditTime(value) {
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("it-IT", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString(locale, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
   function auditValue(key, value, entityType) {
     if (value === null || value === undefined || value === "") return "—";
     if (key === "minutes" || key === "deleted_minutes") return minutesLabel(value);
     if (key === "value_cents") return euroLabel(value);
-    if (key === "hourly_cents") return euroLabel(value) + " / ora";
+    if (key === "hourly_cents") return euroLabel(value) + t(" / ora");
     if (key === "byte_size") return fileSize(value);
     if (key === "role") return roles[value] || String(value);
     if (key === "status") {
@@ -1957,14 +2058,14 @@
     }
     if (key === "priority" && entityType === "task") return workPriorities[value] || String(value);
     if (key === "impact" && entityType === "blocker") return workImpacts[value] || String(value);
-    if (key === "active") return value === true || value === 1 || value === "1" ? "Attivo" : "Disattivato";
-    if (key === "is_common") return value === true || value === 1 || value === "1" ? "Sì" : "No";
-    if (key === "enabled") return value === true || value === 1 || value === "1" ? "Attiva" : "Sospesa";
+    if (key === "active") return value === true || value === 1 || value === "1" ? t("Attivo") : t("Disattivato");
+    if (key === "is_common") return value === true || value === 1 || value === "1" ? t("Sì") : t("No");
+    if (key === "enabled") return value === true || value === 1 || value === "1" ? t("Attiva") : t("Sospesa");
     if (key === "type" && entityType === "alert_rule") return alertTypes[value]?.label || String(value);
     if (["last_run_at", "next_run_at", "created_at", "updated_at"].includes(key) && entityType === "alert_rule") return alertDateTime(value, "—");
     if (key === "last_run_on" && validDate(String(value))) return dateLabel(value);
     if (["date", "starts_on", "ends_on", "due_date"].includes(key) && validDate(String(value))) return dateLabel(value);
-    if (typeof value === "boolean") return value ? "Sì" : "No";
+    if (typeof value === "boolean") return value ? t("Sì") : t("No");
     return String(value);
   }
 
@@ -1972,21 +2073,21 @@
     const section = node("section", "audit-snapshot");
     section.append(node("h4", "", title));
     if (!snapshot || typeof snapshot !== "object") {
-      section.append(node("p", "no-value", title === "Prima" ? "Nessun dato precedente" : "Elemento rimosso"));
+      section.append(node("p", "no-value", title === t("Prima") ? t("Nessun dato precedente") : t("Elemento rimosso")));
       return section;
     }
     const list = node("dl");
     function addFields(fields, prefix = "", depth = 0, fieldEntityType = entityType) {
       for (const [key, value] of Object.entries(fields)) {
         if (/password|hash|salt|token|secret/i.test(key)) continue;
-        const contextualLabel = fieldEntityType === "task" && key === "parent_id" ? "ID attività principale" : fieldEntityType === "blocker" && key === "owner_id" ? "ID responsabile" : fieldEntityType === "labor_rate" && key === "starts_on" ? "Valida dal" : fieldEntityType === "labor_rate" && key === "ends_on" ? "Valida al" : null;
+        const contextualLabel = fieldEntityType === "task" && key === "parent_id" ? t("ID attività principale") : fieldEntityType === "blocker" && key === "owner_id" ? t("ID responsabile") : fieldEntityType === "labor_rate" && key === "starts_on" ? t("Valida dal") : fieldEntityType === "labor_rate" && key === "ends_on" ? t("Valida al") : null;
         const label = prefix + (contextualLabel || auditLabels[key] || key.replaceAll("_", " "));
         if (value && typeof value === "object" && !Array.isArray(value) && depth < 3) {
           const nestedType = key === "contract" ? "contract" : key === "job" ? "job" : null;
           addFields(value, label + " · ", depth + 1, nestedType);
           continue;
         }
-        list.append(node("dt", "", label), node("dd", "", Array.isArray(value) ? value.map((item) => typeof item === "object" ? "Elemento" : auditValue(key, item, fieldEntityType)).join(", ") : auditValue(key, value, fieldEntityType)));
+        list.append(node("dt", "", label), node("dd", "", Array.isArray(value) ? value.map((item) => typeof item === "object" ? t("Elemento") : auditValue(key, item, fieldEntityType)).join(", ") : auditValue(key, value, fieldEntityType)));
       }
     }
     addFields(snapshot);
@@ -2006,21 +2107,21 @@
       top.append(title, time);
       const snapshot = event.after || event.before || {};
       const subject = snapshot.job_name || snapshot.name || snapshot.user_name || snapshot.user_email || snapshot.job_code || snapshot.code;
-      const type = auditTypes[event.entity_type] || "Elemento";
+      const type = auditTypes[event.entity_type] || t("Elemento");
       const object = `${type}${event.entity_id ? " #" + event.entity_id : ""}${subject ? " · " + subject : ""}`;
-      const actor = event.actor_name || event.actor_email || "Sistema";
+      const actor = event.actor_name || event.actor_email || t("Sistema");
       const byline = node("p", "audit-byline", actor + (event.actor_name && event.actor_email ? " · " + event.actor_email : ""));
       const details = node("details", "audit-details");
-      details.append(node("summary", "", "Visualizza prima e dopo"));
+      details.append(node("summary", "", t("Visualizza prima e dopo")));
       const snapshots = node("div", "audit-snapshots");
-      snapshots.append(auditSnapshot(event.before, "Prima", event.entity_type), auditSnapshot(event.after, "Dopo", event.entity_type));
+      snapshots.append(auditSnapshot(event.before, t("Prima"), event.entity_type), auditSnapshot(event.after, t("Dopo"), event.entity_type));
       details.append(snapshots);
       item.append(top, node("p", "audit-object", object), byline, details);
       $("audit-list").append(item);
     }
     $("audit-empty").hidden = !state.auditReady || state.auditEvents.length > 0;
     $("audit-more").hidden = !state.auditCursor;
-    $("audit-count").textContent = `${state.auditEvents.length} ${state.auditEvents.length === 1 ? "modifica caricata" : "modifiche caricate"}`;
+    $("audit-count").textContent = `${state.auditEvents.length} ${state.auditEvents.length === 1 ? t("modifica caricata") : t("modifiche caricate")}`;
   }
 
   async function refreshAudit(more = false) {
@@ -2034,7 +2135,7 @@
     state.auditRetryMore = more;
     $("audit-error").hidden = true;
     $("audit-loading").hidden = false;
-    $("audit-loading").textContent = more ? "Caricamento delle modifiche precedenti…" : "Caricamento dello storico…";
+    $("audit-loading").textContent = more ? t("Caricamento delle modifiche precedenti…") : t("Caricamento dello storico…");
     $("audit-more").disabled = true;
     $("audit-refresh").disabled = true;
     try {
@@ -2062,7 +2163,7 @@
     if (!can("manage_users")) return;
     const request = ++state.usersRequest;
     $("users-loading").hidden = false;
-    $("users-loading").textContent = "Caricamento degli utenti…";
+    $("users-loading").textContent = t("Caricamento degli utenti…");
     try {
       const data = await api("/api/users");
       if (request !== state.usersRequest || !can("manage_users")) return;
@@ -2071,7 +2172,7 @@
       renderUsers();
     } catch (error) {
       if (request !== state.usersRequest) return;
-      $("users-loading").textContent = "Gli utenti non sono disponibili. Usa Riprova per ricaricare i dati.";
+      $("users-loading").textContent = t("Gli utenti non sono disponibili. Usa Riprova per ricaricare i dati.");
       showLoadError(error);
     }
   }
@@ -2081,7 +2182,7 @@
     const date = state.selectedDate;
     state.entriesReady = false;
     $("entries-loading").hidden = false;
-    $("entries-loading").textContent = "Caricamento delle ore…";
+    $("entries-loading").textContent = t("Caricamento delle ore…");
     $("entries-table-wrap").hidden = true;
     $("entries-empty").hidden = true;
     $("day-total").textContent = "—";
@@ -2098,7 +2199,7 @@
       renderEntries();
     } catch (error) {
       if (request === state.entriesRequest) {
-        $("entries-loading").textContent = "Le ore non sono disponibili. Usa Riprova per ricaricare i dati.";
+        $("entries-loading").textContent = t("Le ore non sono disponibili. Usa Riprova per ricaricare i dati.");
         showLoadError(error);
       }
     }
@@ -2109,7 +2210,7 @@
     const request = ++state.refreshRequest;
     $("load-error").hidden = true;
     $("retry-load").disabled = true;
-    if (!state.jobsReady) $("jobs-loading").textContent = "Caricamento delle commesse…";
+    if (!state.jobsReady) $("jobs-loading").textContent = t("Caricamento delle commesse…");
     const jobsTask = api("/api/jobs").then((data) => {
       if (request !== state.refreshRequest) return;
       state.jobs = data.jobs;
@@ -2119,7 +2220,7 @@
       if (state.activeTab === "work-board" && state.workJobId && !state.workBusy) return refreshWorkBoard();
     }).catch((error) => {
       if (request !== state.refreshRequest) return;
-      if (!state.jobsReady) $("jobs-loading").textContent = "Le commesse non sono disponibili. Usa Riprova per ricaricare i dati.";
+      if (!state.jobsReady) $("jobs-loading").textContent = t("Le commesse non sono disponibili. Usa Riprova per ricaricare i dati.");
       showLoadError(error);
     });
     const tasks = [jobsTask, refreshEntries(), refreshNotifications()];
@@ -2152,7 +2253,7 @@
     if (busy) busyDialogs.add(id); else busyDialogs.delete(id);
     $(id).querySelectorAll("input, select, textarea, button").forEach((element) => { element.disabled = busy; });
     $(id).setAttribute("aria-busy", String(busy));
-    $(submitId).textContent = busy ? "Salvataggio…" : label;
+    $(submitId).textContent = busy ? t("Salvataggio…") : label;
   }
 
   function openJob(job = null) {
@@ -2164,8 +2265,8 @@
     $("job-id").value = job ? job.id : "";
     $("job-common").checked = isCommonJob(job);
     $("job-delete-field").hidden = !job;
-    $("job-dialog-title").textContent = job ? "Modifica commessa" : "Nuova commessa";
-    $("job-save").textContent = job ? "Salva modifiche" : "Crea commessa";
+    $("job-dialog-title").textContent = job ? t("Modifica commessa") : t("Nuova commessa");
+    $("job-save").textContent = job ? t("Salva modifiche") : t("Crea commessa");
     if (job) {
       ["code", "name", "client", "description", "status"].forEach((field) => { $("job-" + field).value = job[field] || ""; });
     }
@@ -2179,20 +2280,20 @@
     if (!requirePermission("manage_jobs") || !state.editingJob || busyDialogs.has("job-dialog") || busyDialogs.has("job-delete-dialog")) return;
     state.deleteJob = state.editingJob;
     $("job-delete-error").hidden = true;
-    $("job-delete-description").textContent = `Stai per eliminare definitivamente “${state.deleteJob.name}” (${state.deleteJob.code}).`;
+    $("job-delete-description").textContent = t("Stai per eliminare definitivamente “{0}” ({1}).", [state.deleteJob.name, state.deleteJob.code]);
     $("job-delete-dialog").showModal();
   }
 
   function openEntry(entry = null, jobId = "") {
     if (entry && !requirePermission("edit_time_entries")) return;
     if (busyDialogs.has("entry-dialog")) return;
-    if (!state.jobsReady) { showNotice("Attendi il caricamento delle commesse, poi riprova.", true); return; }
+    if (!state.jobsReady) { showNotice(t("Attendi il caricamento delle commesse, poi riprova."), true); return; }
     const writableJobs = state.jobs.filter(canLogTime);
     if (writableJobs.length === 0) {
-      if (!can("manage_jobs")) { showNotice("Nessuna commessa abilitata alla registrazione delle ore. Chiedi a un gestore il ruolo adatto alla commessa su cui devi lavorare.", true); return; }
+      if (!can("manage_jobs")) { showNotice(t("Nessuna commessa abilitata alla registrazione delle ore. Chiedi a un gestore il ruolo adatto alla commessa su cui devi lavorare."), true); return; }
       state.openEntryAfterJob = true;
       openJob();
-      $("job-dialog-description").textContent = "Crea prima una commessa: subito dopo potrai registrare le tue ore.";
+      $("job-dialog-description").textContent = t("Crea prima una commessa: subito dopo potrai registrare le tue ore.");
       return;
     }
     $("entry-form").reset();
@@ -2200,8 +2301,8 @@
     $("entry-hours").removeAttribute("aria-invalid");
     $("entry-error").hidden = true;
     $("entry-id").value = entry ? entry.id : "";
-    $("entry-dialog-title").textContent = entry ? "Modifica registrazione" : "Registra ore";
-    $("entry-save").textContent = entry ? "Salva modifiche" : "Salva ore";
+    $("entry-dialog-title").textContent = entry ? t("Modifica registrazione") : t("Registra ore");
+    $("entry-save").textContent = entry ? t("Salva modifiche") : t("Salva ore");
     renderEntryJobs(entry ? entry.job_id : jobId);
     $("entry-date").value = entry ? entry.date : state.activeTab === "hours" ? state.selectedDate : localDate(new Date());
     if (entry) {
@@ -2216,7 +2317,7 @@
     if (!requirePermission("edit_time_entries")) return;
     state.deleteEntry = entry;
     $("delete-error").hidden = true;
-    $("delete-description").textContent = `${minutesLabel(entry.minutes)} su “${entry.job_name}”, il ${dateLabel(entry.date)}. La registrazione verrà rimossa dal tuo registro ore.`;
+    $("delete-description").textContent = t("{0} su “{1}”, il {2}. La registrazione verrà rimossa dal tuo registro ore.", [minutesLabel(entry.minutes), entry.job_name, dateLabel(entry.date)]);
     $("delete-dialog").showModal();
   }
 
@@ -2226,9 +2327,9 @@
     $("user-password").setCustomValidity("");
     $("user-error").hidden = true;
     $("user-id").value = user ? user.id : "";
-    $("user-dialog-title").textContent = user ? "Modifica utente" : "Nuovo utente";
-    $("user-dialog-description").textContent = user ? "Aggiorna il nome, il ruolo e l’accesso dell’utente. Deve rimanere almeno un gestore attivo." : "Crea un account e scegli cosa può fare nello spazio di lavoro.";
-    $("user-save").textContent = user ? "Salva modifiche" : "Crea utente";
+    $("user-dialog-title").textContent = user ? t("Modifica utente") : t("Nuovo utente");
+    $("user-dialog-description").textContent = user ? t("Aggiorna il nome, il ruolo e l’accesso dell’utente. Deve rimanere almeno un gestore attivo.") : t("Crea un account e scegli cosa può fare nello spazio di lavoro.");
+    $("user-save").textContent = user ? t("Salva modifiche") : t("Crea utente");
     $("user-email").readOnly = Boolean(user);
     $("user-email-help").hidden = !user;
     $("user-password-field").hidden = Boolean(user);
@@ -2248,7 +2349,7 @@
     if (!validDate(value)) return;
     state.selectedDate = value;
     $("entry-date-filter").value = value;
-    $("entries-loading").textContent = "Caricamento delle ore…";
+    $("entries-loading").textContent = t("Caricamento delle ore…");
     $("load-error").hidden = true;
     refreshEntries();
   }
@@ -2263,24 +2364,26 @@
     if (validDate(value)) setDate(value);
   }
 
-  const workTaskStates = { todo: "Da fare", in_progress: "In corso", blocked: "Bloccato", in_review: "Da verificare", done: "Completato" };
-  const workPriorities = { low: "Bassa", normal: "Normale", high: "Alta", urgent: "Urgente" };
-  const workBlockerStates = { open: "Aperto", in_progress: "In gestione", resolved: "Risolto" };
-  const workImpacts = { low: "Basso", medium: "Medio", high: "Alto", critical: "Critico" };
+  const workTaskStates = { todo: t("Da fare"), in_progress: t("In corso"), blocked: t("Bloccato"), in_review: t("Da verificare"), done: t("Completato") };
+  const workPriorities = { low: t("Bassa"), normal: t("Normale"), high: t("Alta"), urgent: t("Urgente") };
+  const workBlockerStates = { open: t("Aperto"), in_progress: t("In gestione"), resolved: t("Risolto") };
+  const workImpacts = { low: t("Basso"), medium: t("Medio"), high: t("Alto"), critical: t("Critico") };
   Object.assign(state, { inventoryItems: [], inventoryReady: false, inventoryLoading: false, inventoryConfigured: null, inventorySummary: null, inventoryRequest: 0, inventoryEpoch: 0, inventoryCursor: null, inventoryRetryMore: false, inventoryEditorRequest: 0, inventoryEditingId: null, inventoryEditingAsset: null, inventoryConflict: false, inventoryDetailRequest: 0, inventoryDetailId: null, inventoryDetailAsset: null, inventoryHistoryRequest: 0, inventoryHistoryLoading: false, inventoryHistoryReady: false, inventoryHistoryCursor: null, inventoryHistoryRetryMore: false });
-  const inventoryStates = { available: "Disponibile", assigned: "Assegnato", maintenance: "In manutenzione", retired: "Dismesso", lost: "Smarrito" };
+  const inventoryStates = { available: t("Disponibile"), assigned: t("Assegnato"), maintenance: t("In manutenzione"), retired: t("Dismesso"), lost: t("Smarrito") };
+  Object.assign(state, { inventoryDashboard: null, inventoryDashboardRequest: 0, inventoryDashboardLoading: false, inventoryDashboardError: "", inventoryAttention: "", inventoryPlaceFilterError: "" });
+  const inventoryAttentionLabels = { open_custody: t("Consegne aperte"), overdue_returns: t("Restituzioni in ritardo"), never_verified: t("Mai verificati"), verification_due: t("Verifiche da ripetere"), location_mismatch: t("Ubicazioni da controllare") };
   const inventoryFields = ["asset_tag", "name", "category", "serial_number", "manufacturer", "model", "status", "location", "assignee", "purchase_date", "warranty_until", "notes"];
-  const inventoryTypes = { it_device: "Dispositivo IT", network_device: "Apparato di rete", physical: "Bene fisico", software: "Software", license: "Licenza" };
-  const inventoryLicenseModels = { per_device: "Per dispositivo", per_user: "Per utente", concurrent: "Concorrente", site: "Per sede" };
-  const inventoryRenewalModes = { manual: "Manuale", automatic: "Automatico", none: "Nessun rinnovo" };
+  const inventoryTypes = { it_device: t("Dispositivo IT"), network_device: t("Apparato di rete"), physical: t("Bene fisico"), software: t("Software"), license: t("Licenza") };
+  const inventoryLicenseModels = { per_device: t("Per dispositivo"), per_user: t("Per utente"), concurrent: t("Concorrente"), site: t("Per sede") };
+  const inventoryRenewalModes = { manual: t("Manuale"), automatic: t("Automatico"), none: t("Nessun rinnovo") };
   const inventoryTypeFields = {
-    it_device: [["hostname", "Nome host", 253], ["ip_address", "Indirizzo IP", 45], ["mac_address", "Indirizzo MAC", 17], ["operating_system", "Sistema operativo", 120]],
-    network_device: [["hostname", "Nome host", 253], ["ip_address", "Indirizzo IP", 45], ["mac_address", "Indirizzo MAC", 17], ["operating_system", "Sistema operativo / firmware", 120], ["network_role", "Ruolo di rete", 80], ["vlan", "VLAN", "number", 1, 4094], ["port_count", "Numero di porte", "number", 0, 65535]],
-    physical: [["asset_kind", "Tipo di bene", 80], ["department", "Reparto", 120], ["maintenance_due", "Prossima manutenzione", "date"]],
-    software: [["publisher", "Editore", 120], ["software_version", "Versione software", 80], ["edition", "Edizione", 80], ["software_kind", "Tipo di software", 80]],
-    license: [["license_model", "Modello di licenza", inventoryLicenseModels, "per_device"], ["seats_total", "Posti acquistati", "number", 1, 1000000, 1], ["expires_on", "Scadenza", "date"], ["renewal_on", "Data di rinnovo", "date"], ["renewal_mode", "Rinnovo", inventoryRenewalModes, "manual"], ["license_reference", "Riferimento della licenza", 120]]
+    it_device: [["hostname", t("Nome host"), 253], ["ip_address", t("Indirizzo IP"), 45], ["mac_address", t("Indirizzo MAC"), 17], ["operating_system", t("Sistema operativo"), 120]],
+    network_device: [["hostname", t("Nome host"), 253], ["ip_address", t("Indirizzo IP"), 45], ["mac_address", t("Indirizzo MAC"), 17], ["operating_system", t("Sistema operativo / firmware"), 120], ["network_role", t("Ruolo di rete"), 80], ["vlan", "VLAN", "number", 1, 4094], ["port_count", t("Numero di porte"), "number", 0, 65535]],
+    physical: [["asset_kind", t("Tipo di bene"), 80], ["department", t("Reparto · testo libero"), 120], ["maintenance_due", t("Prossima manutenzione"), "date"]],
+    software: [["publisher", t("Editore"), 120], ["software_version", t("Versione software"), 80], ["edition", t("Edizione"), 80], ["software_kind", t("Tipo di software"), 80]],
+    license: [["license_model", t("Modello di licenza"), inventoryLicenseModels, "per_device"], ["seats_total", t("Posti acquistati"), "number", 1, 1000000, 1], ["expires_on", t("Scadenza"), "date"], ["renewal_on", t("Data di rinnovo"), "date"], ["renewal_mode", t("Rinnovo"), inventoryRenewalModes, "manual"], ["license_reference", t("Riferimento della licenza"), 120]]
   };
-  const inventoryRelationNames = { installed_on: "Software installato", connected_to: "Collegamento di rete", licensed_to: "Assegnazione di licenza" };
+  const inventoryRelationNames = { installed_on: t("Software installato"), connected_to: t("Collegamento di rete"), licensed_to: t("Assegnazione di licenza") };
   const inventoryAssetCache = new Map();
   const inventoryPickers = new Map();
   Object.assign(state, { inventoryRelationsRequest: 0, inventoryRelationsReady: false, inventoryRelationsLoading: false, inventoryRelationsCursor: null, inventoryRelationsRetryMore: false, inventoryRelations: [], inventoryRelationBusy: false, inventoryRelationConflict: false });
@@ -2297,28 +2400,28 @@
     const heading = node("label", "", label + " *");
     heading.htmlFor = key + "-choice";
     const controls = node("div", "inventory-picker-controls");
-    picker.search = node("input"); picker.search.type = "search"; picker.search.maxLength = 160; picker.search.autocomplete = "off"; picker.search.placeholder = "Cerca per codice o nome…"; picker.search.setAttribute("aria-label", "Cerca " + label.toLowerCase());
-    picker.type = node("select"); picker.type.setAttribute("aria-label", "Tipologia del destinatario");
-    picker.find = node("button", "button button-secondary", "Cerca"); picker.find.type = "button";
+    picker.search = node("input"); picker.search.type = "search"; picker.search.maxLength = 160; picker.search.autocomplete = "off"; picker.search.placeholder = t("Cerca per codice o nome…"); picker.search.setAttribute("aria-label", t("Cerca ") + label.toLowerCase());
+    picker.type = node("select"); picker.type.setAttribute("aria-label", t("Tipologia del destinatario"));
+    picker.find = node("button", "button button-secondary", t("Cerca")); picker.find.type = "button";
     picker.choice = node("select"); picker.choice.id = key + "-choice"; picker.choice.required = true;
     picker.status = node("p", "field-help"); picker.status.setAttribute("role", "status");
     picker.error = node("p", "dialog-error"); picker.error.hidden = true; picker.error.setAttribute("role", "alert");
-    picker.more = node("button", "row-button", "Carica altri risultati"); picker.more.type = "button"; picker.more.hidden = true;
+    picker.more = node("button", "row-button", t("Carica altri risultati")); picker.more.type = "button"; picker.more.hidden = true;
     controls.append(picker.search, picker.type, picker.find); field.append(heading, controls, picker.choice, picker.status, picker.error, picker.more); host.replaceChildren(field);
     picker.render = () => {
       const selected = picker.selected;
-      picker.choice.replaceChildren(new Option("Seleziona un asset…", ""));
+      picker.choice.replaceChildren(new Option(t("Seleziona un asset…"), ""));
       const options = [...(selected ? [selected] : []), ...picker.items.filter((asset) => !selected || String(asset.id) !== String(selected.id))];
       options.forEach((asset) => picker.choice.add(new Option(inventoryAssetLabel(asset), String(asset.id))));
       picker.choice.value = selected ? String(selected.id) : "";
       picker.more.hidden = !picker.cursor && !picker.retryMore;
-      picker.more.textContent = picker.retryMore ? "Riprova a caricare altri risultati" : "Carica altri risultati";
+      picker.more.textContent = picker.retryMore ? t("Riprova a caricare altri risultati") : t("Carica altri risultati");
       picker.find.disabled = picker.loading || !picker.enabled;
       picker.more.disabled = picker.loading || !picker.enabled;
       picker.choice.disabled = !picker.enabled;
       picker.search.disabled = !picker.enabled;
       picker.type.disabled = !picker.enabled;
-      picker.status.textContent = picker.loading ? "Ricerca degli asset…" : picker.items.length ? picker.items.length + " risultati caricati." : "Cerca un asset nell’inventario.";
+      picker.status.textContent = picker.loading ? t("Ricerca degli asset…") : picker.items.length ? picker.items.length + t(" risultati caricati.") : t("Cerca un asset nell’inventario.");
     };
     picker.setTypes = (allowed, clear = false) => {
       picker.request++; picker.loading = false; picker.cursor = null; picker.items = []; picker.types = allowed;
@@ -2331,7 +2434,7 @@
     };
     picker.setSelected = async (id) => {
       const request = ++picker.request; const epoch = state.inventoryEpoch;
-      picker.selected = id ? inventoryAssetCache.get(String(id)) || { id, asset_tag: "#" + id, name: "Caricamento…", asset_type: types[0] } : null;
+      picker.selected = id ? inventoryAssetCache.get(String(id)) || { id, asset_tag: "#" + id, name: t("Caricamento…"), asset_type: types[0] } : null;
       picker.render();
       if (!id || inventoryAssetCache.has(String(id))) return;
       try {
@@ -2340,14 +2443,14 @@
         picker.selected = inventoryRemember(data.asset); picker.render();
       } catch (error) {
         if (request !== picker.request || epoch !== state.inventoryEpoch || !context()) return;
-        picker.selected = { id, asset_tag: "#" + id, name: "Asset selezionato", asset_type: types[0] }; picker.render();
-        picker.error.textContent = "Non siamo riusciti a leggere il nome dell’asset selezionato. Puoi cercarlo di nuovo."; picker.error.hidden = false;
+        picker.selected = { id, asset_tag: "#" + id, name: t("Asset selezionato"), asset_type: types[0] }; picker.render();
+        picker.error.textContent = t("Non siamo riusciti a leggere il nome dell’asset selezionato. Puoi cercarlo di nuovo."); picker.error.hidden = false;
       }
     };
     picker.load = async (more = false) => {
       if (!picker.enabled || !context() || more && (picker.loading || !picker.cursor)) return;
       const queryText = picker.search.value.trim();
-      if (new TextEncoder().encode(queryText).length > 160) { picker.search.setCustomValidity("Accorcia la ricerca."); picker.search.reportValidity(); return; }
+      if (new TextEncoder().encode(queryText).length > 160) { picker.search.setCustomValidity(t("Accorcia la ricerca.")); picker.search.reportValidity(); return; }
       const request = ++picker.request; const epoch = state.inventoryEpoch;
       const query = new URLSearchParams({ q: queryText, asset_type: picker.type.value, limit: "30" });
       if (more) query.set("after_id", picker.cursor); else { picker.items = []; picker.cursor = null; }
@@ -2379,7 +2482,7 @@
     const host = $("inventory-typed-fields");
     Object.entries(inventoryTypeFields).forEach(([type, fields]) => {
       const group = node("fieldset", "inventory-fields inventory-type-group"); group.id = "inventory-type-" + type;
-      group.append(node("legend", "", "Dettagli · " + inventoryTypes[type]));
+      group.append(node("legend", "", t("Dettagli · ") + inventoryTypes[type]));
       const grid = node("div", "form-grid");
       if (type === "license") { const pickerHost = node("div", "inventory-picker-wide"); pickerHost.id = "inventory-software-picker-host"; grid.append(pickerHost); }
       fields.forEach(([name, label, kind, min, max, initial]) => {
@@ -2391,12 +2494,12 @@
         if (name === "mac_address") { input.pattern = "(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"; input.placeholder = "00:1A:2B:3C:4D:5E"; }
         input.dataset.initial = initial ?? (typeof kind === "object" ? min : "") ?? "";
         input.addEventListener("input", () => input.setCustomValidity(""));
-        field.append(labelNode, input); if (name === "license_reference") field.append(node("p", "field-help", "Inserisci un riferimento amministrativo; conserva le chiavi segrete nel sistema dedicato.")); grid.append(field);
+        field.append(labelNode, input); if (name === "license_reference") field.append(node("p", "field-help", t("Inserisci un riferimento amministrativo; conserva le chiavi segrete nel sistema dedicato."))); grid.append(field);
       });
       group.append(grid); host.append(group);
     });
-    createInventoryPicker("inventory-software-picker", "inventory-software-picker-host", "Software coperto", ["software"], () => $("inventory-dialog").open && isInventoryManager());
-    createInventoryPicker("inventory-relation-picker", "inventory-relation-target", "Dispositivo destinatario", ["it_device", "network_device"], () => $("inventory-detail-dialog").open && !$("inventory-relation-form").hidden && isInventoryManager());
+    createInventoryPicker("inventory-software-picker", "inventory-software-picker-host", t("Software coperto"), ["software"], () => $("inventory-dialog").open && isInventoryManager());
+    createInventoryPicker("inventory-relation-picker", "inventory-relation-target", t("Dispositivo destinatario"), ["it_device", "network_device"], () => $("inventory-detail-dialog").open && !$("inventory-relation-form").hidden && isInventoryManager());
   }
 
   function inventoryShowTypeFields() {
@@ -2409,13 +2512,13 @@
     const type = $("inventory-asset_type").value; const details = {};
     $("inventory-type-" + type).querySelectorAll("[data-inventory-detail]").forEach((input) => {
       input.value = input.value.trim(); input.setCustomValidity("");
-      if (input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength) input.setCustomValidity("Accorcia il contenuto di questo campo.");
-      if (input.type === "date" && input.value && !validDate(input.value)) input.setCustomValidity("Inserisci una data valida.");
+      if (input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength) input.setCustomValidity(t("Accorcia il contenuto di questo campo."));
+      if (input.type === "date" && input.value && !validDate(input.value)) input.setCustomValidity(t("Inserisci una data valida."));
       if (input.value !== "") details[input.dataset.inventoryDetail] = input.type === "number" ? Number(input.value) : input.value;
     });
     if (type === "license") {
       const picker = inventoryPickers.get("inventory-software-picker");
-      picker.choice.setCustomValidity(picker.selected ? "" : "Seleziona il software coperto dalla licenza.");
+      picker.choice.setCustomValidity(picker.selected ? "" : t("Seleziona il software coperto dalla licenza."));
       if (picker.selected) details.software_id = Number(picker.selected.id);
     }
     return details;
@@ -2423,12 +2526,12 @@
 
   function inventoryTypedDisplay(asset) {
     const type = inventoryAssetType(asset), d = asset.details || {}, fields = [];
-    if (type === "license") { const software = inventoryAssetCache.get(String(d.software_id)); fields.push(["Software coperto", software ? inventoryAssetLabel(software) : d.software_id ? "Asset #" + d.software_id : ""]); }
+    if (type === "license") { const software = inventoryAssetCache.get(String(d.software_id)); fields.push([t("Software coperto"), software ? inventoryAssetLabel(software) : d.software_id ? t("Asset #") + d.software_id : ""]); }
     (inventoryTypeFields[type] || []).forEach(([name, label, kind]) => { const value = d[name]; fields.push([label, typeof kind === "object" ? kind[value] || value : kind === "date" && value && validDate(value) ? dateLabel(value) : value]); });
     if (type === "license" && asset.license_usage) {
       const usage = asset.license_usage;
-      fields.push(["Posti assegnati", usage.allocated ?? 0], ["Posti disponibili", usage.available ?? 0], ["Validità della licenza", usage.expired ? "Scaduta" : "Valida"]);
-      if (["concurrent", "site"].includes(d.license_model)) fields.push(["Conteggio assegnazioni", "Assegnazioni registrate manualmente; non misura l’utilizzo simultaneo."]);
+      fields.push([t("Posti assegnati"), usage.allocated ?? 0], [t("Posti disponibili"), usage.available ?? 0], [t("Validità della licenza"), usage.expired ? t("Scaduta") : t("Valida")]);
+      if (["concurrent", "site"].includes(d.license_model)) fields.push([t("Conteggio assegnazioni"), t("Assegnazioni registrate manualmente; non misura l’utilizzo simultaneo.")]);
     }
     return fields;
   }
@@ -2438,13 +2541,980 @@
 
   function isInventoryManager() { return state.session?.role === "manager"; }
 
-  function inventoryMessage(error) {
-    return error.status === 503 ? "Il servizio Asset inventory non è disponibile. Chiedi a un gestore di verificarne la configurazione e l’avvio, poi riprova." : error.message;
+  Object.assign(state, { inventoryPlaces: [], inventoryPlacesReady: false, inventoryPlacesRequest: 0, inventoryUsers: [], inventoryUsersReady: false, inventoryUsersRequest: 0, inventoryDirectoryRequest: 0, inventoryDirectoryBusy: false, inventoryDirectoryEditing: null, inventoryContextRequest: 0, inventoryContextAsset: null, inventoryContextBusy: false, inventoryContextLoading: false, inventoryContextConflict: false, inventoryOperationRequest: 0, inventoryOperationAsset: null, inventoryOperation: null, inventoryOperationBusy: false, inventoryOperationLoading: false, inventoryOperationConflict: false, inventoryCustodyRequest: 0, inventoryCustodyItems: [], inventoryCustodyCursor: null, inventoryCustodyLoading: false, inventoryCustodyRetryMore: false, inventoryVerificationsRequest: 0, inventoryVerificationItems: [], inventoryVerificationsCursor: null, inventoryVerificationsLoading: false, inventoryVerificationsRetryMore: false });
+  const inventoryPlaceKinds = { site: t("Sede"), department: t("Reparto"), location: t("Ubicazione") };
+  const inventoryConditions = { good: t("Buone"), fair: t("Segni di usura"), damaged: t("Danneggiato") };
+  let inventoryPlacesPromise = null, inventoryUsersPromise = null;
+  function inventoryTangible(asset) { return Boolean(asset) && ["it_device", "network_device", "physical"].includes(inventoryAssetType(asset)); }
+  function inventoryCanCheckout(asset) { return asset && !asset.custody && (asset.status === "available" || asset.status === "assigned" && asset.context?.assignee_user_id); }
+  function inventoryPlacementLabel(asset) { const c = asset?.context; return c ? [c.site_name, c.department_name, c.location_name].filter(Boolean).join(" · ") || asset.location : asset?.location; }
+  function inventoryUserLabel(user) { return user.name + (user.email ? " · " + user.email : ""); }
+  function inventoryPlace(id) { return state.inventoryPlaces.find((place) => String(place.id) === String(id)); }
+
+  async function loadInventoryPlaces(force = false) {
+    if (!state.session?.authenticated) return false;
+    if (!force && state.inventoryPlacesReady) return true;
+    if (!force && inventoryPlacesPromise) return inventoryPlacesPromise;
+    if (force) state.inventoryPlacesReady = false;
+    const epoch = state.inventoryEpoch, request = ++state.inventoryPlacesRequest;
+    const current = () => epoch === state.inventoryEpoch && request === state.inventoryPlacesRequest && state.session?.authenticated;
+    const promise = (async () => {
+      const places = [], known = new Set(); let cursor = null, complete = false;
+      for (let page = 0; page < 100; page++) {
+        const query = new URLSearchParams({ limit: "100" }); if (cursor) query.set("after_id", String(cursor));
+        const data = await api("/api/inventory/places?" + query);
+        if (!current()) return false;
+        if (!Array.isArray(data.places)) throw new Error(t("Il server ha restituito anagrafiche non valide."));
+        for (const place of data.places) { if (!known.has(String(place.id))) { known.add(String(place.id)); places.push(place); } }
+        if (data.next_after_id === null || data.next_after_id === undefined) { complete = true; break; }
+        if (!Number.isSafeInteger(data.next_after_id) || data.next_after_id < 1 || cursor !== null && data.next_after_id >= cursor) throw new Error(t("Il server ha restituito una pagina di anagrafiche non valida."));
+        cursor = data.next_after_id;
+      }
+      if (!complete) throw new Error(t("Le anagrafiche superano il limite di caricamento. Contatta un gestore."));
+      if (!current()) return false;
+      state.inventoryPlaces = places; state.inventoryPlacesReady = true; renderInventoryPlaceFilters(); return true;
+    })();
+    inventoryPlacesPromise = promise;
+    try { return await promise; } finally { if (inventoryPlacesPromise === promise) inventoryPlacesPromise = null; }
   }
 
+  async function loadInventoryUsers(force = false) {
+    if (!isInventoryManager()) return false;
+    if (!force && state.inventoryUsersReady) return true;
+    if (!force && inventoryUsersPromise) return inventoryUsersPromise;
+    if (force) state.inventoryUsersReady = false;
+    const epoch = state.inventoryEpoch, request = ++state.inventoryUsersRequest;
+    const current = () => epoch === state.inventoryEpoch && request === state.inventoryUsersRequest && isInventoryManager();
+    const promise = (async () => {
+      const data = await api("/api/inventory/users");
+      if (!current()) return false;
+      if (!Array.isArray(data.users)) throw new Error(t("Il server ha restituito utenti non validi."));
+      state.inventoryUsers = data.users; state.inventoryUsersReady = true; return true;
+    })();
+    inventoryUsersPromise = promise;
+    try { return await promise; } finally { if (inventoryUsersPromise === promise) inventoryUsersPromise = null; }
+  }
+
+  function inventoryFillUsers(select, selected = "", name = "", optional = true) {
+    select.replaceChildren(new Option(optional ? t("Non assegnato") : t("Seleziona un utente…"), ""));
+    state.inventoryUsers.forEach((user) => select.add(new Option(inventoryUserLabel(user), String(user.id))));
+    if (selected && !state.inventoryUsers.some((user) => String(user.id) === String(selected))) select.add(new Option((name || t("Utente #") + selected) + t(" · non più attivo"), String(selected)));
+    select.value = selected ? String(selected) : "";
+  }
+
+  function inventoryFillPlaces(select, kind, selected = "", site = "", snapshotName = "") {
+    select.replaceChildren(new Option(kind === "department" ? t("Non indicato") : t("Non indicata"), ""));
+    const places = state.inventoryPlaces.filter((place) => place.kind === kind && (place.active || String(place.id) === String(selected)) && (kind === "site" || kind === "department" && !place.parent_id || String(place.parent_id || "") === String(site)));
+    places.sort((a, b) => a.name.localeCompare(b.name, "it"));
+    places.forEach((place) => select.add(new Option(place.name + (place.active ? "" : t(" · disattivata")), String(place.id))));
+    if (selected && !places.some((place) => String(place.id) === String(selected))) select.add(new Option(snapshotName || t("Voce #") + selected, String(selected)));
+    select.value = selected ? String(selected) : "";
+  }
+
+  function renderInventoryContextPlaces(preserve = true) {
+    const c = state.inventoryContextAsset?.context || {};
+    const site = preserve ? $("inventory-site-id").value : c.site_id || "";
+    const department = preserve ? $("inventory-department-id").value : c.department_id || "";
+    const location = preserve ? $("inventory-location-id").value : c.location_id || "";
+    inventoryFillPlaces($("inventory-site-id"), "site", site, "", c.site_name);
+    inventoryFillPlaces($("inventory-department-id"), "department", department, site, c.department_name);
+    inventoryFillPlaces($("inventory-location-id"), "location", location, site, c.location_name);
+  }
+
+  function inventoryContextControls() {
+    const asset = state.inventoryContextAsset, busy = state.inventoryContextBusy;
+    $("inventory-context-fields").disabled = busy || state.inventoryContextLoading;
+    $("inventory-context-save").disabled = busy || state.inventoryContextLoading || state.inventoryContextConflict || !inventoryTangible(asset) || !state.inventoryPlacesReady || !state.inventoryUsersReady || !isInventoryManager();
+    $("inventory-context-save").textContent = busy ? t("Salvataggio…") : state.inventoryContextLoading ? t("Caricamento anagrafiche…") : t("Salva assegnazione e collocazione");
+    $("inventory-context-reload").disabled = busy;
+    $("inventory-context-user").disabled = Boolean(asset?.custody);
+    $("inventory-context-user-help").textContent = asset?.custody ? t("La consegna è ancora aperta. Registra la restituzione prima di cambiare utente; puoi aggiornare i luoghi.") : t("L’assegnazione identifica il responsabile. Usa Consegna per registrare anche il passaggio fisico e la restituzione prevista.");
+    if (busy) { busyDialogs.add("inventory-context-dialog"); busyDialogs.add("inventory-detail-dialog"); }
+    else { busyDialogs.delete("inventory-context-dialog"); busyDialogs.delete("inventory-detail-dialog"); }
+  }
+
+  async function openInventoryContext() {
+    const asset = state.inventoryDetailAsset;
+    if (!asset || !inventoryTangible(asset) || !isInventoryManager() || state.inventoryContextBusy || state.inventoryRelationBusy || busyDialogs.has("inventory-detail-dialog")) return;
+    const request = ++state.inventoryContextRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryContextRequest && epoch === state.inventoryEpoch && $("inventory-context-dialog").open && isInventoryManager();
+    state.inventoryContextAsset = asset; state.inventoryContextConflict = false; state.inventoryContextLoading = true;
+    $("inventory-context-form").reset(); $("inventory-context-error").hidden = true; $("inventory-placement-error").hidden = true; $("inventory-placement-retry").hidden = true; $("inventory-context-reload").hidden = true;
+    const legacy = [!asset.context?.assignee_user_id ? asset.assignee : "", !asset.context?.site_id && !asset.context?.location_id ? asset.location : ""].filter(Boolean);
+    $("inventory-context-description").textContent = inventoryAssetLabel(asset) + (legacy.length ? t(". Riferimenti testuali attuali: ") + legacy.join(" · ") + t(". Le selezioni salvate sostituiscono questi riferimenti.") : "");
+    inventoryFillUsers($("inventory-context-user"), asset.context?.assignee_user_id || "", asset.context?.assignee_user_name);
+    renderInventoryContextPlaces(false); inventoryContextControls(); $("inventory-context-dialog").showModal();
+    try {
+      await Promise.all([loadInventoryPlaces(true), loadInventoryUsers(true)]);
+      if (!current()) return;
+      inventoryFillUsers($("inventory-context-user"), asset.context?.assignee_user_id || "", asset.context?.assignee_user_name); renderInventoryContextPlaces(false);
+    } catch (error) { if (current()) { dialogError("inventory-placement-error", new Error(inventoryMessage(error))); $("inventory-placement-retry").hidden = false; } }
+    finally { if (current()) { state.inventoryContextLoading = false; inventoryContextControls(); } }
+  }
+
+  function inventoryUpdateDetail(asset) {
+    inventoryRemember(asset);
+    if (String(asset.id) !== String(state.inventoryDetailId)) return;
+    state.inventoryDetailAsset = asset; $("inventory-detail-title").textContent = asset.name; $("inventory-detail-data").replaceChildren(inventoryDetails(asset));
+    renderInventoryOperationalActions(); renderInventoryRelationOptions();
+    loadInventoryCustody(); loadInventoryVerifications(); loadInventoryHistory();
+  }
+
+  async function reloadInventoryContext() {
+    const source = state.inventoryContextAsset;
+    if (!source || state.inventoryContextBusy || !isInventoryManager()) return;
+    const request = ++state.inventoryContextRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryContextRequest && epoch === state.inventoryEpoch && $("inventory-context-dialog").open && isInventoryManager();
+    state.inventoryContextBusy = true; inventoryContextControls();
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(source.id)); if (!current()) return;
+      state.inventoryContextAsset = inventoryRemember(data.asset); state.inventoryContextConflict = false;
+      if (data.asset.custody) inventoryFillUsers($("inventory-context-user"), data.asset.context?.assignee_user_id || "", data.asset.context?.assignee_user_name);
+      $("inventory-context-error").hidden = true; $("inventory-context-reload").hidden = true;
+      inventoryUpdateDetail(data.asset); showNotice(t("Scheda aggiornata. Controlla le selezioni prima di salvarle; la collocazione non è stata modificata."));
+    } catch (error) { if (current()) dialogError("inventory-context-error", new Error(inventoryMessage(error))); }
+    finally { if (current()) { state.inventoryContextBusy = false; inventoryContextControls(); } }
+  }
+
+  async function saveInventoryContext(event) {
+    event.preventDefault(); const source = state.inventoryContextAsset;
+    if (!source || state.inventoryContextBusy || state.inventoryContextLoading || state.inventoryContextConflict || !state.inventoryPlacesReady || !state.inventoryUsersReady || !isInventoryManager() || !$("inventory-context-form").reportValidity()) return;
+    const request = ++state.inventoryContextRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryContextRequest && epoch === state.inventoryEpoch && $("inventory-context-dialog").open && isInventoryManager();
+    const fields = { version: String(source.version), assignee_user_id: $("inventory-context-user").value, site_id: $("inventory-site-id").value, department_id: $("inventory-department-id").value, location_id: $("inventory-location-id").value };
+    state.inventoryContextBusy = true; $("inventory-context-error").hidden = true; inventoryContextControls();
+    try {
+      const data = await post("/api/inventory/assets/" + encodeURIComponent(source.id) + "/context", fields); if (!current()) return;
+      inventoryUpdateDetail(data.asset); state.inventoryContextBusy = false; inventoryContextControls(); $("inventory-context-dialog").close(); refreshInventory(); showNotice(t("Assegnazione e collocazione aggiornate."));
+    } catch (error) {
+      if (!current()) return;
+      if (error.status === 409) { state.inventoryContextConflict = true; $("inventory-context-reload").hidden = false; }
+      dialogError("inventory-context-error", new Error(inventoryMessage(error) + (error.status === 409 ? t(" Le selezioni restano disponibili. Ricarica la scheda prima di riprovare.") : "")));
+    } finally { if (current()) { state.inventoryContextBusy = false; inventoryContextControls(); } }
+  }
+
+  function renderInventoryDirectory() {
+    const kind = $("inventory-directory-kind").value, editing = state.inventoryDirectoryEditing, busy = state.inventoryDirectoryBusy;
+    $("inventory-directory-list").replaceChildren();
+    state.inventoryPlaces.filter((place) => place.kind === kind).sort((a, b) => a.name.localeCompare(b.name, "it")).forEach((place) => {
+      const item = node("li", "inventory-directory-item"), text = node("div");
+      text.append(node("strong", "", place.name), node("span", "inventory-cell-secondary", [place.parent_id ? inventoryPlace(place.parent_id)?.name || t("Sede #") + place.parent_id : "", place.active ? t("Attiva") : t("Disattivata")].filter(Boolean).join(" · ")));
+      const edit = action(t("Modifica"), t("Modifica ") + place.name, () => editInventoryPlace(place)); edit.disabled = busy;
+      item.append(text, edit); $("inventory-directory-list").append(item);
+    });
+    if (state.inventoryPlacesReady && !$("inventory-directory-list").children.length) $("inventory-directory-list").append(node("li", "field-help", t("Nessuna voce censita in questa anagrafica.")));
+    $("inventory-directory-parent-field").hidden = kind === "site"; $("inventory-directory-parent").required = kind === "location";
+    $("inventory-directory-parent").previousElementSibling.textContent = kind === "location" ? t("Sede *") : t("Sede · facoltativa");
+    $("inventory-directory-active-field").hidden = !editing;
+    $("inventory-directory-fields").disabled = busy; $("inventory-directory-kind").disabled = busy;
+    $("inventory-directory-save").disabled = busy || !state.inventoryPlacesReady || !isInventoryManager();
+    $("inventory-directory-save").textContent = busy ? t("Salvataggio…") : editing ? t("Salva modifiche") : t("Aggiungi voce");
+    $("inventory-directory-form-title").textContent = editing ? t("Modifica ") + inventoryPlaceKinds[kind].toLowerCase() : t("Nuova voce");
+    $("inventory-directory-cancel-edit").hidden = !editing; $("inventory-directory-cancel-edit").disabled = busy;
+    if (busy) busyDialogs.add("inventory-directory-dialog"); else busyDialogs.delete("inventory-directory-dialog");
+  }
+
+  function editInventoryPlace(place = null) {
+    if (state.inventoryDirectoryBusy) return;
+    state.inventoryDirectoryEditing = place; $("inventory-directory-form").reset();
+    $("inventory-directory-id").value = place?.id || ""; $("inventory-directory-name").value = place?.name || ""; $("inventory-directory-active").value = place?.active === false ? "0" : "1";
+    inventoryFillPlaces($("inventory-directory-parent"), "site", place?.parent_id || "");
+    $("inventory-directory-name").setCustomValidity(""); $("inventory-directory-error").hidden = true; renderInventoryDirectory();
+    if (place) $("inventory-directory-name").focus();
+  }
+
+  async function refreshInventoryDirectory() {
+    if (!isInventoryManager() || state.inventoryDirectoryBusy) return;
+    const request = ++state.inventoryDirectoryRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryDirectoryRequest && epoch === state.inventoryEpoch && $("inventory-directory-dialog").open && isInventoryManager();
+    $("inventory-directory-loading").hidden = false; $("inventory-directory-error").hidden = true; $("inventory-directory-retry").hidden = true;
+    try {
+      await loadInventoryPlaces(true); if (!current()) return;
+      if (state.inventoryDirectoryEditing) {
+        const previous = state.inventoryDirectoryEditing;
+        state.inventoryDirectoryEditing = state.inventoryPlaces.find((place) => String(place.id) === String(previous.id)) || previous;
+        inventoryFillPlaces($("inventory-directory-parent"), "site", $("inventory-directory-parent").value);
+        showNotice(t("Elenco aggiornato. I dati inseriti restano disponibili: controllali prima di salvare."));
+      } else editInventoryPlace();
+    }
+    catch (error) { if (current()) { dialogError("inventory-directory-error", new Error(inventoryMessage(error))); $("inventory-directory-retry").hidden = false; } }
+    finally { if (current()) { $("inventory-directory-loading").hidden = true; renderInventoryDirectory(); } }
+  }
+
+  function openInventoryDirectory() {
+    if (!isInventoryManager() || state.inventoryConfigured !== true) return;
+    state.inventoryDirectoryEditing = null; $("inventory-directory-form").reset(); $("inventory-directory-dialog").showModal(); renderInventoryDirectory(); refreshInventoryDirectory();
+  }
+
+  async function saveInventoryPlace(event) {
+    event.preventDefault(); if (!isInventoryManager() || state.inventoryDirectoryBusy || !state.inventoryPlacesReady) return;
+    const name = $("inventory-directory-name"); name.value = name.value.trim(); name.setCustomValidity(new TextEncoder().encode(name.value).length > 160 ? t("Accorcia il nome.") : "");
+    if (!$("inventory-directory-form").reportValidity()) return;
+    const editing = state.inventoryDirectoryEditing, kind = $("inventory-directory-kind").value;
+    const request = ++state.inventoryDirectoryRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryDirectoryRequest && epoch === state.inventoryEpoch && $("inventory-directory-dialog").open && isInventoryManager();
+    const fields = { kind, name: name.value, parent_id: kind === "site" ? "" : $("inventory-directory-parent").value, active: $("inventory-directory-active").value };
+    if (editing) fields.version = String(editing.version);
+    state.inventoryDirectoryBusy = true; $("inventory-directory-error").hidden = true; renderInventoryDirectory();
+    try {
+      await post("/api/inventory/places" + (editing ? "/" + encodeURIComponent(editing.id) : ""), fields); if (!current()) return;
+      state.inventoryPlacesReady = false; await loadInventoryPlaces(true); if (!current()) return;
+      state.inventoryDirectoryBusy = false; editInventoryPlace(); showNotice(editing ? t("Anagrafica aggiornata; i riferimenti già registrati restano nello storico.") : t("Voce aggiunta all’anagrafica."));
+    } catch (error) {
+      if (!current()) return;
+      dialogError("inventory-directory-error", new Error(inventoryMessage(error) + (error.status === 409 ? t(" I dati inseriti restano disponibili. Ricarica l’elenco prima di riprovare.") : "")));
+      if (error.status === 409) $("inventory-directory-retry").hidden = false;
+    } finally { if (current()) { state.inventoryDirectoryBusy = false; renderInventoryDirectory(); } }
+  }
+
+  function renderInventoryOperationalActions() {
+    const asset = state.inventoryDetailAsset, tangible = asset && inventoryTangible(asset), manager = isInventoryManager();
+    $("inventory-custody-current").replaceChildren();
+    $("inventory-context-open").hidden = !manager || !tangible;
+    $("inventory-checkout-open").hidden = !manager || !tangible || Boolean(asset?.custody);
+    $("inventory-checkout-open").disabled = !inventoryCanCheckout(asset);
+    $("inventory-checkout-open").title = !inventoryCanCheckout(asset) ? t("La consegna richiede un bene disponibile oppure già assegnato a un utente censito. Controlla prima assegnazione e stato.") : "";
+    $("inventory-checkin-open").hidden = !manager || !tangible || !asset?.custody;
+    $("inventory-verify-open").hidden = !manager || !tangible;
+    $("inventory-custody-title").closest("section").hidden = !tangible;
+    $("inventory-verifications-title").closest("section").hidden = !tangible;
+    if (!tangible) return;
+    const custody = asset.custody, c = asset.context;
+    if (custody) {
+      const overdue = custody.due_on && custody.due_on < localDate(new Date());
+      const card = node("div", "inventory-custody-current" + (overdue ? " inventory-custody-overdue" : ""));
+      card.append(node("strong", "", t("In consegna a ") + custody.user_name), node("p", "", t("Dal ") + (validDate(custody.checkout_on) ? dateLabel(custody.checkout_on) : custody.checkout_on) + (custody.due_on ? t(" · restituzione prevista ") + dateLabel(custody.due_on) : t(" · senza data di restituzione prevista"))));
+      if (overdue) card.append(node("span", "inventory-status inventory-status-maintenance", t("Restituzione in ritardo")));
+      $("inventory-custody-current").append(card);
+    } else $("inventory-custody-current").append(node("p", "field-help", c?.assignee_user_id ? t("Responsabile: ") + c.assignee_user_name + t(". Nessuna consegna fisica aperta.") : t("Nessuna consegna aperta.")));
+  }
+
+  function renderInventoryCustody() {
+    $("inventory-custody-history").replaceChildren();
+    state.inventoryCustodyItems.forEach((entry) => {
+      const item = node("li");
+      item.append(node("h4", "", entry.user_name || t("Utente #") + entry.user_id), node("p", "inventory-history-meta", t("Consegna: ") + dateLabel(entry.checkout_on) + (entry.due_on ? t(" · prevista: ") + dateLabel(entry.due_on) : "")), node("p", "inventory-history-summary", t("Condizioni alla consegna: ") + (inventoryConditions[entry.condition_out] || entry.condition_out)));
+      item.append(node("p", "inventory-history-summary", entry.returned_on ? t("Restituito il ") + dateLabel(entry.returned_on) + t(" · condizioni: ") + (inventoryConditions[entry.condition_in] || entry.condition_in || "—") : t("Consegna ancora aperta")));
+      if (entry.notes) item.append(node("p", "inventory-history-summary", entry.notes));
+      if (entry.return_notes) item.append(node("p", "inventory-history-summary", t("Restituzione: ") + entry.return_notes));
+      $("inventory-custody-history").append(item);
+    });
+    $("inventory-custody-more").hidden = !state.inventoryCustodyCursor; $("inventory-custody-more").disabled = state.inventoryCustodyLoading;
+  }
+
+  function renderInventoryVerifications() {
+    $("inventory-verifications").replaceChildren();
+    state.inventoryVerificationItems.forEach((entry) => {
+      const item = node("li");
+      item.append(node("h4", "", dateLabel(entry.verified_on) + " · " + (inventoryConditions[entry.condition] || entry.condition)), node("p", "inventory-history-meta", t("Registrata da utente #") + entry.actor_id + (entry.created_at ? " · " + inventoryTime(entry.created_at) : "")));
+      if (entry.expected_location_name || entry.observed_location_name) item.append(node("p", "inventory-history-summary", t("Ubicazione prevista: ") + (entry.expected_location_name || "—") + t(" · osservata: ") + (entry.observed_location_name || "—")));
+      if (entry.location_matches === false) item.append(node("p", "inventory-verification-mismatch", t("Ubicazione diversa da quella prevista: verifica se aggiornare la collocazione.")));
+      if (entry.notes) item.append(node("p", "inventory-history-summary", entry.notes)); $("inventory-verifications").append(item);
+    });
+    $("inventory-verifications-empty").hidden = state.inventoryVerificationsLoading || Boolean(state.inventoryVerificationItems.length);
+    $("inventory-verifications-more").hidden = !state.inventoryVerificationsCursor; $("inventory-verifications-more").disabled = state.inventoryVerificationsLoading;
+  }
+
+  async function loadInventoryOperationalHistory(kind, more = false) {
+    const id = state.inventoryDetailId; if (!id || !inventoryTangible(state.inventoryDetailAsset)) return;
+    const custody = kind === "custody", prefix = custody ? "inventoryCustody" : "inventoryVerifications", requestKey = prefix + "Request", loadingKey = prefix + "Loading", cursorKey = prefix + "Cursor";
+    if (more && (state[loadingKey] || !state[cursorKey])) return;
+    const request = ++state[requestKey], epoch = state.inventoryEpoch;
+    const current = () => request === state[requestKey] && epoch === state.inventoryEpoch && String(id) === String(state.inventoryDetailId) && $("inventory-detail-dialog").open;
+    const dom = custody ? "inventory-custody" : "inventory-verifications", itemsKey = custody ? "inventoryCustodyItems" : "inventoryVerificationItems";
+    const query = new URLSearchParams({ limit: "20" }); if (more) query.set("after_id", state[cursorKey]); else { state[itemsKey] = []; state[cursorKey] = null; }
+    state[loadingKey] = true; state[prefix + "RetryMore"] = more; $(dom + "-loading").hidden = false; $(dom + "-error").hidden = true; $(dom + "-retry").hidden = true;
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(id) + "/" + kind + "?" + query); if (!current()) return;
+      const items = data[custody ? "custody" : "verifications"];
+      if (!Array.isArray(items)) throw new Error(t("Il server ha restituito uno storico non valido."));
+      const known = new Set(state[itemsKey].map((entry) => String(entry.id))); state[itemsKey].push(...items.filter((entry) => !known.has(String(entry.id)))); state[cursorKey] = data.next_after_id || null; state[prefix + "RetryMore"] = false;
+    } catch (error) { if (current()) { dialogError(dom + "-error", new Error(inventoryMessage(error))); $(dom + "-retry").hidden = false; } }
+    finally { if (current()) { state[loadingKey] = false; $(dom + "-loading").hidden = true; custody ? renderInventoryCustody() : renderInventoryVerifications(); } }
+  }
+  function loadInventoryCustody(more = false) { return loadInventoryOperationalHistory("custody", more); }
+  function loadInventoryVerifications(more = false) { return loadInventoryOperationalHistory("verifications", more); }
+
+  function inventoryOperationControls() {
+    const busy = state.inventoryOperationBusy;
+    $("inventory-operation-fields").disabled = busy || state.inventoryOperationLoading;
+    const source = state.inventoryOperationAsset, operation = state.inventoryOperation;
+    const unavailable = operation === "checkout" ? !inventoryCanCheckout(source) : operation === "checkin" ? !source?.custody : !inventoryTangible(source);
+    $("inventory-operation-save").disabled = busy || state.inventoryOperationLoading || state.inventoryOperationConflict || unavailable || !isInventoryManager() || operation === "checkout" && !state.inventoryUsersReady || operation === "verify" && !state.inventoryPlacesReady;
+    $("inventory-operation-save").textContent = busy ? t("Salvataggio…") : state.inventoryOperationLoading ? t("Caricamento…") : ({ checkout: t("Registra consegna"), checkin: t("Registra restituzione"), verify: t("Registra verifica") }[state.inventoryOperation] || t("Salva"));
+    $("inventory-operation-reload").disabled = busy;
+    if (operation === "checkout") $("inventory-operation-user").disabled = source?.status === "assigned" && Boolean(source?.context?.assignee_user_id) && String(source.context.assignee_user_id) === $("inventory-operation-user").value;
+    if (busy) { busyDialogs.add("inventory-operation-dialog"); busyDialogs.add("inventory-detail-dialog"); }
+    else { busyDialogs.delete("inventory-operation-dialog"); busyDialogs.delete("inventory-detail-dialog"); }
+  }
+
+  async function openInventoryOperation(operation) {
+    const asset = state.inventoryDetailAsset;
+    if (!asset || !inventoryTangible(asset) || !isInventoryManager() || state.inventoryOperationBusy || state.inventoryRelationBusy || busyDialogs.has("inventory-detail-dialog") || operation === "checkout" && !inventoryCanCheckout(asset) || operation === "checkin" && !asset.custody) return;
+    state.inventoryOperation = operation; state.inventoryOperationAsset = asset; state.inventoryOperationConflict = false; state.inventoryOperationLoading = true;
+    const request = ++state.inventoryOperationRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryOperationRequest && epoch === state.inventoryEpoch && $("inventory-operation-dialog").open && isInventoryManager();
+    $("inventory-operation-form").reset(); $("inventory-operation-error").hidden = true; $("inventory-operation-reload").hidden = true; $("inventory-operation-users-retry").hidden = true;
+    $("inventory-operation-title").textContent = { checkout: t("Consegna del bene"), checkin: t("Restituzione del bene"), verify: t("Verifica fisica") }[operation];
+    $("inventory-operation-description").textContent = inventoryAssetLabel(asset) + (operation === "checkin" ? t(" · in consegna a ") + asset.custody.user_name : operation === "checkout" && asset.status === "assigned" ? t(" · destinatario già assegnato: ") + asset.context.assignee_user_name + t(". La consegna mantiene questo utente.") : "");
+    $("inventory-operation-date-label").textContent = { checkout: t("Data di consegna *"), checkin: t("Data di restituzione *"), verify: t("Data della verifica *") }[operation];
+    $("inventory-operation-date").value = localDate(new Date()); $("inventory-operation-date").max = localDate(new Date()); $("inventory-operation-date").min = operation === "checkin" ? asset.custody.checkout_on : "0001-01-01";
+    $("inventory-operation-due").min = $("inventory-operation-date").value;
+    $("inventory-operation-user-field").hidden = operation !== "checkout"; $("inventory-operation-user").disabled = operation !== "checkout"; $("inventory-operation-user").required = operation === "checkout";
+    $("inventory-operation-due-field").hidden = operation !== "checkout"; $("inventory-operation-due").disabled = operation !== "checkout";
+    $("inventory-operation-observed-field").hidden = operation !== "verify"; $("inventory-operation-observed").disabled = operation !== "verify";
+    $("inventory-operation-status-field").hidden = operation !== "checkin"; $("inventory-operation-status").disabled = operation !== "checkin";
+    inventoryFillUsers($("inventory-operation-user"), operation === "checkout" && asset.status === "assigned" ? asset.context?.assignee_user_id : "", asset.context?.assignee_user_name || "", false);
+    $("inventory-operation-dialog").showModal(); inventoryOperationControls();
+    try {
+      if (operation === "checkout") await loadInventoryUsers(true); else if (operation === "verify") await loadInventoryPlaces(true);
+      if (!current()) return;
+      if (operation === "checkout") inventoryFillUsers($("inventory-operation-user"), asset.status === "assigned" ? asset.context?.assignee_user_id : "", asset.context?.assignee_user_name || "", false);
+      if (operation === "verify") {
+        const select = $("inventory-operation-observed"); select.replaceChildren(new Option(t("Non indicata"), ""));
+        state.inventoryPlaces.filter((place) => place.kind === "location" && place.active).sort((a, b) => a.name.localeCompare(b.name, "it")).forEach((place) => select.add(new Option((inventoryPlace(place.parent_id)?.name || t("Sede")) + " · " + place.name, String(place.id))));
+        select.value = asset.context?.location_id ? String(asset.context.location_id) : "";
+      }
+    } catch (error) { if (current()) { dialogError("inventory-operation-error", new Error(inventoryMessage(error))); $("inventory-operation-users-retry").hidden = operation === "checkin"; } }
+    finally { if (current()) { state.inventoryOperationLoading = false; inventoryOperationControls(); } }
+  }
+
+  async function retryInventoryOperationData() {
+    if (state.inventoryOperationBusy || state.inventoryOperationLoading || !isInventoryManager()) return;
+    const operation = state.inventoryOperation, request = ++state.inventoryOperationRequest, epoch = state.inventoryEpoch;
+    const selectedUser = $("inventory-operation-user").value, observed = $("inventory-operation-observed").value;
+    const current = () => request === state.inventoryOperationRequest && epoch === state.inventoryEpoch && $("inventory-operation-dialog").open && isInventoryManager();
+    state.inventoryOperationLoading = true; inventoryOperationControls();
+    try {
+      if (operation === "checkout") await loadInventoryUsers(true); else if (operation === "verify") await loadInventoryPlaces(true);
+      if (!current()) return;
+      if (operation === "checkout") inventoryFillUsers($("inventory-operation-user"), selectedUser, state.inventoryOperationAsset?.context?.assignee_user_name || "", false);
+      if (operation === "verify") {
+        const select = $("inventory-operation-observed"); select.replaceChildren(new Option(t("Non indicata"), ""));
+        state.inventoryPlaces.filter((place) => place.kind === "location" && place.active).sort((a, b) => a.name.localeCompare(b.name, "it")).forEach((place) => select.add(new Option((inventoryPlace(place.parent_id)?.name || t("Sede")) + " · " + place.name, String(place.id))));
+        select.value = observed;
+      }
+      $("inventory-operation-error").hidden = true; $("inventory-operation-users-retry").hidden = true;
+    } catch (error) { if (current()) dialogError("inventory-operation-error", new Error(inventoryMessage(error))); }
+    finally { if (current()) { state.inventoryOperationLoading = false; inventoryOperationControls(); } }
+  }
+
+  async function reloadInventoryOperation() {
+    const source = state.inventoryOperationAsset;
+    if (!source || state.inventoryOperationBusy || !isInventoryManager()) return;
+    const request = ++state.inventoryOperationRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryOperationRequest && epoch === state.inventoryEpoch && $("inventory-operation-dialog").open && isInventoryManager();
+    state.inventoryOperationBusy = true; inventoryOperationControls();
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(source.id)); if (!current()) return;
+      state.inventoryOperationAsset = inventoryRemember(data.asset); state.inventoryOperationConflict = false; inventoryUpdateDetail(data.asset);
+      $("inventory-operation-error").hidden = true; $("inventory-operation-reload").hidden = true;
+      if (state.inventoryOperation === "checkin") $("inventory-operation-date").min = data.asset.custody?.checkout_on || "0001-01-01";
+      const operation = state.inventoryOperation;
+      if (operation === "checkin" && !data.asset.custody || operation === "checkout" && !inventoryCanCheckout(data.asset) || !inventoryTangible(data.asset)) dialogError("inventory-operation-error", new Error(t("La scheda aggiornata non consente più questa operazione. I dati inseriti restano visibili; chiudi la finestra per consultare lo stato corrente.")));
+      else showNotice(t("Scheda aggiornata. L’operazione non è stata registrata: controlla i dati e riprova."));
+    } catch (error) { if (current()) dialogError("inventory-operation-error", new Error(inventoryMessage(error))); }
+    finally { if (current()) { state.inventoryOperationBusy = false; inventoryOperationControls(); } }
+  }
+
+  async function saveInventoryOperation(event) {
+    event.preventDefault(); const source = state.inventoryOperationAsset, operation = state.inventoryOperation;
+    if (!source || state.inventoryOperationBusy || state.inventoryOperationLoading || state.inventoryOperationConflict || !isInventoryManager() || operation === "checkout" && (!state.inventoryUsersReady || !inventoryCanCheckout(source)) || operation === "verify" && !state.inventoryPlacesReady || operation === "checkin" && !source.custody) return;
+    const date = $("inventory-operation-date"), due = $("inventory-operation-due"), notes = $("inventory-operation-notes");
+    $("inventory-operation-user").setCustomValidity(operation === "checkout" && source.status === "assigned" && String(source.context?.assignee_user_id) !== $("inventory-operation-user").value ? t("Seleziona l’utente già assegnato nella scheda aggiornata.") : "");
+    date.setCustomValidity(!validDate(date.value) || date.value > localDate(new Date()) ? t("Inserisci una data valida, non futura.") : operation === "checkin" && source.custody && date.value < source.custody.checkout_on ? t("La restituzione non può precedere la consegna.") : "");
+    due.setCustomValidity(operation === "checkout" && due.value && (!validDate(due.value) || due.value < date.value) ? t("La restituzione prevista non può precedere la consegna.") : "");
+    notes.setCustomValidity(new TextEncoder().encode(notes.value).length > 2000 ? t("Accorcia le note.") : "");
+    if (!$("inventory-operation-form").reportValidity()) return;
+    const fields = { version: String(source.version), notes: notes.value };
+    if (operation === "checkout") Object.assign(fields, { user_id: $("inventory-operation-user").value, checkout_on: date.value, due_on: due.value, condition_out: $("inventory-operation-condition").value });
+    if (operation === "checkin") Object.assign(fields, { returned_on: date.value, condition_in: $("inventory-operation-condition").value, status: $("inventory-operation-status").value });
+    if (operation === "verify") Object.assign(fields, { verified_on: date.value, condition: $("inventory-operation-condition").value, observed_location_id: $("inventory-operation-observed").value });
+    const request = ++state.inventoryOperationRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryOperationRequest && epoch === state.inventoryEpoch && $("inventory-operation-dialog").open && isInventoryManager();
+    state.inventoryOperationBusy = true; $("inventory-operation-error").hidden = true; inventoryOperationControls();
+    try {
+      const data = await post("/api/inventory/assets/" + encodeURIComponent(source.id) + "/" + operation, fields); if (!current()) return;
+      inventoryUpdateDetail(data.asset); state.inventoryOperationBusy = false; inventoryOperationControls(); $("inventory-operation-dialog").close(); refreshInventory();
+      showNotice({ checkout: t("Consegna registrata. Il bene compare tra gli asset dell’utente."), checkin: t("Restituzione registrata e consegna chiusa."), verify: t("Verifica fisica registrata nello storico del bene.") }[operation]);
+    } catch (error) {
+      if (!current()) return;
+      if (error.status === 409) { state.inventoryOperationConflict = true; $("inventory-operation-reload").hidden = false; }
+      dialogError("inventory-operation-error", new Error(inventoryMessage(error) + (error.status === 409 ? t(" I dati inseriti restano disponibili. Ricarica la scheda prima di riprovare.") : "")));
+    } finally { if (current()) { state.inventoryOperationBusy = false; inventoryOperationControls(); } }
+  }
+
+  $("inventory-directory-open").addEventListener("click", openInventoryDirectory);
+  $("inventory-directory-retry").addEventListener("click", refreshInventoryDirectory);
+  $("inventory-directory-kind").addEventListener("change", () => editInventoryPlace());
+  $("inventory-directory-cancel-edit").addEventListener("click", () => editInventoryPlace());
+  $("inventory-directory-form").addEventListener("submit", saveInventoryPlace);
+  $("inventory-directory-dialog").addEventListener("close", () => { state.inventoryDirectoryRequest++; state.inventoryDirectoryEditing = null; });
+  $("inventory-context-open").addEventListener("click", openInventoryContext);
+  $("inventory-context-form").addEventListener("submit", saveInventoryContext);
+  $("inventory-context-reload").addEventListener("click", reloadInventoryContext);
+  $("inventory-site-id").addEventListener("change", () => {
+    const site = $("inventory-site-id").value, department = inventoryPlace($("inventory-department-id").value), location = inventoryPlace($("inventory-location-id").value);
+    if (department?.parent_id && String(department.parent_id) !== site) $("inventory-department-id").value = "";
+    if (location && String(location.parent_id) !== site) $("inventory-location-id").value = "";
+    renderInventoryContextPlaces();
+  });
+  $("inventory-placement-retry").addEventListener("click", async () => {
+    const epoch = state.inventoryEpoch, request = state.inventoryContextRequest;
+    try { await Promise.all([loadInventoryPlaces(true), loadInventoryUsers(true)]); if (epoch !== state.inventoryEpoch || request !== state.inventoryContextRequest || !$("inventory-context-dialog").open) return; renderInventoryContextPlaces(); inventoryFillUsers($("inventory-context-user"), $("inventory-context-user").value, state.inventoryContextAsset?.context?.assignee_user_name); $("inventory-placement-error").hidden = true; $("inventory-placement-retry").hidden = true; inventoryContextControls(); }
+    catch (error) { if (epoch === state.inventoryEpoch && request === state.inventoryContextRequest) dialogError("inventory-placement-error", new Error(inventoryMessage(error))); }
+  });
+  $("inventory-context-dialog").addEventListener("close", () => { state.inventoryContextRequest++; state.inventoryContextAsset = null; state.inventoryContextLoading = false; state.inventoryContextConflict = false; });
+  $("inventory-checkout-open").addEventListener("click", () => openInventoryOperation("checkout"));
+  $("inventory-checkin-open").addEventListener("click", () => openInventoryOperation("checkin"));
+  $("inventory-verify-open").addEventListener("click", () => openInventoryOperation("verify"));
+  $("inventory-operation-form").addEventListener("submit", saveInventoryOperation);
+  $("inventory-operation-reload").addEventListener("click", reloadInventoryOperation);
+  $("inventory-operation-users-retry").addEventListener("click", retryInventoryOperationData);
+  $("inventory-operation-user").addEventListener("change", () => { $("inventory-operation-user").setCustomValidity(""); inventoryOperationControls(); });
+  $("inventory-operation-date").addEventListener("input", () => { $("inventory-operation-date").setCustomValidity(""); $("inventory-operation-due").setCustomValidity(""); $("inventory-operation-due").min = $("inventory-operation-date").value || "0001-01-01"; });
+  $("inventory-operation-due").addEventListener("input", () => $("inventory-operation-due").setCustomValidity(""));
+  $("inventory-operation-notes").addEventListener("input", () => $("inventory-operation-notes").setCustomValidity(""));
+  $("inventory-operation-dialog").addEventListener("close", () => { state.inventoryOperationRequest++; state.inventoryOperationAsset = null; state.inventoryOperation = null; state.inventoryOperationLoading = false; state.inventoryOperationConflict = false; });
+  $("inventory-custody-retry").addEventListener("click", () => loadInventoryCustody(state.inventoryCustodyRetryMore)); $("inventory-custody-more").addEventListener("click", () => loadInventoryCustody(true));
+  $("inventory-verifications-retry").addEventListener("click", () => loadInventoryVerifications(state.inventoryVerificationsRetryMore)); $("inventory-verifications-more").addEventListener("click", () => loadInventoryVerifications(true));
+
+  function inventoryMessage(error) {
+    return error.status === 503 ? t("Il servizio Asset inventory non è disponibile. Chiedi a un gestore di verificarne la configurazione e l’avvio, poi riprova.") : error.message;
+  }
+
+  // People are inventory records, independent of application login accounts.
+  // Identity membership and direct asset links are separate many-to-many relations.
+  const inventoryIdentityKinds = { personal: t("Personale"), shared: t("Condivisa"), service: t("Di servizio") };
+  const inventorySubjectRoles = { owner: t("Responsabile"), user: t("Utilizzatore"), administrator: t("Amministratore") };
+  const inventorySubjectFields = {
+    person: [["person_code", t("Codice persona"), 64, true], ["display_name", t("Nome della persona"), 160, true], ["email", t("Email"), 254], ["organization", t("Organizzazione"), 160], ["job_title", t("Mansione"), 120], ["notes", t("Note"), 2000]],
+    identity: [["realm", t("Sistema / dominio"), 160, true], ["login", t("Nome account"), 160, true], ["display_name", t("Nome visualizzato"), 160], ["kind", t("Tipo di identità"), inventoryIdentityKinds], ["notes", t("Note"), 2000]]
+  };
+  const inventorySubjectDirectory = { kind: "person", request: 0, items: [], cursor: null, loading: false, retryMore: false };
+  const inventorySubjectDetail = { kind: "person", id: null, item: null, request: 0, loading: false, busy: false, conflict: false, panels: {} };
+  const inventorySubjectPicker = { request: 0, owner: null, items: [], cursor: null, loading: false, selected: null, busy: false, conflict: false, retryMore: false };
+  const inventoryAssetSubjects = { request: 0, items: [], cursor: null, loading: false, busy: false, retryMore: false };
+  let inventorySubjectFilter = null;
+
+  function inventorySubjectPath(kind) { return kind === "person" ? "people" : "identities"; }
+  function inventorySubjectLabel(kind, item) { return kind === "person" ? item.display_name + " · " + item.person_code : (item.display_name ? item.display_name + " · " : "") + item.realm + " / " + item.login; }
+  function inventorySubjectRecord(kind, response) { return response[kind]; }
+  function inventorySubjectPost(path, fields) { return api(path, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields) }); }
+  function inventorySubjectInputValue(key) { const input = $("inventory-subject-input-" + key); return input.type === "checkbox" ? input.checked ? "1" : "0" : input.value; }
+  function inventorySubjectReset() {
+    inventorySubjectDirectory.request++; inventorySubjectDetail.request++; inventorySubjectPicker.request++; inventoryAssetSubjects.request++;
+    inventorySubjectDetail.panels = {};
+    Object.assign(inventorySubjectDirectory, { items: [], cursor: null, loading: false, retryMore: false });
+    Object.assign(inventorySubjectDetail, { item: null, id: null, loading: false, busy: false, conflict: false });
+    Object.assign(inventorySubjectPicker, { owner: null, items: [], cursor: null, loading: false, selected: null, busy: false, conflict: false });
+    Object.assign(inventoryAssetSubjects, { items: [], cursor: null, loading: false, busy: false });
+    inventorySubjectFilter = null;
+    ["inventory-subject-directory-dialog", "inventory-subject-detail-dialog", "inventory-subject-picker-dialog"].forEach((id) => { busyDialogs.delete(id); if ($(id).open) $(id).close(); });
+    ["inventory-subject-directory-list", "inventory-subject-detail-fields", "inventory-subject-picker-list", "inventory-subjects-list", "inventory-subject-links-list", "inventory-subject-assets-list", "inventory-subject-history-list"].forEach((id) => $(id).replaceChildren());
+    $("inventory-subject-picker-form").reset(); $("inventory-subject-directory-search").reset();
+    $("inventory-subject-filter").hidden = true;
+  }
+  function inventorySubjectFilterControls() {
+    $("inventory-subject-filter").hidden = !inventorySubjectFilter;
+    $("inventory-subject-filter").querySelector("span").textContent = inventorySubjectFilter ? (inventorySubjectFilter.kind === "person" ? t("Beni collegati direttamente alla persona: {0}", [inventorySubjectFilter.label]) : t("Beni collegati direttamente all’identità: {0}", [inventorySubjectFilter.label])) : "";
+    $("inventory-people-open").disabled = $("inventory-identities-open").disabled = state.inventoryConfigured !== true;
+  }
+  function inventorySubjectDirectoryControls() {
+    const directory = inventorySubjectDirectory;
+    $("inventory-subject-directory-title").textContent = directory.kind === "person" ? t("Persone") : t("Identità");
+    $("inventory-subject-directory-kind-field").hidden = directory.kind !== "identity";
+    $("inventory-subject-directory-new").hidden = !isInventoryManager();
+    $("inventory-subject-directory-new").textContent = directory.kind === "person" ? t("Nuova persona") : t("Nuova identità");
+    $("inventory-subject-directory-loading").hidden = !directory.loading;
+    $("inventory-subject-directory-more").hidden = !directory.cursor;
+    $("inventory-subject-directory-more").disabled = directory.loading;
+  }
+  function openInventorySubjectDirectory(kind) {
+    if (state.inventoryConfigured !== true || !state.session?.authenticated) return;
+    inventorySubjectDirectory.kind = kind; inventorySubjectDirectory.request++;
+    $("inventory-subject-directory-search").reset();
+    if (!$("inventory-subject-directory-dialog").open) $("inventory-subject-directory-dialog").showModal();
+    loadInventorySubjectDirectory();
+  }
+  async function loadInventorySubjectDirectory(more = false) {
+    const directory = inventorySubjectDirectory;
+    if (more && (directory.loading || !directory.cursor)) return;
+    const request = ++directory.request, epoch = state.inventoryEpoch, kind = directory.kind;
+    const current = () => request === directory.request && epoch === state.inventoryEpoch && $("inventory-subject-directory-dialog").open;
+    const query = new URLSearchParams({ limit: "30", q: $("inventory-subject-directory-q").value.trim() });
+    if (new TextEncoder().encode(query.get("q")).length > 200) { dialogError("inventory-subject-directory-error", new Error(t("La ricerca è troppo lunga. Accorciala e riprova."))); return; }
+    if ($("inventory-subject-directory-active").value) query.set("active", $("inventory-subject-directory-active").value);
+    if (kind === "identity" && $("inventory-subject-directory-kind").value) query.set("kind", $("inventory-subject-directory-kind").value);
+    if (more) query.set("after_id", directory.cursor); else { directory.items = []; directory.cursor = null; $("inventory-subject-directory-list").replaceChildren(); }
+    directory.loading = true; directory.retryMore = more; $("inventory-subject-directory-error").hidden = $("inventory-subject-directory-retry").hidden = true; inventorySubjectDirectoryControls();
+    try {
+      const data = await api("/api/inventory/" + inventorySubjectPath(kind) + "?" + query);
+      if (!current()) return;
+      directory.items.push(...data.items); directory.cursor = data.next_after_id || null; directory.retryMore = false;
+      $("inventory-subject-directory-list").replaceChildren();
+      for (const item of directory.items) {
+        const row = node("li", "inventory-directory-item"), text = node("div");
+        text.append(node("strong", "", inventorySubjectLabel(kind, item)), node("span", "inventory-cell-secondary", (item.active ? t("Attivo") : t("Disattivato")) + " · " + (kind === "person" ? (item.identity_count === 1 ? t("1 identità collegata") : t("{0} identità collegate", [item.identity_count || 0])) : (inventoryIdentityKinds[item.kind] || item.kind) + " · " + (item.people_count === 1 ? t("1 persona collegata") : t("{0} persone collegate", [item.people_count || 0])))));
+        row.append(text, action(t("Scheda"), inventorySubjectLabel(kind, item), () => openInventorySubjectDetail(kind, item.id)));
+        $("inventory-subject-directory-list").append(row);
+      }
+      if (!directory.items.length) $("inventory-subject-directory-list").append(node("li", "field-help", t("Nessuna voce per questi filtri.")));
+    } catch (error) { if (current()) { dialogError("inventory-subject-directory-error", new Error(inventoryMessage(error))); $("inventory-subject-directory-retry").hidden = false; } }
+    finally { if (current()) { directory.loading = false; inventorySubjectDirectoryControls(); } }
+  }
+  function inventorySubjectBuildFields(kind, item = null) {
+    const container = $("inventory-subject-detail-fields"); container.replaceChildren();
+    for (const [key, title, max, required] of inventorySubjectFields[kind]) {
+      const field = node("div", "work-field"), label = node("label", "", title + (required ? " *" : ""));
+      label.htmlFor = "inventory-subject-input-" + key;
+      const input = node(typeof max === "object" ? "select" : key === "notes" ? "textarea" : "input"); input.id = label.htmlFor; input.name = key;
+      if (typeof max === "object") Object.entries(max).forEach(([value, title]) => input.append(new Option(title, value)));
+      else { input.maxLength = max; if (key === "notes") input.rows = 4; else { input.type = key === "email" ? "email" : "text"; input.autocomplete = "off"; } }
+      input.required = Boolean(required); input.value = item?.[key] ?? (key === "kind" ? "personal" : "");
+      input.addEventListener("input", () => input.setCustomValidity("")); field.append(label, input); container.append(field);
+    }
+    const active = node("label", "inventory-mine-control"), input = node("input"); input.id = "inventory-subject-input-active"; input.type = "checkbox"; input.checked = item?.active ?? true;
+    active.append(input, node("span", "", t("Attivo"))); container.append(active);
+  }
+  function inventorySubjectDetailControls() {
+    const detail = inventorySubjectDetail, manager = isInventoryManager();
+    $("inventory-subject-detail-loading").hidden = !detail.loading;
+    $("inventory-subject-detail-fields").disabled = detail.loading || detail.busy || Boolean(detail.id && !detail.item) || !manager;
+    $("inventory-subject-detail-save").hidden = !manager;
+    $("inventory-subject-detail-save").disabled = detail.loading || detail.busy || detail.conflict || Boolean(detail.id && !detail.item);
+    $("inventory-subject-detail-save").textContent = detail.busy ? t("Salvataggio…") : detail.id ? t("Salva modifiche") : detail.kind === "person" ? t("Crea persona") : t("Crea identità");
+    $("inventory-subject-view-assets").hidden = !detail.item;
+    $("inventory-subject-view-assets").disabled = detail.loading || detail.busy;
+    $("inventory-subject-detail-reload").disabled = detail.loading || detail.busy;
+    $("inventory-subject-detail-panels").hidden = !detail.item;
+    $("inventory-subject-person-add").hidden = detail.kind !== "identity" || !manager || !detail.item?.active;
+    $("inventory-subject-person-add").disabled = detail.loading || detail.busy || detail.conflict;
+    $("inventory-subject-detail-description").textContent = detail.item ? (detail.kind === "person" ? t("Persona censita nell’inventario, indipendente dagli account di accesso all’app.") : t("Utenza censita in un sistema. Può appartenere a più persone; non memorizzare password o segreti.")) + " " + t("Versione {0} · aggiornato {1}", [detail.item.version, inventoryTime(detail.item.updated_at)]) : detail.kind === "person" ? t("Censisci una persona anche se non possiede un account nell’app.") : t("Censisci l’utenza e il sistema in cui esiste. Il tipo descrive l’uso; i collegamenti alle persone restano espliciti.");
+    if (detail.busy) busyDialogs.add("inventory-subject-detail-dialog"); else busyDialogs.delete("inventory-subject-detail-dialog");
+  }
+  function openInventorySubjectDetail(kind, id = null) {
+    if (!state.session?.authenticated || inventorySubjectDetail.busy) return;
+    const detail = inventorySubjectDetail;
+    detail.request++; Object.assign(detail, { kind, id, item: null, loading: false, busy: false, conflict: false, panels: {} });
+    $("inventory-subject-detail-title").textContent = id ? kind === "person" ? t("Scheda persona") : t("Scheda identità") : kind === "person" ? t("Nuova persona") : t("Nuova identità");
+    $("inventory-subject-detail-kicker").textContent = kind === "person" ? t("PERSONA") : t("IDENTITÀ");
+    $("inventory-subject-detail-error").hidden = $("inventory-subject-detail-reload").hidden = true;
+    inventorySubjectBuildFields(kind); inventorySubjectDetailControls();
+    if (!$("inventory-subject-detail-dialog").open) $("inventory-subject-detail-dialog").showModal();
+    if (id) loadInventorySubjectDetail();
+  }
+  async function loadInventorySubjectDetail(keepDraft = false) {
+    const detail = inventorySubjectDetail;
+    if (!detail.id || detail.busy) return;
+    const preserveDraft = keepDraft && Boolean(detail.item);
+    const request = ++detail.request, epoch = state.inventoryEpoch, kind = detail.kind, id = detail.id;
+    const current = () => request === detail.request && epoch === state.inventoryEpoch && $("inventory-subject-detail-dialog").open;
+    detail.loading = true; $("inventory-subject-detail-error").hidden = true; inventorySubjectDetailControls();
+    try {
+      const data = await api("/api/inventory/" + inventorySubjectPath(kind) + "/" + id);
+      if (!current()) return;
+      detail.item = inventorySubjectRecord(kind, data); detail.conflict = false;
+      if (!preserveDraft) inventorySubjectBuildFields(kind, detail.item);
+      $("inventory-subject-detail-title").textContent = inventorySubjectLabel(kind, detail.item);
+      $("inventory-subject-detail-reload").hidden = true;
+      $("inventory-subject-links-title").textContent = kind === "person" ? t("Identità collegate") : t("Persone collegate");
+      $("inventory-subject-link-policy").textContent = kind === "person" ? t("Apri un’identità per gestire le persone che la usano. La persona può avere più identità.") : t("Ogni persona collegata usa questa identità con il ruolo indicato. Anche un’identità personale può avere più persone collegate.");
+      ["links", "assets", "history"].forEach((panel) => loadInventorySubjectPanel(panel));
+    } catch (error) { if (current()) { dialogError("inventory-subject-detail-error", new Error(inventoryMessage(error))); $("inventory-subject-detail-reload").hidden = false; } }
+    finally { if (current()) { detail.loading = false; inventorySubjectDetailControls(); } }
+  }
+  async function saveInventorySubject(event) {
+    event.preventDefault(); const detail = inventorySubjectDetail;
+    if (!isInventoryManager() || detail.busy || detail.loading || detail.conflict || detail.id && !detail.item) return;
+    const fields = {};
+    for (const [key, , max] of inventorySubjectFields[detail.kind]) {
+      const input = $("inventory-subject-input-" + key), value = input.value;
+      if (typeof max === "number" && new TextEncoder().encode(value).length > max) { input.setCustomValidity(t("Il testo è troppo lungo in byte. Accorcialo e riprova.")); input.reportValidity(); return; }
+      fields[key] = value;
+    }
+    if (!$("inventory-subject-detail-form").reportValidity()) return;
+    fields.active = inventorySubjectInputValue("active"); if (detail.item) fields.version = detail.item.version;
+    const epoch = state.inventoryEpoch, request = detail.request, kind = detail.kind;
+    const current = () => epoch === state.inventoryEpoch && request === detail.request && $("inventory-subject-detail-dialog").open;
+    detail.busy = true; $("inventory-subject-detail-error").hidden = true; inventorySubjectDetailControls();
+    try {
+      const data = await inventorySubjectPost("/api/inventory/" + inventorySubjectPath(kind) + (detail.id ? "/" + detail.id : ""), fields);
+      if (!current()) return;
+      detail.item = inventorySubjectRecord(kind, data); detail.id = detail.item.id; detail.conflict = false;
+      $("inventory-subject-detail-title").textContent = inventorySubjectLabel(kind, detail.item);
+      $("inventory-subject-links-title").textContent = kind === "person" ? t("Identità collegate") : t("Persone collegate");
+      $("inventory-subject-link-policy").textContent = kind === "person" ? t("Apri un’identità per gestire le persone che la usano. La persona può avere più identità.") : t("Ogni persona collegata usa questa identità con il ruolo indicato. Anche un’identità personale può avere più persone collegate.");
+      ["links", "assets", "history"].forEach((panel) => loadInventorySubjectPanel(panel));
+      if ($("inventory-subject-directory-dialog").open) loadInventorySubjectDirectory();
+      showNotice(kind === "person" ? t("Persona salvata.") : t("Identità salvata."));
+    } catch (error) { if (current()) { detail.conflict = error.status === 409 && Boolean(detail.id); $("inventory-subject-detail-reload").hidden = !detail.conflict; dialogError("inventory-subject-detail-error", new Error(inventoryMessage(error) + (detail.conflict ? t(" I dati inseriti restano disponibili. Ricarica la versione prima di riprovare.") : ""))); } }
+    finally { if (current()) { detail.busy = false; inventorySubjectDetailControls(); } }
+  }
+  function inventorySubjectHistoryRow(entry) {
+    const row = node("li"), change = entry.change?.operation || entry.action;
+    const labels = { created: t("Creazione"), updated: t("Aggiornamento"), person_linked: t("Persona collegata"), person_unlinked: t("Collegamento persona rimosso"), identity_linked: t("Identità collegata"), identity_unlinked: t("Collegamento identità rimosso"), identity_person_added: inventorySubjectDetail.kind === "person" ? t("Identità collegata") : t("Persona collegata"), identity_person_removed: inventorySubjectDetail.kind === "person" ? t("Collegamento identità rimosso") : t("Collegamento persona rimosso") };
+    row.append(node("h4", "", (labels[change] || t("Aggiornamento")) + t(" · versione ") + entry.version), node("p", "inventory-history-meta", inventoryTime(entry.created_at || entry.changed_at) + t(" · utente #") + entry.actor_id));
+    if (entry.change?.link) {
+      const link = entry.change.link, kind = inventorySubjectDetail.kind === "person" ? "identity" : "person", subject = link[kind];
+      if (subject) row.append(node("p", "inventory-history-summary", inventorySubjectLabel(kind, subject) + " · " + (inventorySubjectRoles[link.role] || link.role) + (link.notes ? " · " + link.notes : "")));
+    }
+    const details = node("details"), snapshot = entry.snapshot || {}, list = node("dl", "inventory-detail-grid");
+    details.append(node("summary", "", t("Visualizza i dati di questa versione")));
+    for (const [key, title] of inventorySubjectFields[inventorySubjectDetail.kind]) {
+      const item = node("div"); item.append(node("dt", "", title), node("dd", "", key === "kind" ? inventoryIdentityKinds[snapshot[key]] || snapshot[key] || "—" : snapshot[key] || "—")); list.append(item);
+    }
+    const active = node("div"); active.append(node("dt", "", t("Stato")), node("dd", "", snapshot.active ? t("Attivo") : t("Disattivato"))); list.append(active);
+    details.append(list); row.append(details); return row;
+  }
+  async function loadInventorySubjectPanel(panel, more = false) {
+    const detail = inventorySubjectDetail;
+    if (!detail.item) return;
+    if (!detail.panels[panel]) detail.panels[panel] = { request: 0, cursor: null, loading: false, retryMore: false };
+    const page = detail.panels[panel];
+    if (more && (page.loading || !page.cursor)) return;
+    const request = ++page.request, detailRequest = detail.request, epoch = state.inventoryEpoch, kind = detail.kind, id = detail.id;
+    const current = () => detailRequest === detail.request && epoch === state.inventoryEpoch && request === page.request && $("inventory-subject-detail-dialog").open;
+    const prefix = "inventory-subject-" + panel, path = panel === "links" ? kind === "person" ? "identities" : "people" : panel;
+    const query = new URLSearchParams({ limit: "20" }); if (more) query.set("after_id", page.cursor); else { page.cursor = null; $(prefix + "-list").replaceChildren(); }
+    page.loading = true; page.retryMore = more; $(prefix + "-error").hidden = $(prefix + "-retry").hidden = true; $(prefix + "-loading").hidden = false; $(prefix + "-more").disabled = true;
+    try {
+      const data = await api("/api/inventory/" + inventorySubjectPath(kind) + "/" + id + "/" + path + "?" + query);
+      if (!current()) return;
+      for (const link of data.items) {
+        if (panel === "history") { $(prefix + "-list").append(inventorySubjectHistoryRow(link)); continue; }
+        const row = node("li", "inventory-relation-card"), heading = node("div", "inventory-relation-heading"), linkedKind = kind === "person" ? "identity" : "person", subject = link[linkedKind];
+        if (panel === "assets") {
+          heading.append(node("strong", "", link.asset.name + " · " + link.asset.asset_tag)); row.append(heading, node("p", "inventory-relation-summary", inventorySubjectRoles[link.role] || link.role));
+          row.append(action(t("Scheda asset"), link.asset.name, () => {
+            if (busyDialogs.has("inventory-subject-detail-dialog") || busyDialogs.has("inventory-detail-dialog")) return;
+            $("inventory-subject-detail-dialog").close();
+            if ($("inventory-subject-directory-dialog").open) $("inventory-subject-directory-dialog").close();
+            // Reuse an already open asset dialog; its detail loader invalidates old requests.
+            openInventoryDetail(link.asset.id);
+          }));
+        } else {
+          heading.append(node("strong", "", inventorySubjectLabel(linkedKind, subject))); row.append(heading, node("p", "inventory-relation-summary", (subject.active ? "" : t("Disattivato") + " · ") + (inventorySubjectRoles[link.role] || link.role) + (link.notes ? " · " + link.notes : "")));
+          const actions = node("div", "inventory-row-actions"); actions.append(action(t("Scheda"), inventorySubjectLabel(linkedKind, subject), () => openInventorySubjectDetail(linkedKind, subject.id)));
+          if (kind === "identity" && isInventoryManager()) { const remove = action(t("Rimuovi collegamento"), t("Rimuovi collegamento"), () => removeInventoryPersonLink(link)); remove.disabled = detail.busy || detail.conflict; actions.append(remove); }
+          row.append(actions);
+        }
+        $(prefix + "-list").append(row);
+      }
+      if (!$(prefix + "-list").children.length) $(prefix + "-list").append(node("li", "field-help", panel === "history" ? t("Nessuno storico disponibile.") : t("Nessun collegamento registrato.")));
+      page.cursor = data.next_after_id || null; page.retryMore = false;
+    } catch (error) { if (current()) { dialogError(prefix + "-error", new Error(inventoryMessage(error))); $(prefix + "-retry").hidden = false; } }
+    finally { if (current()) { page.loading = false; $(prefix + "-loading").hidden = true; $(prefix + "-more").hidden = !page.cursor; $(prefix + "-more").disabled = false; } }
+  }
+  async function removeInventoryPersonLink(link) {
+    const detail = inventorySubjectDetail;
+    if (!isInventoryManager() || detail.kind !== "identity" || !detail.item || detail.busy || detail.conflict) return;
+    const request = detail.request, epoch = state.inventoryEpoch;
+    const current = () => request === detail.request && epoch === state.inventoryEpoch && $("inventory-subject-detail-dialog").open;
+    detail.busy = true; inventorySubjectDetailControls();
+    try {
+      const data = await inventorySubjectPost("/api/inventory/identities/" + detail.id + "/people/" + link.id + "/remove", { version: detail.item.version });
+      if (!current()) return;
+      detail.item = data.identity; ["links", "history"].forEach((panel) => loadInventorySubjectPanel(panel));
+      if ($("inventory-subject-directory-dialog").open) loadInventorySubjectDirectory(); showNotice(t("Collegamento rimosso."));
+    } catch (error) { if (current()) { detail.conflict = error.status === 409; $("inventory-subject-detail-reload").hidden = !detail.conflict; dialogError("inventory-subject-detail-error", new Error(inventoryMessage(error))); } }
+    finally { if (current()) { detail.busy = false; inventorySubjectDetailControls(); } }
+  }
+  function inventorySubjectPickerControls() {
+    const picker = inventorySubjectPicker;
+    $("inventory-subject-picker-fields").disabled = picker.busy;
+    $("inventory-subject-picker-loading").hidden = !picker.loading;
+    $("inventory-subject-picker-more").hidden = !picker.cursor;
+    $("inventory-subject-picker-more").disabled = picker.loading || picker.busy;
+    $("inventory-subject-picker-search").disabled = picker.busy;
+    $("inventory-subject-picker-save").disabled = picker.busy || picker.conflict || !picker.selected || !isInventoryManager();
+    $("inventory-subject-picker-save").textContent = picker.busy ? t("Salvataggio…") : t("Salva collegamento");
+    $("inventory-subject-picker-selected").textContent = picker.selected ? t("Selezionato: {0}", [inventorySubjectLabel($("inventory-subject-picker-kind").value, picker.selected)]) : t("Seleziona una voce dai risultati.");
+    $("inventory-subject-picker-reload").disabled = picker.busy;
+    if (picker.busy) { busyDialogs.add("inventory-subject-picker-dialog"); busyDialogs.add(picker.owner?.type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog"); }
+    else { busyDialogs.delete("inventory-subject-picker-dialog"); if (picker.owner) busyDialogs.delete(picker.owner.type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog"); }
+  }
+  function openInventorySubjectPicker(type) {
+    const item = type === "asset" ? state.inventoryDetailAsset : inventorySubjectDetail.item;
+    if (!isInventoryManager() || !item || inventorySubjectPicker.busy || inventorySubjectDetail.busy || inventoryAssetSubjects.busy || busyDialogs.has(type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog")) return;
+    const picker = inventorySubjectPicker;
+    picker.request++; Object.assign(picker, { owner: { type, id: item.id, version: item.version }, items: [], cursor: null, loading: false, selected: null, busy: false, conflict: false });
+    $("inventory-subject-picker-form").reset(); $("inventory-subject-picker-kind").value = "person";
+    $("inventory-subject-picker-kind-field").hidden = type !== "asset";
+    $("inventory-subject-picker-role").replaceChildren(...(type === "asset" ? ["user", "owner", "administrator"] : ["user", "owner"]).map((role) => new Option(inventorySubjectRoles[role], role)));
+    $("inventory-subject-picker-error").hidden = $("inventory-subject-picker-reload").hidden = true;
+    $("inventory-subject-picker-description").textContent = type === "asset" ? t("Collega una persona o un’identità direttamente a questo bene. Le persone di un’identità condivisa non ereditano il collegamento.") : t("Seleziona una persona che usa questa identità. Le altre persone collegate restano associate.");
+    inventorySubjectPickerControls(); $("inventory-subject-picker-dialog").showModal(); loadInventorySubjectPicker();
+  }
+  async function loadInventorySubjectPicker(more = false) {
+    const picker = inventorySubjectPicker;
+    if (!picker.owner || more && (picker.loading || !picker.cursor)) return;
+    const request = ++picker.request, epoch = state.inventoryEpoch, kind = $("inventory-subject-picker-kind").value;
+    const current = () => request === picker.request && epoch === state.inventoryEpoch && $("inventory-subject-picker-dialog").open;
+    const query = new URLSearchParams({ limit: "30", active: "1", q: $("inventory-subject-picker-q").value.trim() });
+    if (new TextEncoder().encode(query.get("q")).length > 200) { dialogError("inventory-subject-picker-load-error", new Error(t("La ricerca è troppo lunga. Accorciala e riprova."))); return; }
+    if (more) query.set("after_id", picker.cursor); else { picker.items = []; picker.cursor = null; $("inventory-subject-picker-list").replaceChildren(); }
+    picker.loading = true; picker.retryMore = more; $("inventory-subject-picker-load-error").hidden = $("inventory-subject-picker-retry").hidden = true; inventorySubjectPickerControls();
+    try {
+      const data = await api("/api/inventory/" + inventorySubjectPath(kind) + "?" + query);
+      if (!current()) return;
+      picker.items.push(...data.items); picker.cursor = data.next_after_id || null; picker.retryMore = false; $("inventory-subject-picker-list").replaceChildren();
+      for (const item of picker.items) {
+        const row = node("li"), button = node("button", "inventory-subject-choice", inventorySubjectLabel(kind, item)); button.type = "button";
+        button.setAttribute("aria-pressed", String(picker.selected?.id === item.id));
+        button.addEventListener("click", () => { if (picker.busy) return; picker.selected = item; $("inventory-subject-picker-list").querySelectorAll("button").forEach((option) => option.setAttribute("aria-pressed", String(option === button))); inventorySubjectPickerControls(); });
+        row.append(button); $("inventory-subject-picker-list").append(row);
+      }
+      if (!picker.items.length) $("inventory-subject-picker-list").append(node("li", "field-help", t("Nessuna voce attiva per questi filtri.")));
+    } catch (error) { if (current()) { dialogError("inventory-subject-picker-load-error", new Error(inventoryMessage(error))); $("inventory-subject-picker-retry").hidden = false; } }
+    finally { if (current()) { picker.loading = false; inventorySubjectPickerControls(); } }
+  }
+  async function reloadInventorySubjectPicker() {
+    const picker = inventorySubjectPicker;
+    if (!picker.owner || picker.busy) return;
+    const epoch = state.inventoryEpoch, request = picker.request, owner = picker.owner;
+    const current = () => epoch === state.inventoryEpoch && request === picker.request && $("inventory-subject-picker-dialog").open;
+    picker.busy = true; inventorySubjectPickerControls();
+    try {
+      const data = await api("/api/inventory/" + (owner.type === "asset" ? "assets" : "identities") + "/" + owner.id);
+      if (!current()) return;
+      const item = owner.type === "asset" ? data.asset : data.identity; owner.version = item.version;
+      if (owner.type === "asset" && String(state.inventoryDetailId) === String(owner.id)) inventoryUpdateDetail(item);
+      if (owner.type === "identity" && inventorySubjectDetail.kind === "identity" && String(inventorySubjectDetail.id) === String(owner.id)) { inventorySubjectDetail.item = item; inventorySubjectDetailControls(); }
+      picker.conflict = false; $("inventory-subject-picker-error").hidden = $("inventory-subject-picker-reload").hidden = true;
+    } catch (error) { if (current()) dialogError("inventory-subject-picker-error", new Error(inventoryMessage(error))); }
+    finally { if (current()) { picker.busy = false; inventorySubjectPickerControls(); } }
+  }
+  async function saveInventorySubjectLink(event) {
+    event.preventDefault(); const picker = inventorySubjectPicker, owner = picker.owner;
+    if (!owner || !picker.selected || picker.busy || picker.conflict || !isInventoryManager()) return;
+    if (new TextEncoder().encode($("inventory-subject-picker-notes").value).length > 2000) { dialogError("inventory-subject-picker-error", new Error(t("Il testo è troppo lungo in byte. Accorcialo e riprova."))); return; }
+    const kind = $("inventory-subject-picker-kind").value, fields = { version: owner.version, role: $("inventory-subject-picker-role").value, notes: $("inventory-subject-picker-notes").value };
+    if (owner.type === "asset") { fields.subject_kind = kind; fields.subject_id = picker.selected.id; } else fields.person_id = picker.selected.id;
+    const epoch = state.inventoryEpoch, request = picker.request;
+    const current = () => epoch === state.inventoryEpoch && request === picker.request && $("inventory-subject-picker-dialog").open;
+    picker.busy = true; $("inventory-subject-picker-error").hidden = true; inventorySubjectPickerControls();
+    try {
+      const data = await inventorySubjectPost("/api/inventory/" + (owner.type === "asset" ? "assets/" + owner.id + "/subjects" : "identities/" + owner.id + "/people"), fields);
+      if (!current()) return;
+      if (owner.type === "asset" && String(state.inventoryDetailId) === String(owner.id)) { inventoryUpdateDetail(data.asset); loadInventoryAssetSubjects(); loadInventoryHistory(); refreshInventory(); }
+      if (owner.type === "identity" && inventorySubjectDetail.kind === "identity" && String(inventorySubjectDetail.id) === String(owner.id)) { inventorySubjectDetail.item = data.identity; ["links", "history"].forEach((panel) => loadInventorySubjectPanel(panel)); inventorySubjectDetailControls(); }
+      if ($("inventory-subject-directory-dialog").open) loadInventorySubjectDirectory();
+      picker.busy = false; inventorySubjectPickerControls(); $("inventory-subject-picker-dialog").close(); showNotice(t("Collegamento salvato."));
+    } catch (error) { if (current()) { picker.conflict = error.status === 409; $("inventory-subject-picker-reload").hidden = !picker.conflict; dialogError("inventory-subject-picker-error", new Error(inventoryMessage(error) + (picker.conflict ? t(" La selezione e le note restano disponibili. Ricarica la versione prima di riprovare.") : ""))); } }
+    finally { if (current()) { picker.busy = false; inventorySubjectPickerControls(); } }
+  }
+  function resetInventoryAssetSubjects() {
+    inventoryAssetSubjects.request++;
+    Object.assign(inventoryAssetSubjects, { items: [], cursor: null, loading: false, busy: false, retryMore: false });
+    $("inventory-subjects-list").replaceChildren(); $("inventory-subjects-error").hidden = $("inventory-subjects-retry").hidden = $("inventory-subjects-more").hidden = true;
+    $("inventory-subject-add").hidden = !isInventoryManager();
+  }
+  async function loadInventoryAssetSubjects(more = false) {
+    const page = inventoryAssetSubjects, id = state.inventoryDetailId;
+    if (!id || more && (page.loading || !page.cursor)) return;
+    const request = ++page.request, epoch = state.inventoryEpoch;
+    const current = () => request === page.request && epoch === state.inventoryEpoch && String(id) === String(state.inventoryDetailId) && $("inventory-detail-dialog").open;
+    const query = new URLSearchParams({ limit: "20" }); if (more) query.set("after_id", page.cursor); else { page.items = []; page.cursor = null; }
+    page.loading = true; page.retryMore = more; $("inventory-subjects-loading").hidden = false; $("inventory-subjects-error").hidden = $("inventory-subjects-retry").hidden = true; $("inventory-subjects-more").disabled = true; $("inventory-subject-add").hidden = !isInventoryManager();
+    try {
+      const data = await api("/api/inventory/assets/" + id + "/subjects?" + query);
+      if (!current()) return;
+      page.items.push(...data.items); page.cursor = data.next_after_id || null; page.retryMore = false;
+      renderInventoryAssetSubjects();
+    } catch (error) { if (current()) { dialogError("inventory-subjects-error", new Error(inventoryMessage(error))); $("inventory-subjects-retry").hidden = false; } }
+    finally { if (current()) { page.loading = false; $("inventory-subjects-loading").hidden = true; $("inventory-subjects-more").hidden = !page.cursor; $("inventory-subjects-more").disabled = false; } }
+  }
+  function renderInventoryAssetSubjects() {
+    const page = inventoryAssetSubjects; $("inventory-subjects-list").replaceChildren();
+    for (const link of page.items) {
+      const row = node("li", "inventory-relation-card"), heading = node("div", "inventory-relation-heading"), label = inventorySubjectLabel(link.subject_kind, link.subject);
+      heading.append(node("strong", "", label), node("span", "inventory-type-badge", link.subject_kind === "person" ? t("Persona") : t("Identità")));
+      row.append(heading, node("p", "inventory-relation-summary", (inventorySubjectRoles[link.role] || link.role) + (link.notes ? " · " + link.notes : "") + (link.subject.active ? "" : " · " + t("Disattivato"))));
+      const actions = node("div", "inventory-row-actions"); actions.append(action(t("Scheda"), label, () => openInventorySubjectDetail(link.subject_kind, link.subject_id)));
+      if (isInventoryManager()) { const remove = action(t("Rimuovi collegamento"), t("Rimuovi collegamento"), () => removeInventoryAssetSubject(link)); remove.disabled = page.busy; actions.append(remove); }
+      row.append(actions); $("inventory-subjects-list").append(row);
+    }
+    if (!page.items.length) $("inventory-subjects-list").append(node("li", "field-help", t("Nessun collegamento registrato.")));
+    $("inventory-subject-add").disabled = page.busy || ["retired", "lost"].includes(state.inventoryDetailAsset?.status);
+  }
+  async function removeInventoryAssetSubject(link) {
+    const page = inventoryAssetSubjects, asset = state.inventoryDetailAsset;
+    if (!isInventoryManager() || !asset || page.busy || busyDialogs.has("inventory-detail-dialog")) return;
+    const request = page.request, epoch = state.inventoryEpoch;
+    const current = () => request === page.request && epoch === state.inventoryEpoch && String(asset.id) === String(state.inventoryDetailId) && $("inventory-detail-dialog").open;
+    page.busy = true; busyDialogs.add("inventory-detail-dialog"); renderInventoryAssetSubjects();
+    try {
+      const data = await inventorySubjectPost("/api/inventory/assets/" + asset.id + "/subjects/" + link.id + "/remove", { version: asset.version });
+      if (!current()) return;
+      inventoryUpdateDetail(data.asset); page.busy = false; busyDialogs.delete("inventory-detail-dialog"); loadInventoryAssetSubjects(); loadInventoryHistory(); refreshInventory(); showNotice(t("Collegamento rimosso."));
+    } catch (error) {
+      if (!current()) return;
+      dialogError("inventory-subjects-error", new Error(inventoryMessage(error) + (error.status === 409 ? t(" Ricarica la scheda prima di riprovare.") : ""))); $("inventory-subjects-retry").hidden = false;
+    } finally { if (epoch === state.inventoryEpoch) { page.busy = false; busyDialogs.delete("inventory-detail-dialog"); if (String(asset.id) === String(state.inventoryDetailId)) renderInventoryAssetSubjects(); } }
+  }
+  $("inventory-people-open").addEventListener("click", () => openInventorySubjectDirectory("person"));
+  $("inventory-identities-open").addEventListener("click", () => openInventorySubjectDirectory("identity"));
+  $("inventory-subject-directory-search").addEventListener("submit", (event) => { event.preventDefault(); loadInventorySubjectDirectory(); });
+  $("inventory-subject-directory-more").addEventListener("click", () => loadInventorySubjectDirectory(true));
+  $("inventory-subject-directory-retry").addEventListener("click", () => loadInventorySubjectDirectory(inventorySubjectDirectory.retryMore));
+  $("inventory-subject-directory-new").addEventListener("click", () => { if (isInventoryManager()) openInventorySubjectDetail(inventorySubjectDirectory.kind); });
+  $("inventory-subject-directory-dialog").addEventListener("close", () => { inventorySubjectDirectory.request++; inventorySubjectDirectory.loading = false; });
+  $("inventory-subject-detail-form").addEventListener("submit", saveInventorySubject);
+  $("inventory-subject-detail-reload").addEventListener("click", () => loadInventorySubjectDetail(true));
+  $("inventory-subject-person-add").addEventListener("click", () => openInventorySubjectPicker("identity"));
+  $("inventory-subject-detail-dialog").addEventListener("close", () => { inventorySubjectDetail.request++; inventorySubjectDetail.id = null; inventorySubjectDetail.item = null; inventorySubjectDetail.loading = false; inventorySubjectDetail.panels = {}; });
+  ["links", "assets", "history"].forEach((panel) => { $("inventory-subject-" + panel + "-retry").addEventListener("click", () => loadInventorySubjectPanel(panel, inventorySubjectDetail.panels[panel]?.retryMore)); $("inventory-subject-" + panel + "-more").addEventListener("click", () => loadInventorySubjectPanel(panel, true)); });
+  $("inventory-subject-view-assets").addEventListener("click", () => {
+    const detail = inventorySubjectDetail; if (!detail.item || detail.busy || busyDialogs.has("inventory-detail-dialog")) return;
+    inventorySubjectFilter = { kind: detail.kind, id: detail.item.id, label: inventorySubjectLabel(detail.kind, detail.item) };
+    $("inventory-search-form").reset(); $("inventory-mine").checked = false; $("inventory-site-filter").value = $("inventory-department-filter").value = ""; state.inventoryAttention = "";
+    $("inventory-subject-detail-dialog").close();
+    if ($("inventory-subject-directory-dialog").open) $("inventory-subject-directory-dialog").close();
+    if ($("inventory-detail-dialog").open) $("inventory-detail-dialog").close();
+    refreshInventory();
+  });
+  $("inventory-subject-filter-clear").addEventListener("click", () => { inventorySubjectFilter = null; refreshInventory(); });
+  $("inventory-subject-add").addEventListener("click", () => openInventorySubjectPicker("asset"));
+  $("inventory-subject-picker-search").addEventListener("click", () => loadInventorySubjectPicker());
+  $("inventory-subject-picker-q").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); loadInventorySubjectPicker(); } });
+  $("inventory-subject-picker-kind").addEventListener("change", () => { inventorySubjectPicker.selected = null; loadInventorySubjectPicker(); });
+  $("inventory-subject-picker-more").addEventListener("click", () => loadInventorySubjectPicker(true));
+  $("inventory-subject-picker-retry").addEventListener("click", () => loadInventorySubjectPicker(inventorySubjectPicker.retryMore));
+  $("inventory-subject-picker-reload").addEventListener("click", reloadInventorySubjectPicker);
+  $("inventory-subject-picker-form").addEventListener("submit", saveInventorySubjectLink);
+  $("inventory-subject-picker-dialog").addEventListener("close", () => { inventorySubjectPicker.request++; inventorySubjectPicker.owner = null; inventorySubjectPicker.loading = false; inventorySubjectPicker.selected = null; inventorySubjectPicker.items = []; $("inventory-subject-picker-list").replaceChildren(); });
+  $("inventory-subjects-more").addEventListener("click", () => loadInventoryAssetSubjects(true));
+  $("inventory-subjects-retry").addEventListener("click", async () => {
+    const id = state.inventoryDetailId, epoch = state.inventoryEpoch;
+    try { const data = await api("/api/inventory/assets/" + id); if (epoch !== state.inventoryEpoch || String(id) !== String(state.inventoryDetailId) || !$("inventory-detail-dialog").open) return; inventoryUpdateDetail(data.asset); loadInventoryAssetSubjects(inventoryAssetSubjects.retryMore); }
+    catch (error) { if (epoch === state.inventoryEpoch) dialogError("inventory-subjects-error", new Error(inventoryMessage(error))); }
+  });
+
+  function inventoryFilterQuery() {
+    const query = new URLSearchParams({ q: $("inventory-search").value.trim(), verification_days: $("inventory-verification-days").value });
+    [["status", "inventory-filter"], ["asset_type", "inventory-type-filter"], ["site_id", "inventory-site-filter"], ["department_id", "inventory-department-filter"]].forEach(([key, id]) => { if ($(id).value) query.set(key, $(id).value); });
+    if ($("inventory-mine").checked) query.set("mine", "1");
+    if (state.inventoryAttention) query.set("attention", state.inventoryAttention);
+    if (inventorySubjectFilter) query.set(inventorySubjectFilter.kind === "person" ? "person_id" : "identity_id", inventorySubjectFilter.id);
+    return query;
+  }
+
+  function renderInventoryPlaceFilters() {
+    const site = $("inventory-site-filter").value, department = $("inventory-department-filter").value;
+    const label = (place) => place.name + (place.active ? "" : t(" (disattivato)"));
+    const places = [...state.inventoryPlaces].sort((a, b) => a.name.localeCompare(b.name, locale));
+    $("inventory-site-filter").replaceChildren(new Option(t("Tutte le sedi"), ""), ...places.filter((place) => place.kind === "site").map((place) => new Option(label(place), String(place.id))));
+    $("inventory-site-filter").value = places.some((place) => place.kind === "site" && String(place.id) === site) ? site : "";
+    $("inventory-department-filter").replaceChildren(new Option(t("Tutti i reparti"), ""), ...places.filter((place) => place.kind === "department" && (!site || !place.parent_id || String(place.parent_id) === site)).map((place) => new Option(label(place), String(place.id))));
+    $("inventory-department-filter").value = [...$("inventory-department-filter").options].some((option) => option.value === department) ? department : "";
+    $("inventory-site-filter").disabled = $("inventory-department-filter").disabled = state.inventoryConfigured !== true || !state.inventoryPlacesReady;
+    $("inventory-place-filter-error").hidden = !state.inventoryPlaceFilterError;
+    $("inventory-place-filter-error").querySelector("span").textContent = state.inventoryPlaceFilterError;
+  }
+
+  async function refreshInventoryPlaceFilters() {
+    const epoch = state.inventoryEpoch;
+    try {
+      await loadInventoryPlaces();
+      if (epoch !== state.inventoryEpoch) return;
+      state.inventoryPlaceFilterError = "";
+    } catch (error) {
+      if (epoch !== state.inventoryEpoch) return;
+      state.inventoryPlaceFilterError = t("Filtri per sede e reparto non disponibili. ") + inventoryMessage(error);
+    }
+    renderInventoryPlaceFilters();
+  }
+
+  function renderInventoryDashboard() {
+    const data = state.inventoryDashboard;
+    $("inventory-dashboard-loading").hidden = !state.inventoryDashboardLoading;
+    $("inventory-dashboard-error").hidden = !state.inventoryDashboardError;
+    $("inventory-dashboard-error").querySelector("span").textContent = state.inventoryDashboardError;
+    $("inventory-attention-clear").hidden = !state.inventoryAttention;
+    $("inventory-dashboard-cards").hidden = !data;
+    $("inventory-distribution").hidden = !data;
+    const scope = data ? data.counts.total === 1 ? t("1 bene per i filtri selezionati · {0}. Verifiche dopo {1} giorni.", [dateLabel(data.today), data.verification_days]) : t("{0} beni per i filtri selezionati · {1}. Verifiche dopo {2} giorni.", [data.counts.total, dateLabel(data.today), data.verification_days]) : "";
+    $("inventory-dashboard-scope").textContent = data ? scope + (state.inventoryAttention ? " " + t("Filtro operativo: {0}.", [inventoryAttentionLabels[state.inventoryAttention]]) : "") : t("I conteggi operativi seguono i filtri e comprendono tutti i risultati, oltre la pagina visibile.");
+    $("inventory-dashboard-cards").replaceChildren();
+    $("inventory-distribution-groups").replaceChildren();
+    if (!data) return;
+    for (const [key, label] of Object.entries(inventoryAttentionLabels)) {
+      const button = node("button", "inventory-dashboard-card" + (state.inventoryAttention === key ? " is-selected" : ""));
+      button.type = "button"; button.dataset.inventoryAttention = key;
+      button.setAttribute("aria-pressed", String(state.inventoryAttention === key));
+      button.append(node("span", "", label), node("strong", "", String(data.counts[key] || 0)));
+      button.addEventListener("click", () => { state.inventoryAttention = state.inventoryAttention === key ? "" : key; refreshInventory(); });
+      $("inventory-dashboard-cards").append(button);
+    }
+    const groups = [[t("Per sede"), data.by_site, t("Sede non indicata")], [t("Per reparto"), data.by_department, t("Reparto non indicato")], [t("Per utente"), data.by_user, t("Non assegnato")]];
+    for (const [title, entries, absent] of groups) {
+      const section = node("section"); section.append(node("h4", "", title));
+      const list = node("ul");
+      for (const group of entries || []) {
+        const item = node("li"); item.append(node("span", "", group.name || absent), node("strong", "", String(group.count))); list.append(item);
+      }
+      if (!entries?.length) section.append(node("p", "field-help", t("Nessun bene per questi filtri."))); else section.append(list);
+      $("inventory-distribution-groups").append(section);
+    }
+    $("inventory-distribution-limit").hidden = !data.groups_truncated;
+  }
+
+  async function refreshInventoryDashboard(query = inventoryFilterQuery()) {
+    if (!state.session?.authenticated || state.inventoryConfigured !== true) return;
+    const request = ++state.inventoryDashboardRequest, epoch = state.inventoryEpoch;
+    state.inventoryDashboardLoading = true; state.inventoryDashboardError = ""; state.inventoryDashboard = null; renderInventoryDashboard();
+    try {
+      const data = await api("/api/inventory/dashboard?" + query);
+      if (request !== state.inventoryDashboardRequest || epoch !== state.inventoryEpoch) return;
+      if (!data.counts || !validDate(data.today)) throw new Error(t("Il server ha restituito un cruscotto non valido."));
+      state.inventoryDashboard = data;
+    } catch (error) {
+      if (request !== state.inventoryDashboardRequest || epoch !== state.inventoryEpoch) return;
+      state.inventoryDashboardError = inventoryMessage(error);
+    } finally {
+      if (request === state.inventoryDashboardRequest && epoch === state.inventoryEpoch) { state.inventoryDashboardLoading = false; renderInventoryDashboard(); }
+    }
+  }
+
+  let inventoryQrAsset = null;
+  function openInventoryQr() {
+    const asset = state.inventoryDetailAsset;
+    if (!asset || !state.session?.authenticated || !window.InventoryQr) return;
+    inventoryQrAsset = { id: asset.id, asset_tag: asset.asset_tag, name: asset.name };
+    $("inventory-qr-error").hidden = true;
+    try { $("inventory-qr-preview").replaceChildren(window.InventoryQr.createLabel(inventoryQrAsset)); }
+    catch (error) { dialogError("inventory-qr-error", error); return; }
+    $("inventory-qr-dialog").showModal();
+  }
+  $("inventory-qr-open").addEventListener("click", openInventoryQr);
+  $("inventory-qr-download").addEventListener("click", () => {
+    if (!inventoryQrAsset || !state.session?.authenticated) return;
+    try { window.InventoryQr.downloadLabel(inventoryQrAsset); } catch (error) { dialogError("inventory-qr-error", error); }
+  });
+  $("inventory-qr-print").addEventListener("click", () => {
+    if (!inventoryQrAsset || !state.session?.authenticated) return;
+    try { window.InventoryQr.printLabel(inventoryQrAsset); } catch (error) { dialogError("inventory-qr-error", error); }
+  });
+  $("inventory-qr-dialog").addEventListener("close", () => { inventoryQrAsset = null; $("inventory-qr-preview").replaceChildren(); });
+
   function resetInventory() {
+    inventorySubjectReset();
     clearTimeout(inventorySearchTimer);
     state.inventoryEpoch++;
+    state.inventoryDashboardRequest++;
+    Object.assign(state, { inventoryDashboard: null, inventoryDashboardLoading: false, inventoryDashboardError: "", inventoryAttention: "", inventoryPlaceFilterError: "" });
+    $("inventory-verification-days").value = "90";
+    $("inventory-site-filter").replaceChildren(new Option(t("Tutte le sedi"), ""));
+    $("inventory-department-filter").replaceChildren(new Option(t("Tutti i reparti"), ""));
+    if ($("inventory-qr-dialog").open) $("inventory-qr-dialog").close();
+    inventoryQrAsset = null;
+    state.inventoryPlacesRequest++; state.inventoryUsersRequest++; state.inventoryDirectoryRequest++; state.inventoryContextRequest++; state.inventoryOperationRequest++; state.inventoryCustodyRequest++; state.inventoryVerificationsRequest++;
+    inventoryPlacesPromise = null; inventoryUsersPromise = null;
+    Object.assign(state, { inventoryPlaces: [], inventoryPlacesReady: false, inventoryUsers: [], inventoryUsersReady: false, inventoryDirectoryBusy: false, inventoryDirectoryEditing: null, inventoryContextBusy: false, inventoryContextLoading: false, inventoryContextAsset: null, inventoryContextConflict: false, inventoryOperationBusy: false, inventoryOperationLoading: false, inventoryOperationAsset: null, inventoryOperation: null, inventoryOperationConflict: false, inventoryCustodyItems: [], inventoryCustodyCursor: null, inventoryCustodyLoading: false, inventoryCustodyRetryMore: false, inventoryVerificationItems: [], inventoryVerificationsCursor: null, inventoryVerificationsLoading: false, inventoryVerificationsRetryMore: false });
+    ["inventory-directory-dialog", "inventory-context-dialog", "inventory-operation-dialog"].forEach((id) => { busyDialogs.delete(id); if ($(id).open) $(id).close(); });
+    ["inventory-directory-form", "inventory-context-form", "inventory-operation-form"].forEach((id) => $(id).reset());
+    $("inventory-mine").checked = false; $("inventory-custody-history").replaceChildren(); $("inventory-verifications").replaceChildren(); $("inventory-directory-list").replaceChildren();
     state.inventoryRequest++;
     state.inventoryEditorRequest++;
     state.inventoryDetailRequest++;
@@ -2463,7 +3533,7 @@
     busyDialogs.delete("inventory-detail-dialog");
     $("inventory-relation-form").hidden = true; $("inventory-relations").replaceChildren();
     Object.assign(state, { inventoryItems: [], inventoryReady: false, inventoryLoading: false, inventoryConfigured: null, inventorySummary: null, inventoryCursor: null, inventoryRetryMore: false, inventoryEditingId: null, inventoryEditingAsset: null, inventoryConflict: false, inventoryDetailId: null, inventoryDetailAsset: null, inventoryHistoryLoading: false, inventoryHistoryReady: false, inventoryHistoryCursor: null });
-    dialogBusy("inventory-dialog", false, "inventory-save", "Crea asset");
+    dialogBusy("inventory-dialog", false, "inventory-save", t("Crea asset"));
     ["inventory-dialog", "inventory-detail-dialog"].forEach((id) => { if ($(id).open) $(id).close(); });
     $("inventory-body").replaceChildren();
     $("inventory-history").replaceChildren();
@@ -2478,32 +3548,37 @@
   function renderInventory() {
     const manager = isInventoryManager();
     $("inventory-new").hidden = !manager;
+    $("inventory-directory-open").hidden = !manager;
+    $("inventory-directory-open").disabled = state.inventoryConfigured !== true;
+    $("inventory-mine").disabled = state.inventoryConfigured !== true;
     $("inventory-new").disabled = state.inventoryConfigured !== true;
     $("inventory-import").hidden = !manager;
     $("inventory-import").disabled = state.inventoryConfigured !== true || state.inventoryImportBusy;
     $("inventory-export").disabled = state.inventoryConfigured !== true || state.inventoryExporting;
-    $("inventory-export").textContent = state.inventoryExporting ? "Esportazione…" : "Esporta CSV";
+    $("inventory-export").textContent = state.inventoryExporting ? t("Esportazione…") : t("Esporta CSV");
     const backup = state.inventoryBackup;
     $("inventory-backup-status").hidden = !manager || state.inventoryConfigured !== true;
-    $("inventory-backup-status").textContent = !backup?.enabled ? "Backup automatico non configurato." : backup.last_error ? "Backup automatico: " + backup.last_error + (backup.last_success ? " Ultima copia riuscita: " + inventoryTime(backup.last_success) + "." : "") : "Backup automatico ogni " + backup.interval_hours + " ore · " + backup.keep + " copie conservate. " + (backup.last_success ? "Ultima copia: " + inventoryTime(backup.last_success) + "." : "Prima copia in preparazione.") + (backup.next_due ? " Prossima: " + inventoryTime(backup.next_due) + "." : "");
+    $("inventory-backup-status").textContent = !backup?.enabled ? t("Backup automatico non configurato.") : backup.last_error ? t("Backup automatico: ") + backup.last_error + (backup.last_success ? t(" Ultima copia riuscita: ") + inventoryTime(backup.last_success) + "." : "") : t("Backup automatico ogni ") + backup.interval_hours + t(" ore · ") + backup.keep + t(" copie conservate. ") + (backup.last_success ? t("Ultima copia: ") + inventoryTime(backup.last_success) + "." : t("Prima copia in preparazione.")) + (backup.next_due ? t(" Prossima: ") + inventoryTime(backup.next_due) + "." : "");
     $("inventory-refresh").disabled = state.inventoryLoading;
-    $("inventory-permission").textContent = manager ? "Gestore · Censisci i beni e aggiorna assegnazioni, stato e garanzie. Per dismettere un bene, scegli Dismesso." : "Consulta i beni aziendali e il loro storico. Un gestore può creare e aggiornare le schede.";
+    $("inventory-permission").textContent = manager ? t("Gestore · Censisci i beni e aggiorna assegnazioni, stato e garanzie. Per dismettere un bene, scegli Dismesso.") : t("Consulta i beni aziendali e il loro storico. Un gestore può creare e aggiornare le schede.");
     $("inventory-count").textContent = state.inventorySummary ? state.inventorySummary.total : "—";
     $("inventory-summary").hidden = !state.inventorySummary;
     ["total", ...Object.keys(inventoryStates)].forEach((key) => { $("inventory-" + key).textContent = state.inventorySummary ? state.inventorySummary[key] : "—"; });
-    const filtered = Boolean($("inventory-search").value.trim() || $("inventory-filter").value || $("inventory-type-filter").value);
+    renderInventoryPlaceFilters(); renderInventoryDashboard();
+    inventorySubjectFilterControls();
+    const filtered = Boolean(inventorySubjectFilter || $("inventory-search").value.trim() || $("inventory-filter").value || $("inventory-type-filter").value || $("inventory-mine").checked || $("inventory-site-filter").value || $("inventory-department-filter").value || state.inventoryAttention);
     $("inventory-clear").hidden = !filtered;
     $("inventory-loading").hidden = !state.inventoryLoading;
-    $("inventory-loading").textContent = state.inventoryItems.length ? "Aggiornamento dell’inventario…" : "Caricamento dell’inventario…";
+    $("inventory-loading").textContent = state.inventoryItems.length ? t("Aggiornamento dell’inventario…") : t("Caricamento dell’inventario…");
     $("inventory-table-wrap").hidden = !state.inventoryItems.length;
     $("inventory-empty").hidden = !state.inventoryReady || Boolean(state.inventoryItems.length) || state.inventoryLoading;
-    $("inventory-empty-title").textContent = filtered ? "Nessun bene per questi filtri." : "Il primo bene parte da qui.";
-    $("inventory-empty-description").textContent = filtered ? "Prova un’altra ricerca oppure azzera i filtri." : manager ? "Usa Nuovo asset per censire dotazioni, dispositivi e altri beni aziendali." : "Un gestore può censire dotazioni, dispositivi e altri beni aziendali.";
+    $("inventory-empty-title").textContent = filtered ? t("Nessun bene per questi filtri.") : t("Il primo bene parte da qui.");
+    $("inventory-empty-description").textContent = filtered ? t("Prova un’altra ricerca oppure azzera i filtri.") : manager ? t("Usa Nuovo asset per censire dotazioni, dispositivi e altri beni aziendali.") : t("Un gestore può censire dotazioni, dispositivi e altri beni aziendali.");
     $("inventory-footer").hidden = !state.inventoryReady;
-    $("inventory-visible").textContent = state.inventoryItems.length + (state.inventoryItems.length === 1 ? " bene caricato" : " beni caricati") + (filtered ? " per i filtri selezionati." : " nell’inventario.");
+    $("inventory-visible").textContent = state.inventoryItems.length + (state.inventoryItems.length === 1 ? t(" bene caricato") : t(" beni caricati")) + (filtered ? t(" per i filtri selezionati.") : t(" nell’inventario."));
     $("inventory-more").hidden = !state.inventoryCursor;
     $("inventory-more").disabled = state.inventoryLoading;
-    $("inventory-more").textContent = state.inventoryLoading ? "Caricamento…" : "Carica altri asset";
+    $("inventory-more").textContent = state.inventoryLoading ? t("Caricamento…") : t("Carica altri asset");
     $("inventory-body").replaceChildren();
     for (const asset of state.inventoryItems) {
       const row = node("tr");
@@ -2515,11 +3590,12 @@
       const status = node("td");
       status.append(node("span", "inventory-status inventory-status-" + asset.status, inventoryStates[asset.status] || asset.status));
       const assigned = node("td");
-      assigned.append(node("span", "inventory-cell-line", asset.assignee || "Non assegnato"), node("span", "inventory-cell-secondary", asset.location || "Sede non indicata"));
+      assigned.append(node("span", "inventory-cell-line", asset.context?.assignee_user_name || asset.assignee || t("Non assegnato")), node("span", "inventory-cell-secondary", inventoryPlacementLabel(asset) || t("Sede non indicata")));
+      if (asset.custody?.due_on && asset.custody.due_on < localDate(new Date())) assigned.append(node("span", "inventory-cell-secondary inventory-return-overdue", t("Restituzione in ritardo")));
       const actions = node("td");
       const group = node("div", "inventory-row-actions");
-      group.append(action("Scheda", "Apri scheda e storico di " + asset.name, () => openInventoryDetail(asset.id)));
-      if (manager) group.append(action("Modifica", "Modifica " + asset.name, () => openInventoryEditor(asset.id)));
+      group.append(action(t("Scheda"), t("Apri scheda e storico di ") + asset.name, () => openInventoryDetail(asset.id)));
+      if (manager) group.append(action(t("Modifica"), t("Modifica ") + asset.name, () => openInventoryEditor(asset.id)));
       actions.append(group);
       row.append(identity, category, status, assigned, actions);
       $("inventory-body").append(row);
@@ -2533,12 +3609,11 @@
     const request = ++state.inventoryRequest;
     const epoch = state.inventoryEpoch;
     const cursor = more ? state.inventoryCursor : null;
-    const query = new URLSearchParams({ q: $("inventory-search").value.trim(), limit: "30" });
-    if ($("inventory-filter").value) query.set("status", $("inventory-filter").value);
-    if ($("inventory-type-filter").value) query.set("asset_type", $("inventory-type-filter").value);
+    const query = inventoryFilterQuery(); query.set("limit", "30");
+    if (!more) { state.inventoryDashboardRequest++; state.inventoryDashboard = null; state.inventoryDashboardLoading = false; state.inventoryDashboardError = ""; }
     if (new TextEncoder().encode(query.get("q")).length > 160) {
       state.inventoryLoading = false;
-      $("inventory-search").setCustomValidity("La ricerca è troppo lunga. Accorciala e riprova.");
+      $("inventory-search").setCustomValidity(t("La ricerca è troppo lunga. Accorciala e riprova."));
       $("inventory-search").reportValidity();
       renderInventory();
       return;
@@ -2561,13 +3636,16 @@
         if (!service.configured) {
           state.inventoryConfigured = false;
           state.inventorySummary = null;
-          $("inventory-error-text").textContent = "Asset inventory non è ancora configurato. Chiedi a un gestore di collegare il servizio di inventario, poi riprova.";
+          $("inventory-error-text").textContent = t("Asset inventory non è ancora configurato. Chiedi a un gestore di collegare il servizio di inventario, poi riprova.");
           $("inventory-error").hidden = false;
           return;
         }
         state.inventoryConfigured = true;
         state.inventoryBackup = service.backup || null;
         state.inventorySummary = service.summary || null;
+        const dashboardQuery = new URLSearchParams(query); dashboardQuery.delete("limit");
+        refreshInventoryDashboard(dashboardQuery);
+        refreshInventoryPlaceFilters();
       }
       const data = await api("/api/inventory/assets?" + query);
       if (!current()) return;
@@ -2599,31 +3677,28 @@
     if (!state.session?.authenticated || state.inventoryConfigured !== true || state.inventoryExporting) return;
     const epoch = state.inventoryEpoch, email = state.session.email;
     const current = () => epoch === state.inventoryEpoch && state.session?.email === email;
-    const query = new URLSearchParams({ limit: "100" });
-    if ($("inventory-search").value.trim()) query.set("q", $("inventory-search").value.trim());
-    if ($("inventory-filter").value) query.set("status", $("inventory-filter").value);
-    if ($("inventory-type-filter").value) query.set("asset_type", $("inventory-type-filter").value);
+    const query = inventoryFilterQuery(); query.set("limit", "100");
     state.inventoryExporting = true; renderInventory();
     const parts = []; let previous = null, size = 0, count = 0, complete = false;
     try {
       for (let page = 0; page < 1000; page++) {
         const data = await api("/api/inventory/assets/export?" + query);
         if (!current()) return;
-        if (typeof data.csv !== "string" || !Number.isInteger(data.exported) || data.exported < 0) throw new Error("Il server ha restituito un’esportazione non valida.");
+        if (typeof data.csv !== "string" || !Number.isInteger(data.exported) || data.exported < 0) throw new Error(t("Il server ha restituito un’esportazione non valida."));
         const newline = data.csv.indexOf("\n");
-        if (newline < 0) throw new Error("L’esportazione non contiene le intestazioni CSV.");
+        if (newline < 0) throw new Error(t("L’esportazione non contiene le intestazioni CSV."));
         const chunk = page ? data.csv.slice(newline + 1) : data.csv;
         size += new TextEncoder().encode(chunk).length;
-        if (size > 20 * 1024 * 1024) throw new Error("L’esportazione supera 20 MiB. Restringi i filtri e riprova.");
+        if (size > 20 * 1024 * 1024) throw new Error(t("L’esportazione supera 20 MiB. Restringi i filtri e riprova."));
         parts.push(chunk); count += data.exported;
         if (data.next_after_id === null) { complete = true; break; }
-        if (!Number.isSafeInteger(data.next_after_id) || data.next_after_id < 1 || previous !== null && data.next_after_id >= previous) throw new Error("Il server ha restituito una pagina CSV non valida.");
+        if (!Number.isSafeInteger(data.next_after_id) || data.next_after_id < 1 || previous !== null && data.next_after_id >= previous) throw new Error(t("Il server ha restituito una pagina CSV non valida."));
         previous = data.next_after_id; query.set("after_id", String(previous));
       }
-      if (!complete) throw new Error("Troppi asset da esportare insieme. Restringi i filtri e riprova.");
+      if (!complete) throw new Error(t("Troppi asset da esportare insieme. Restringi i filtri e riprova."));
       if (!current()) return;
       inventoryDownload("\ufeff" + parts.join(""), "inventario-" + localDate(new Date()) + ".csv");
-      showNotice(`Esportazione completata: ${count} asset per i filtri selezionati.`);
+      showNotice(t("Esportazione completata: {0} asset per i filtri selezionati.", [count]));
     } catch (error) { if (current()) showNotice(inventoryMessage(error), true); }
     finally { if (current()) { state.inventoryExporting = false; renderInventory(); } }
   }
@@ -2631,7 +3706,7 @@
   function renderInventoryImport() {
     const busy = state.inventoryImportBusy;
     ["inventory-import-file", "inventory-import-mode", "inventory-import-template", "inventory-import-preview-button"].forEach((id) => { $(id).disabled = busy; });
-    $("inventory-import-preview-button").textContent = busy ? "Operazione in corso…" : "Controlla file";
+    $("inventory-import-preview-button").textContent = busy ? t("Operazione in corso…") : t("Controlla file");
     $("inventory-import-commit").disabled = busy || !state.inventoryImportPlan?.can_commit;
     $("inventory-import-dialog").setAttribute("aria-busy", String(busy));
     if (busy) busyDialogs.add("inventory-import-dialog"); else busyDialogs.delete("inventory-import-dialog");
@@ -2653,7 +3728,7 @@
     event.preventDefault();
     if (!isInventoryManager() || state.inventoryImportBusy || !$("inventory-import-form").reportValidity()) return;
     const file = $("inventory-import-file").files[0];
-    if (!file || file.size > 256 * 1024 || !file.size) { dialogError("inventory-import-error", new Error("Scegli un CSV non vuoto di al massimo 256 KiB.")); return; }
+    if (!file || file.size > 256 * 1024 || !file.size) { dialogError("inventory-import-error", new Error(t("Scegli un CSV non vuoto di al massimo 256 KiB."))); return; }
     invalidateInventoryImport();
     const request = ++state.inventoryImportRequest, epoch = state.inventoryEpoch;
     const current = () => request === state.inventoryImportRequest && epoch === state.inventoryEpoch && isInventoryManager() && $("inventory-import-dialog").open;
@@ -2662,16 +3737,16 @@
     try {
       let csv;
       try { csv = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer()); }
-      catch { throw new Error("Il file deve essere un CSV con codifica UTF-8."); }
+      catch { throw new Error(t("Il file deve essere un CSV con codifica UTF-8.")); }
       if (!current()) return;
       const data = await post("/api/inventory/import/preview", { csv, mode });
       if (!current()) return;
-      if (!Array.isArray(data.items) || !data.summary || typeof data.can_commit !== "boolean" || data.can_commit && !/^[a-f0-9]{32}$/i.test(data.preview_id || "")) throw new Error("Il server ha restituito un’anteprima non valida.");
+      if (!Array.isArray(data.items) || !data.summary || typeof data.can_commit !== "boolean" || data.can_commit && !/^[a-f0-9]{32}$/i.test(data.preview_id || "")) throw new Error(t("Il server ha restituito un’anteprima non valida."));
       state.inventoryImportPlan = data;
-      $("inventory-import-summary").textContent = `${data.summary.total} righe · ${data.summary.create} da creare · ${data.summary.update} da aggiornare · ${data.summary.errors} con errori.`;
+      $("inventory-import-summary").textContent = t("{0} {1} · {2} da creare · {3} da aggiornare · {4} con errori.", [data.summary.total, data.summary.total === 1 ? t("riga") : t("righe"), data.summary.create, data.summary.update, data.summary.errors]);
       for (const row of data.items) {
         const tr = node("tr");
-        tr.append(node("td", "", row.row), node("td", "", [row.asset_tag, row.name].filter(Boolean).join(" · ")), node("td", "", { create: "Crea", update: "Aggiorna", error: "Errore" }[row.action] || row.action), node("td", "", row.errors?.length ? row.errors.join(" · ") : "Pronto"));
+        tr.append(node("td", "", row.row), node("td", "", [row.asset_tag, row.name].filter(Boolean).join(" · ")), node("td", "", { create: t("Crea"), update: t("Aggiorna"), error: t("Errore") }[row.action] || row.action), node("td", "", row.errors?.length ? row.errors.map((message) => t(message)).join(" · ") : t("Pronto")));
         $("inventory-import-rows").append(tr);
       }
       $("inventory-import-preview").hidden = false;
@@ -2691,12 +3766,12 @@
       state.inventoryImportBusy = false; renderInventoryImport();
       $("inventory-import-dialog").close(); state.auditReady = false;
       inventoryAssetCache.clear();
-      showNotice(`Importazione completata: ${plan.summary.create} asset creati e ${plan.summary.update} aggiornati.`);
+      showNotice(t("Importazione completata: {0} asset creati e {1} aggiornati.", [plan.summary.create, plan.summary.update]));
       refreshInventory();
     } catch (error) {
       if (!current()) return;
       state.inventoryImportPlan = null;
-      dialogError("inventory-import-error", new Error(inventoryMessage(error) + " Controlla nuovamente il file prima di confermare."));
+      dialogError("inventory-import-error", new Error(inventoryMessage(error) + t(" Controlla nuovamente il file prima di confermare.")));
     } finally { if (current()) { state.inventoryImportBusy = false; renderInventoryImport(); } }
   }
 
@@ -2706,17 +3781,17 @@
   $("inventory-import-commit").addEventListener("click", commitInventoryImport);
   ["inventory-import-file", "inventory-import-mode"].forEach((id) => $(id).addEventListener("change", invalidateInventoryImport));
   $("inventory-import-dialog").addEventListener("close", invalidateInventoryImport);
-  $("inventory-import-template").addEventListener("click", () => inventoryDownload('\ufeff"asset_tag","name","asset_type","details"\r\n"IT-0001","Computer ufficio","it_device","{}"\r\n', "modello-inventario.csv"));
+  $("inventory-import-template").addEventListener("click", () => inventoryDownload("﻿\"asset_tag\",\"name\",\"asset_type\",\"details\"\r\n\"IT-0001\",\"Computer ufficio\",\"it_device\",\"{}\"\r\n", "modello-inventario.csv"));
 
   function inventoryDatesAndAssignment() {
     const assigned = $("inventory-status").value === "assigned";
     $("inventory-assignee").required = assigned;
     $("inventory-assignee-required").hidden = !assigned;
-    $("inventory-assignee").setCustomValidity(assigned && !$("inventory-assignee").value.trim() ? "Indica la persona o il reparto a cui è assegnato il bene." : "");
+    $("inventory-assignee").setCustomValidity(assigned && !$("inventory-assignee").value.trim() ? t("Indica la persona o il reparto a cui è assegnato il bene.") : "");
     const purchase = $("inventory-purchase_date").value;
     const warranty = $("inventory-warranty_until").value;
     $("inventory-warranty_until").min = validDate(purchase) ? purchase : "0001-01-01";
-    $("inventory-warranty_until").setCustomValidity(purchase && warranty && warranty < purchase ? "La garanzia deve terminare alla data di acquisto o dopo." : "");
+    $("inventory-warranty_until").setCustomValidity(purchase && warranty && warranty < purchase ? t("La garanzia deve terminare alla data di acquisto o dopo.") : "");
   }
 
   function fillInventoryEditor(asset = null) {
@@ -2728,14 +3803,20 @@
     softwarePicker.request++; softwarePicker.items = []; softwarePicker.cursor = null; softwarePicker.loading = false; softwarePicker.retryMore = false; softwarePicker.error.hidden = true;
     softwarePicker.setSelected(asset?.details?.software_id || null);
     inventoryShowTypeFields(); inventoryRemember(asset);
+    const context = asset?.context, structuredUser = Boolean(context?.assignee_user_id || asset?.custody), structuredPlace = Boolean(context?.site_id || context?.department_id || context?.location_id);
+    $("inventory-assignee").readOnly = structuredUser;
+    $("inventory-location").readOnly = structuredPlace || Boolean(asset?.custody);
+    $("inventory-status").disabled = structuredUser;
+    $("inventory-asset_type").disabled = structuredUser || structuredPlace;
+    $("inventory-editor-context-help").hidden = !structuredUser && !structuredPlace;
     state.inventoryEditingAsset = asset;
     state.inventoryConflict = false;
     $("inventory-editor-error").hidden = true;
     $("inventory-editor-reload").hidden = true;
     $("inventory-fields").disabled = false;
     $("inventory-save").disabled = false;
-    $("inventory-dialog-title").textContent = asset ? "Modifica asset" : "Nuovo asset";
-    $("inventory-save").textContent = asset ? "Salva modifiche" : "Crea asset";
+    $("inventory-dialog-title").textContent = asset ? t("Modifica asset") : t("Nuovo asset");
+    $("inventory-save").textContent = asset ? t("Salva modifiche") : t("Crea asset");
     inventoryDatesAndAssignment();
   }
 
@@ -2755,7 +3836,7 @@
     const request = ++state.inventoryEditorRequest;
     const epoch = state.inventoryEpoch;
     const current = () => request === state.inventoryEditorRequest && epoch === state.inventoryEpoch && $("inventory-dialog").open && isInventoryManager();
-    $("inventory-dialog-title").textContent = "Modifica asset";
+    $("inventory-dialog-title").textContent = t("Modifica asset");
     $("inventory-editor-loading").hidden = false;
     $("inventory-editor-error").hidden = true;
     $("inventory-editor-reload").hidden = true;
@@ -2769,7 +3850,7 @@
     } catch (error) {
       if (!current()) return;
       dialogError("inventory-editor-error", new Error(inventoryMessage(error)));
-      $("inventory-editor-reload").textContent = "Riprova a caricare la scheda aggiornata";
+      $("inventory-editor-reload").textContent = t("Riprova a caricare la scheda aggiornata");
       $("inventory-editor-reload").hidden = false;
     } finally {
       if (current()) $("inventory-editor-loading").hidden = true;
@@ -2781,17 +3862,21 @@
     // SQLite timestamps without a suffix are UTC.
     const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(" ", "T") + "Z" : value;
     const date = new Date(normalized);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString("it-IT");
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale);
   }
 
   function inventoryDetails(asset, timestamps = true) {
     const details = node("dl", "inventory-detail-grid");
-    const fields = [["Codice inventario", asset.asset_tag], ["Nome", asset.name], ["Tipologia", inventoryTypes[inventoryAssetType(asset)] || asset.asset_type], ["Stato", inventoryStates[asset.status] || asset.status], ["Categoria", asset.category], ["Numero di serie", asset.serial_number], ["Produttore", asset.manufacturer], ["Modello", asset.model], ["Assegnato a", asset.assignee], ["Ubicazione", asset.location], ["Acquistato il", asset.purchase_date && validDate(asset.purchase_date) ? dateLabel(asset.purchase_date) : asset.purchase_date], ["Garanzia fino al", asset.warranty_until && validDate(asset.warranty_until) ? dateLabel(asset.warranty_until) : asset.warranty_until], ["Versione", asset.version]];
+    const fields = [[t("Codice inventario"), asset.asset_tag], [t("Nome"), asset.name], [t("Tipologia"), inventoryTypes[inventoryAssetType(asset)] || asset.asset_type], [t("Stato"), inventoryStates[asset.status] || asset.status], [t("Categoria"), asset.category], [t("Numero di serie"), asset.serial_number], [t("Produttore"), asset.manufacturer], [t("Modello"), asset.model], [t("Assegnato a"), asset.assignee], [t("Ubicazione"), asset.location], [t("Acquistato il"), asset.purchase_date && validDate(asset.purchase_date) ? dateLabel(asset.purchase_date) : asset.purchase_date], [t("Garanzia fino al"), asset.warranty_until && validDate(asset.warranty_until) ? dateLabel(asset.warranty_until) : asset.warranty_until], [t("Versione"), asset.version]];
+    if (asset.context) {
+      fields.push([t("Utente assegnatario"), asset.context.assignee_user_name], [t("Sede censita"), asset.context.site_name], [t("Reparto censito"), asset.context.department_name], [t("Ubicazione censita"), asset.context.location_name]);
+    }
+    if (asset.custody) fields.push([t("Consegna aperta dal"), dateLabel(asset.custody.checkout_on)], [t("Restituzione prevista"), asset.custody.due_on ? dateLabel(asset.custody.due_on) : ""]);
     fields.push(...inventoryTypedDisplay(asset));
-    if (timestamps) fields.push(["Creato il", inventoryTime(asset.created_at)], ["Aggiornato il", inventoryTime(asset.updated_at)]);
-    fields.push(["Note", asset.notes]);
+    if (timestamps) fields.push([t("Creato il"), inventoryTime(asset.created_at)], [t("Aggiornato il"), inventoryTime(asset.updated_at)]);
+    fields.push([t("Note"), asset.notes]);
     fields.forEach(([label, value]) => {
-      const item = node("div", label === "Note" ? "inventory-detail-wide" : "");
+      const item = node("div", label === t("Note") ? "inventory-detail-wide" : "");
       item.append(node("dt", "", label), node("dd", "", value === null || value === undefined || value === "" ? "—" : String(value)));
       details.append(item);
     });
@@ -2799,20 +3884,26 @@
   }
 
   function openInventoryDetail(id) {
-    if (state.inventoryRelationBusy) return;
+    if (state.inventoryRelationBusy || state.inventoryOperationBusy || state.inventoryContextBusy || busyDialogs.has("inventory-detail-dialog")) return;
     state.inventoryDetailId = id;
     state.inventoryDetailAsset = null;
     resetInventoryRelations();
+    resetInventoryAssetSubjects();
     state.inventoryDetailRequest++;
     state.inventoryHistoryRequest++;
     state.inventoryHistoryReady = false;
     state.inventoryHistoryLoading = false;
     state.inventoryHistoryCursor = null;
-    $("inventory-detail-title").textContent = "Scheda asset";
+    $("inventory-detail-title").textContent = t("Scheda asset");
     $("inventory-detail-data").replaceChildren();
+    state.inventoryCustodyRequest++; state.inventoryVerificationsRequest++;
+    state.inventoryCustodyItems = []; state.inventoryVerificationItems = []; state.inventoryCustodyCursor = null; state.inventoryVerificationsCursor = null;
+    $("inventory-custody-history").replaceChildren(); $("inventory-verifications").replaceChildren(); $("inventory-custody-current").replaceChildren();
     $("inventory-history").replaceChildren();
     $("inventory-detail-content").hidden = true;
     $("inventory-detail-edit").hidden = true;
+    $("inventory-tickets").hidden = true;
+    $("inventory-new-ticket").hidden = true;
     if (!$("inventory-detail-dialog").open) $("inventory-detail-dialog").showModal();
     loadInventoryDetail();
   }
@@ -2834,9 +3925,17 @@
       $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset));
       $("inventory-detail-content").hidden = false;
       $("inventory-detail-edit").hidden = !isInventoryManager();
+      $("inventory-tickets").hidden = !state.session?.tickets?.configured;
+      $("inventory-new-ticket").hidden = !state.session?.tickets?.configured;
+      if (state.session?.tickets?.configured) {
+        $("inventory-tickets").href = ticketAppURL("asset", id);
+        $("inventory-new-ticket").href = ticketAppURL("asset", id, true);
+      }
       renderInventoryRelationOptions();
+      renderInventoryOperationalActions();
       loadInventoryRelations();
       loadInventoryHistory();
+      loadInventoryCustody(); loadInventoryVerifications(); loadInventoryAssetSubjects();
     } catch (error) {
       if (!current()) return;
       dialogError("inventory-detail-error", new Error(inventoryMessage(error)));
@@ -2868,15 +3967,33 @@
       if (!current()) return;
       data.items.forEach((entry) => {
         const item = node("li");
-        item.append(node("h4", "", (entry.action === "created" ? "Creazione" : "Aggiornamento") + " · versione " + entry.version), node("p", "inventory-history-meta", inventoryTime(entry.created_at) + " · utente #" + entry.actor_id));
+        const operation = entry.change?.operation;
+        const title = { context_updated: t("Assegnazione e collocazione"), checked_out: t("Consegna"), checked_in: t("Restituzione"), verified: t("Verifica fisica"), relation_added: t("Relazione aggiunta"), relation_removed: t("Relazione rimossa"), subject_added: t("Relazione aggiunta"), subject_removed: t("Relazione rimossa") }[operation] || (entry.action === "created" ? t("Creazione") : t("Aggiornamento"));
+        item.append(node("h4", "", title + t(" · versione ") + entry.version), node("p", "inventory-history-meta", inventoryTime(entry.created_at) + t(" · utente #") + entry.actor_id));
+        if (entry.change?.link?.subject_kind) {
+          const link = entry.change.link, subject = link.subject_snapshot || link.subject;
+          if (subject) item.append(node("p", "inventory-history-summary", inventorySubjectLabel(link.subject_kind, subject) + " · " + (inventorySubjectRoles[link.role] || link.role) + (link.notes ? " · " + link.notes : "")));
+        }
         if (entry.change?.relation) {
-          const operation = entry.change.operation === "relation_removed" ? "Relazione rimossa" : "Relazione aggiunta";
+          const operation = entry.change.operation === "relation_removed" ? t("Relazione rimossa") : t("Relazione aggiunta");
           item.append(node("p", "inventory-history-summary", operation + " · " + inventoryRelationSummary(entry.change.relation)));
+        }
+        if (entry.change?.context) {
+          const context = entry.change.context;
+          item.append(node("p", "inventory-history-summary", [context.assignee_user_name || t("Nessun utente assegnato"), context.site_name, context.department_name, context.location_name].filter(Boolean).join(" · ")));
+        }
+        if (entry.change?.custody) {
+          const custody = entry.change.custody;
+          item.append(node("p", "inventory-history-summary", operation === "checked_in" ? t("Restituito da ") + custody.user_name + " · " + dateLabel(custody.returned_on) + " · " + (inventoryConditions[custody.condition_in] || custody.condition_in) : custody.user_name + " · " + dateLabel(custody.checkout_on) + (custody.due_on ? t(" · restituzione prevista ") + dateLabel(custody.due_on) : "")));
+        }
+        if (entry.change?.verification) {
+          const verification = entry.change.verification;
+          item.append(node("p", "inventory-history-summary", dateLabel(verification.verified_on) + " · " + (inventoryConditions[verification.condition] || verification.condition) + (verification.observed_location_name ? " · " + verification.observed_location_name : "") + (verification.location_matches === false ? t(" · ubicazione diversa da quella prevista") : "")));
         }
         if (entry.snapshot) {
           item.append(node("p", "inventory-history-summary", (inventoryStates[entry.snapshot.status] || entry.snapshot.status) + (entry.snapshot.assignee ? " · " + entry.snapshot.assignee : "") + (entry.snapshot.location ? " · " + entry.snapshot.location : "")));
           const snapshot = node("details");
-          snapshot.append(node("summary", "", "Visualizza i dati di questa versione"), inventoryDetails(entry.snapshot, false));
+          snapshot.append(node("summary", "", t("Visualizza i dati di questa versione")), inventoryDetails(entry.snapshot, false));
           item.append(snapshot);
         }
         $("inventory-history").append(item);
@@ -2909,12 +4026,12 @@
   function inventoryRelationSummary(relation) {
     const source = relation.source || relation.source_asset || inventoryAssetCache.get(String(relation.source_id));
     const target = relation.target || relation.target_asset || inventoryAssetCache.get(String(relation.target_id));
-    const origin = source ? inventoryAssetLabel(source) : "Asset #" + relation.source_id;
-    const destination = target ? inventoryAssetLabel(target) : relation.target_id ? "Asset #" + relation.target_id : relation.assignee || "Destinatario non indicato";
+    const origin = source ? inventoryAssetLabel(source) : t("Asset #") + relation.source_id;
+    const destination = target ? inventoryAssetLabel(target) : relation.target_id ? t("Asset #") + relation.target_id : relation.assignee || t("Destinatario non indicato");
     let summary = (inventoryRelationNames[relation.relation_type] || relation.relation_type) + " · " + origin + " → " + destination;
     if (relation.relation_type === "licensed_to") summary += " · " + relation.quantity + (Number(relation.quantity) === 1 ? " posto" : " posti");
-    if (relation.installed_version) summary += " · versione " + relation.installed_version;
-    if (relation.source_port || relation.target_port) summary += " · porte " + (relation.source_port || "—") + " → " + (relation.target_port || "—");
+    if (relation.installed_version) summary += t(" · versione ") + relation.installed_version;
+    if (relation.source_port || relation.target_port) summary += t(" · porte ") + (relation.source_port || "—") + " → " + (relation.target_port || "—");
     return summary;
   }
 
@@ -2930,7 +4047,7 @@
     if (allowed.includes(previous)) select.value = previous;
     $("inventory-relation-new").hidden = !isInventoryManager() || !allowed.length;
     $("inventory-relation-new").disabled = state.inventoryRelationBusy;
-    $("inventory-relation-help").textContent = inventoryAssetType(asset) === "license" ? "Registra i posti assegnati a dispositivi o persone secondo il modello della licenza. Le assegnazioni sono inserite manualmente." : "Consulta software installato, collegamenti di rete e licenze assegnate a questo bene.";
+    $("inventory-relation-help").textContent = inventoryAssetType(asset) === "license" ? t("Registra i posti assegnati a dispositivi o persone secondo il modello della licenza. Le assegnazioni sono inserite manualmente.") : t("Consulta software installato, collegamenti di rete e licenze assegnate a questo bene.");
     if (!allowed.length) $("inventory-relation-form").hidden = true;
     inventoryRelationControls();
   }
@@ -2967,18 +4084,18 @@
       const source = relation.source || relation.source_asset, target = relation.target || relation.target_asset;
       if (source) inventoryRemember(source); if (target) inventoryRemember(target);
       const counterpart = outgoing ? target : source;
-      heading.append(node("strong", "", inventoryRelationNames[relation.relation_type] || relation.relation_type), node("span", "inventory-cell-secondary", outgoing ? "In uscita" : "In entrata"));
+      heading.append(node("strong", "", inventoryRelationNames[relation.relation_type] || relation.relation_type), node("span", "inventory-cell-secondary", outgoing ? t("In uscita") : t("In entrata")));
       item.append(heading, node("p", "inventory-relation-summary", inventoryRelationSummary(relation)));
       if (relation.notes) item.append(node("p", "inventory-history-summary", relation.notes));
       const actions = node("div", "inventory-row-actions");
-      if (counterpart) { const open = action("Apri scheda collegata", "Apri " + counterpart.name, () => { if (!state.inventoryRelationBusy) openInventoryDetail(counterpart.id); }); open.disabled = state.inventoryRelationBusy; actions.append(open); }
+      if (counterpart) { const open = action(t("Apri scheda collegata"), t("Apri ") + counterpart.name, () => { if (!state.inventoryRelationBusy) openInventoryDetail(counterpart.id); }); open.disabled = state.inventoryRelationBusy; actions.append(open); }
       if (outgoing && isInventoryManager()) {
-        const remove = action("Rimuovi relazione", "Rimuovi " + inventoryRelationNames[relation.relation_type], () => {
+        const remove = action(t("Rimuovi relazione"), t("Rimuovi ") + inventoryRelationNames[relation.relation_type], () => {
           if (state.inventoryRelationBusy || state.inventoryRelationConflict) return;
           const confirmation = node("div", "inventory-relation-confirm");
-          confirmation.append(node("p", "", "Rimuovere questa relazione? La rimozione resta nello storico. Potrai registrare una nuova relazione in seguito."));
-          const cancel = node("button", "button button-secondary", "Mantieni relazione"); cancel.type = "button"; cancel.addEventListener("click", () => { confirmation.remove(); remove.hidden = false; });
-          const confirm = node("button", "button button-danger", "Conferma rimozione"); confirm.type = "button"; confirm.addEventListener("click", () => mutateInventoryRelation(null, relation));
+          confirmation.append(node("p", "", t("Rimuovere questa relazione? La rimozione resta nello storico. Potrai registrare una nuova relazione in seguito.")));
+          const cancel = node("button", "button button-secondary", t("Mantieni relazione")); cancel.type = "button"; cancel.addEventListener("click", () => { confirmation.remove(); remove.hidden = false; });
+          const confirm = node("button", "button button-danger", t("Conferma rimozione")); confirm.type = "button"; confirm.addEventListener("click", () => mutateInventoryRelation(null, relation));
           confirmation.append(cancel, confirm); item.append(confirmation); remove.hidden = true; confirm.focus();
         }, true);
         remove.disabled = state.inventoryRelationBusy || state.inventoryRelationConflict; actions.append(remove);
@@ -3021,14 +4138,14 @@
       $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset)); $("inventory-detail-title").textContent = data.asset.name;
       $("inventory-relation-reload").hidden = true; $("inventory-relation-error").hidden = true; $("inventory-relations-error").hidden = true;
       renderInventoryRelationOptions(); loadInventoryRelations(); loadInventoryHistory();
-      showNotice("Scheda aggiornata. La relazione non è stata salvata: controlla i dati e riprova.");
+      showNotice(t("Scheda aggiornata. La relazione non è stata salvata: controlla i dati e riprova."));
     } catch (error) { if (current()) dialogError("inventory-relations-error", new Error(inventoryMessage(error))); }
     finally { if (current()) $("inventory-relation-reload").disabled = false; }
   }
 
   async function mutateInventoryRelation(fields, removing = null) {
     const source = state.inventoryDetailAsset;
-    if (!source || state.inventoryRelationBusy || state.inventoryRelationConflict || !isInventoryManager()) return;
+    if (!source || state.inventoryRelationBusy || state.inventoryRelationConflict || !isInventoryManager() || busyDialogs.has("inventory-detail-dialog")) return;
     const id = source.id, epoch = state.inventoryEpoch, request = state.inventoryDetailRequest;
     const current = () => epoch === state.inventoryEpoch && request === state.inventoryDetailRequest && String(id) === String(state.inventoryDetailId) && $("inventory-detail-dialog").open && isInventoryManager();
     state.inventoryRelationBusy = true; busyDialogs.add("inventory-detail-dialog");
@@ -3042,14 +4159,14 @@
       $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset));
       $("inventory-relation-form").hidden = true; $("inventory-relation-form").reset();
       const picker = inventoryPickers.get("inventory-relation-picker"); picker.setSelected(null);
-      showNotice(removing ? "Relazione rimossa e conservata nello storico." : "Relazione aggiunta all’inventario.");
+      showNotice(removing ? t("Relazione rimossa e conservata nello storico.") : t("Relazione aggiunta all’inventario."));
       loadInventoryRelations(); loadInventoryHistory(); refreshInventory();
     } catch (error) {
       if (!current()) return;
       const errorId = removing ? "inventory-relations-error" : "inventory-relation-error";
       if (error.status === 409) {
         state.inventoryRelationConflict = true;
-        dialogError(errorId, new Error(inventoryMessage(error) + " I dati inseriti restano disponibili. Ricarica la scheda prima di riprovare."));
+        dialogError(errorId, new Error(inventoryMessage(error) + t(" I dati inseriti restano disponibili. Ricarica la scheda prima di riprovare.")));
         $("inventory-relation-reload").hidden = false;
       } else dialogError(errorId, new Error(inventoryMessage(error)));
     } finally {
@@ -3060,7 +4177,7 @@
   buildInventoryTypedFields();
   inventoryShowTypeFields();
   $("inventory-relation-new").addEventListener("click", () => {
-    if (!isInventoryManager() || state.inventoryRelationBusy || !state.inventoryDetailAsset) return;
+    if (!isInventoryManager() || state.inventoryRelationBusy || !state.inventoryDetailAsset || busyDialogs.has("inventory-detail-dialog")) return;
     $("inventory-relation-form").hidden = false; inventoryRelationControls();
     inventoryPickers.get("inventory-relation-picker").load(); $("inventory-relation-type").focus();
   });
@@ -3073,9 +4190,9 @@
   $("inventory-relation-form").addEventListener("submit", (event) => {
     event.preventDefault(); if (!isInventoryManager() || state.inventoryRelationBusy || state.inventoryRelationConflict) return;
     const type = $("inventory-relation-type").value, picker = inventoryPickers.get("inventory-relation-picker"), user = !$("inventory-relation-assignee").disabled;
-    picker.choice.setCustomValidity(!user && !picker.selected ? "Seleziona un dispositivo destinatario." : "");
+    picker.choice.setCustomValidity(!user && !picker.selected ? t("Seleziona un dispositivo destinatario.") : "");
     const inputs = ["assignee", "installed-version", "source-port", "target-port", "notes"];
-    inputs.forEach((name) => { const input = $("inventory-relation-" + name); if (!input.disabled) { input.value = input.value.trim(); input.setCustomValidity(input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength ? "Accorcia il contenuto di questo campo." : ""); } });
+    inputs.forEach((name) => { const input = $("inventory-relation-" + name); if (!input.disabled) { input.value = input.value.trim(); input.setCustomValidity(input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength ? t("Accorcia il contenuto di questo campo.") : ""); } });
     if (!$("inventory-relation-form").reportValidity()) return;
     const fields = { relation_type: type, notes: $("inventory-relation-notes").value };
     if (user) fields.assignee = $("inventory-relation-assignee").value; else fields.target_id = String(picker.selected.id);
@@ -3092,7 +4209,7 @@
     inventoryDatesAndAssignment();
     inventoryFields.forEach((field) => {
       const input = $("inventory-" + field);
-      if (input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength) input.setCustomValidity("Il contenuto è troppo lungo. Accorcialo: i caratteri accentati e i simboli possono occupare più spazio.");
+      if (input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength) input.setCustomValidity(t("Il contenuto è troppo lungo. Accorcialo: i caratteri accentati e i simboli possono occupare più spazio."));
     });
     const typedDetails = inventoryTypedValues();
     if (!$("inventory-form").reportValidity()) return;
@@ -3101,7 +4218,7 @@
     fields.asset_type = $("inventory-asset_type").value;
     fields.details = JSON.stringify(typedDetails);
     for (const field of ["purchase_date", "warranty_until"]) {
-      if (fields[field] && !validDate(fields[field])) { dialogError("inventory-editor-error", new Error("Inserisci date valide.")); return; }
+      if (fields[field] && !validDate(fields[field])) { dialogError("inventory-editor-error", new Error(t("Inserisci date valide."))); return; }
     }
     const editing = state.inventoryEditingAsset;
     if (state.inventoryEditingId && !editing) return;
@@ -3110,25 +4227,25 @@
     const request = state.inventoryEditorRequest;
     const current = () => epoch === state.inventoryEpoch && request === state.inventoryEditorRequest && isInventoryManager();
     $("inventory-editor-error").hidden = true;
-    dialogBusy("inventory-dialog", true, "inventory-save", editing ? "Salva modifiche" : "Crea asset");
+    dialogBusy("inventory-dialog", true, "inventory-save", editing ? t("Salva modifiche") : t("Crea asset"));
     try {
       await post("/api/inventory/assets" + (editing ? "/" + encodeURIComponent(editing.id) : ""), fields);
       if (!current()) return;
       $("inventory-dialog").close();
-      showNotice(editing ? "Scheda asset aggiornata. La versione precedente resta nello storico." : "Asset aggiunto all’inventario.");
+      showNotice(editing ? t("Scheda asset aggiornata. La versione precedente resta nello storico.") : t("Asset aggiunto all’inventario."));
       refreshInventory();
     } catch (error) {
       if (!current() || !$("inventory-dialog").open) return;
-      if (error.status === 409 && editing && !/già presente/i.test(error.message)) {
+      if (error.status === 409 && editing && !/già presente/i.test(error.sourceMessage || error.message)) {
         state.inventoryConflict = true;
-        dialogError("inventory-editor-error", new Error(inventoryMessage(error) + " Le tue modifiche sono ancora visibili. Copiale se vuoi conservarle, poi ricarica la versione aggiornata prima di salvare."));
-        $("inventory-editor-reload").textContent = "Ricarica versione aggiornata e scarta le modifiche non salvate";
+        dialogError("inventory-editor-error", new Error(inventoryMessage(error) + t(" Le tue modifiche sono ancora visibili. Copiale se vuoi conservarle, poi ricarica la versione aggiornata prima di salvare.")));
+        $("inventory-editor-reload").textContent = t("Ricarica versione aggiornata e scarta le modifiche non salvate");
         $("inventory-editor-reload").hidden = false;
       } else dialogError("inventory-editor-error", new Error(inventoryMessage(error)));
     } finally {
       // Closing after a successful save invalidates editor requests; release its lock.
       if (epoch === state.inventoryEpoch && (request === state.inventoryEditorRequest || !$("inventory-dialog").open)) {
-        dialogBusy("inventory-dialog", false, "inventory-save", editing ? "Salva modifiche" : "Crea asset");
+        dialogBusy("inventory-dialog", false, "inventory-save", editing ? t("Salva modifiche") : t("Crea asset"));
         $("inventory-save").disabled = state.inventoryConflict || !isInventoryManager();
       }
     }
@@ -3143,6 +4260,7 @@
     $("inventory-search").setCustomValidity("");
     // Invalidate immediately, before the debounce, so old results cannot win.
     state.inventoryRequest++;
+    state.inventoryDashboardRequest++; state.inventoryDashboard = null; state.inventoryDashboardLoading = false; state.inventoryDashboardError = "";
     state.inventoryLoading = true;
     state.inventoryReady = false;
     state.inventoryItems = [];
@@ -3153,8 +4271,15 @@
   });
   $("inventory-filter").addEventListener("change", () => refreshInventory());
   $("inventory-type-filter").addEventListener("change", () => refreshInventory());
+  $("inventory-mine").addEventListener("change", () => refreshInventory());
+  $("inventory-site-filter").addEventListener("change", () => { renderInventoryPlaceFilters(); refreshInventory(); });
+  $("inventory-department-filter").addEventListener("change", () => refreshInventory());
+  $("inventory-verification-days").addEventListener("change", () => refreshInventory());
+  $("inventory-attention-clear").addEventListener("click", () => { state.inventoryAttention = ""; refreshInventory(); });
+  $("inventory-dashboard-retry").addEventListener("click", () => refreshInventoryDashboard());
+  $("inventory-place-filter-retry").addEventListener("click", () => refreshInventoryPlaceFilters());
   $("inventory-asset_type").addEventListener("change", () => { inventoryShowTypeFields(); const picker = inventoryPickers.get("inventory-software-picker"); if ($("inventory-asset_type").value === "license" && !picker.items.length && !picker.loading) picker.load(); });
-  $("inventory-clear").addEventListener("click", () => { $("inventory-search-form").reset(); $("inventory-search").setCustomValidity(""); refreshInventory(); $("inventory-search").focus(); });
+  $("inventory-clear").addEventListener("click", () => { inventorySubjectFilter = null; $("inventory-search-form").reset(); $("inventory-mine").checked = false; $("inventory-site-filter").value = ""; $("inventory-department-filter").value = ""; state.inventoryAttention = ""; $("inventory-search").setCustomValidity(""); refreshInventory(); $("inventory-search").focus(); });
   inventoryFields.forEach((field) => $("inventory-" + field).addEventListener("input", () => { $("inventory-" + field).setCustomValidity(""); inventoryDatesAndAssignment(); }));
   $("inventory-editor-reload").addEventListener("click", loadInventoryEditor);
   $("inventory-dialog").addEventListener("close", () => {
@@ -3169,13 +4294,16 @@
   $("inventory-history-more").addEventListener("click", () => loadInventoryHistory(true));
   $("inventory-detail-edit").addEventListener("click", () => {
     const id = state.inventoryDetailId;
-    if (!isInventoryManager() || !id) return;
+    if (!isInventoryManager() || !id || busyDialogs.has("inventory-detail-dialog")) return;
     $("inventory-detail-dialog").close();
     openInventoryEditor(id);
   });
   $("inventory-detail-dialog").addEventListener("close", () => {
     state.inventoryDetailRequest++;
     state.inventoryHistoryRequest++;
+    resetInventoryAssetSubjects();
+    state.inventoryCustodyRequest++; state.inventoryVerificationsRequest++;
+    state.inventoryCustodyLoading = false; state.inventoryVerificationsLoading = false;
     state.inventoryDetailId = null;
     state.inventoryDetailAsset = null;
     state.inventoryHistoryLoading = false;
@@ -3220,7 +4348,7 @@
 
   function renderWorkJobs() {
     const selected = state.workJobId;
-    const placeholder = node("option", "", state.jobsReady ? state.jobs.length ? "Seleziona una commessa" : "Nessuna commessa abilitata" : "Caricamento delle commesse…");
+    const placeholder = node("option", "", state.jobsReady ? state.jobs.length ? t("Seleziona una commessa") : t("Nessuna commessa abilitata") : t("Caricamento delle commesse…"));
     placeholder.value = "";
     $("work-job").replaceChildren(placeholder);
     for (const job of state.jobs) {
@@ -3230,12 +4358,12 @@
     }
     if (selected && state.jobsReady && !state.jobs.some((job) => String(job.id) === selected)) {
       resetWorkBoard(true);
-      if (state.activeTab === "work-board") showNotice("La commessa selezionata non è più disponibile. Scegli una commessa abilitata.", true);
+      if (state.activeTab === "work-board") showNotice(t("La commessa selezionata non è più disponibile. Scegli una commessa abilitata."), true);
     }
     $("work-job").value = state.workJobId;
     $("work-job").disabled = !state.jobsReady || state.workBusy;
     $("work-refresh").disabled = !state.jobsReady || state.workBusy || state.workLoading;
-    $("work-no-job-description").textContent = state.jobsReady && !state.jobs.length ? "Un gestore deve abilitarti a una commessa per consultarne il lavoro." : "Seleziona una commessa per consultarne le attività e i blocchi.";
+    $("work-no-job-description").textContent = state.jobsReady && !state.jobs.length ? t("Un gestore deve abilitarti a una commessa per consultarne il lavoro.") : t("Seleziona una commessa per consultarne le attività e i blocchi.");
   }
 
   function workContextCurrent(epoch, jobId) {
@@ -3268,7 +4396,7 @@
     try {
       const data = await api("/api/work-board?job_id=" + encodeURIComponent(jobId));
       if (request !== state.workRequest || !workContextCurrent(epoch, jobId)) return;
-      if (String(data.job_id) !== jobId || !Array.isArray(data.tasks) || !Array.isArray(data.blockers)) throw new Error("La risposta non corrisponde alla commessa selezionata. Riprova.");
+      if (String(data.job_id) !== jobId || !Array.isArray(data.tasks) || !Array.isArray(data.blockers)) throw new Error(t("La risposta non corrisponde alla commessa selezionata. Riprova."));
       state.workTasks = data.tasks;
       state.workBlockers = data.blockers;
       state.workAssignees = Array.isArray(data.assignees) ? data.assignees : [];
@@ -3290,12 +4418,12 @@
   }
 
   function workDateText(value) {
-    return value && validDate(value) ? dateLabel(value) : "Nessuna scadenza";
+    return value && validDate(value) ? dateLabel(value) : t("Nessuna scadenza");
   }
 
   function workDetails(text) {
     const details = node("details", "work-card-details");
-    details.append(node("summary", "", "Leggi la descrizione"), node("p", "work-card-description", text));
+    details.append(node("summary", "", t("Leggi la descrizione")), node("p", "work-card-description", text));
     return details;
   }
 
@@ -3305,31 +4433,31 @@
     card.tabIndex = -1;
     card.setAttribute("aria-label", task.title);
     const tags = node("div", "work-card-tags");
-    tags.append(node("span", "work-card-id", `#${task.id}`), node("span", "work-card-tag", workTaskStates[task.status] || task.status), node("span", "work-card-tag priority-" + (Object.hasOwn(workPriorities, task.priority) ? task.priority : "normal"), "Priorità " + (workPriorities[task.priority] || task.priority)));
+    tags.append(node("span", "work-card-id", `#${task.id}`), node("span", "work-card-tag", workTaskStates[task.status] || task.status), node("span", "work-card-tag priority-" + (Object.hasOwn(workPriorities, task.priority) ? task.priority : "normal"), t("Priorità ") + (workPriorities[task.priority] || task.priority)));
     card.append(tags, node("h4", "", task.title));
     if (task.parent_id) {
       const parent = state.workTasks.find((item) => String(item.id) === String(task.parent_id));
-      card.append(node("p", "work-task-context", "Sottoattività di " + (parent ? parent.title : "#" + task.parent_id)));
+      card.append(node("p", "work-task-context", t("Sottoattività di ") + (parent ? parent.title : "#" + task.parent_id)));
     }
-    card.append(node("p", "work-card-meta", "Responsabile: " + (task.assigned_user_name || "Da assegnare")), node("p", "work-card-meta", workDateText(task.due_date)));
+    card.append(node("p", "work-card-meta", t("Responsabile: ") + (task.assigned_user_name || t("Da assegnare"))), node("p", "work-card-meta", workDateText(task.due_date)));
     if (task.description) card.append(workDetails(task.description));
     const openBlockers = state.workBlockers.filter((item) => String(item.task_id) === String(task.id) && item.status !== "resolved").length;
-    if (openBlockers) card.append(node("p", "work-card-meta", `${openBlockers} ${openBlockers === 1 ? "blocco aperto" : "blocchi aperti"}`));
+    if (openBlockers) card.append(node("p", "work-card-meta", `${openBlockers} ${openBlockers === 1 ? t("blocco aperto") : t("blocchi aperti")}`));
     const actions = node("div", "work-card-actions");
     if (task.can_edit) {
-      actions.append(action("Modifica", "Modifica l’attività " + task.title, () => openWorkTask(task)));
-      actions.append(action("+ Sottoattività", "Aggiungi una sottoattività a " + task.title, () => openWorkTask(null, task.id)));
-      actions.append(action("Elimina", "Elimina l’attività " + task.title, () => openWorkDelete("task", task), true));
+      actions.append(action(t("Modifica"), t("Modifica l’attività ") + task.title, () => openWorkTask(task)));
+      actions.append(action(t("+ Sottoattività"), t("Aggiungi una sottoattività a ") + task.title, () => openWorkTask(null, task.id)));
+      actions.append(action(t("Elimina"), t("Elimina l’attività ") + task.title, () => openWorkDelete("task", task), true));
     }
-    if (state.workPermissions.report_blockers) actions.append(action("Segnala blocco", "Segnala un blocco per " + task.title, () => openWorkBlocker(null, task.id)));
+    if (state.workPermissions.report_blockers) actions.append(action(t("Segnala blocco"), t("Segnala un blocco per ") + task.title, () => openWorkBlocker(null, task.id)));
     if (task.can_update_status) {
       const control = node("form", "work-task-status-control");
       const id = "work-status-task-" + task.id + "-" + $("work-view").value;
-      const label = node("label", "", "Stato"); label.htmlFor = id;
-      const select = node("select"); select.id = id; select.setAttribute("aria-label", "Stato dell’attività " + task.title);
+      const label = node("label", "", t("Stato")); label.htmlFor = id;
+      const select = node("select"); select.id = id; select.setAttribute("aria-label", t("Stato dell’attività ") + task.title);
       for (const [value, text] of Object.entries(workTaskStates)) { const option = node("option", "", text); option.value = value; select.append(option); }
       select.value = task.status;
-      const save = node("button", "row-button", "Applica"); save.type = "submit"; save.disabled = true; save.setAttribute("aria-label", "Applica lo stato all’attività " + task.title);
+      const save = node("button", "row-button", t("Applica")); save.type = "submit"; save.disabled = true; save.setAttribute("aria-label", t("Applica lo stato all’attività ") + task.title);
       select.disabled = state.workBusy;
       select.addEventListener("change", () => { save.disabled = state.workBusy || select.value === task.status; });
       control.addEventListener("submit", (event) => { event.preventDefault(); if (select.value !== task.status) updateWorkTaskStatus(task, select.value); });
@@ -3350,21 +4478,21 @@
     $("work-new-blocker").hidden = !state.workPermissions.report_blockers;
     $("work-new-task").disabled = state.workBusy;
     $("work-new-blocker").disabled = state.workBusy;
-    $("work-scope").textContent = state.workPermissions.manage_tasks ? "Gestisci attività e responsabili. I collaboratori abilitati aggiornano lo stato delle attività assegnate e segnalano i blocchi." : state.workPermissions.report_blockers ? "Consulta il lavoro della commessa, aggiorna lo stato delle attività assegnate a te e segnala o gestisci i tuoi blocchi." : "Sola consultazione: puoi leggere attività e blocchi della commessa.";
-    const query = $("work-search").value.trim().toLocaleLowerCase("it-IT");
+    $("work-scope").textContent = state.workPermissions.manage_tasks ? t("Gestisci attività e responsabili. I collaboratori abilitati aggiornano lo stato delle attività assegnate e segnalano i blocchi.") : state.workPermissions.report_blockers ? t("Consulta il lavoro della commessa, aggiorna lo stato delle attività assegnate a te e segnala o gestisci i tuoi blocchi.") : t("Sola consultazione: puoi leggere attività e blocchi della commessa.");
+    const query = $("work-search").value.trim().toLocaleLowerCase(locale);
     const status = $("work-status").value;
     const priority = $("work-priority").value;
-    const tasks = state.workTasks.filter((task) => (!status || task.status === status) && (!priority || task.priority === priority) && [task.title, task.description, task.assigned_user_name].some((value) => String(value || "").toLocaleLowerCase("it-IT").includes(query)));
+    const tasks = state.workTasks.filter((task) => (!status || task.status === status) && (!priority || task.priority === priority) && [task.title, task.description, task.assigned_user_name].some((value) => String(value || "").toLocaleLowerCase(locale).includes(query)));
     const done = state.workTasks.filter((task) => task.status === "done").length;
-    $("work-summary").textContent = `${tasks.length} attività visibili su ${state.workTasks.length} · ${done} completate nella commessa`;
+    $("work-summary").textContent = t("{0} attività visibili su {1} · {2} completate nella commessa", [tasks.length, state.workTasks.length, done]);
     const listView = $("work-view").value === "list";
     $("work-task-board").replaceChildren();
     $("work-task-list").replaceChildren();
     $("work-task-board").hidden = listView || !tasks.length;
     $("work-task-list").hidden = !listView || !tasks.length;
     $("work-tasks-empty").hidden = Boolean(tasks.length);
-    $("work-tasks-empty-title").textContent = state.workTasks.length ? "Nessuna attività corrisponde ai filtri." : "Il prossimo passo prende forma qui.";
-    $("work-tasks-empty-description").textContent = state.workTasks.length ? "Cambia la ricerca, lo stato o la priorità per ritrovare le attività." : state.workPermissions.manage_tasks ? "Crea la prima attività, assegna un responsabile e scegli una scadenza." : "Il gestore può creare la prima attività per questa commessa.";
+    $("work-tasks-empty-title").textContent = state.workTasks.length ? t("Nessuna attività corrisponde ai filtri.") : t("Il prossimo passo prende forma qui.");
+    $("work-tasks-empty-description").textContent = state.workTasks.length ? t("Cambia la ricerca, lo stato o la priorità per ritrovare le attività.") : state.workPermissions.manage_tasks ? t("Crea la prima attività, assegna un responsabile e scegli una scadenza.") : t("Il gestore può creare la prima attività per questa commessa.");
     if (listView) {
       const matching = new Set(tasks.map((task) => String(task.id)));
       const rendered = new Set();
@@ -3394,7 +4522,7 @@
         const list = node("ul", "work-column-items"); list.setAttribute("aria-label", label);
         items.forEach((task) => { const item = node("li"); item.append(workTaskCard(task)); list.append(item); });
         column.append(title, list);
-        if (!items.length) column.append(node("p", "work-list-empty", "Nessuna attività"));
+        if (!items.length) column.append(node("p", "work-list-empty", t("Nessuna attività")));
         $("work-task-board").append(column);
       }
     }
@@ -3413,15 +4541,15 @@
       item.tabIndex = -1;
       item.setAttribute("aria-label", blocker.title);
       const tags = node("div", "work-card-tags");
-      tags.append(node("span", "work-card-id", "#" + blocker.id), node("span", "work-card-tag", workBlockerStates[blocker.status] || blocker.status), node("span", "work-card-tag impact-" + (Object.hasOwn(workImpacts, blocker.impact) ? blocker.impact : "medium"), "Impatto " + (workImpacts[blocker.impact] || blocker.impact)));
+      tags.append(node("span", "work-card-id", "#" + blocker.id), node("span", "work-card-tag", workBlockerStates[blocker.status] || blocker.status), node("span", "work-card-tag impact-" + (Object.hasOwn(workImpacts, blocker.impact) ? blocker.impact : "medium"), t("Impatto ") + (workImpacts[blocker.impact] || blocker.impact)));
       item.append(tags, node("h4", "", blocker.title));
       const task = state.workTasks.find((task) => String(task.id) === String(blocker.task_id));
-      item.append(node("p", "work-card-meta", task ? "Attività: " + task.title : "Blocco della commessa"), node("p", "work-card-meta", "Responsabile: " + (blocker.owner_name || "Da assegnare") + " · " + workDateText(blocker.due_date)));
+      item.append(node("p", "work-card-meta", task ? t("Attività: ") + task.title : t("Blocco della commessa")), node("p", "work-card-meta", t("Responsabile: ") + (blocker.owner_name || t("Da assegnare")) + " · " + workDateText(blocker.due_date)));
       if (blocker.description) item.append(workDetails(blocker.description));
-      if (blocker.next_action) { const next = node("p", "work-blocker-action"); next.append(node("strong", "", "PROSSIMA AZIONE"), document.createTextNode(blocker.next_action)); item.append(next); }
+      if (blocker.next_action) { const next = node("p", "work-blocker-action"); next.append(node("strong", "", t("PROSSIMA AZIONE")), document.createTextNode(blocker.next_action)); item.append(next); }
       const actions = node("div", "work-card-actions");
-      if (blocker.can_edit) actions.append(action("Gestisci", "Gestisci il blocco " + blocker.title, () => openWorkBlocker(blocker)));
-      if (state.workPermissions.manage_tasks) actions.append(action("Elimina", "Elimina il blocco " + blocker.title, () => openWorkDelete("blocker", blocker), true));
+      if (blocker.can_edit) actions.append(action(t("Gestisci"), t("Gestisci il blocco ") + blocker.title, () => openWorkBlocker(blocker)));
+      if (state.workPermissions.manage_tasks) actions.append(action(t("Elimina"), t("Elimina il blocco ") + blocker.title, () => openWorkDelete("blocker", blocker), true));
       if (actions.childElementCount) item.append(actions);
       if (state.workBusy) item.querySelectorAll("button").forEach((button) => { button.disabled = true; });
       $("work-blocker-list").append(item);
@@ -3434,7 +4562,7 @@
     select.replaceChildren(empty);
     for (const item of items) { const option = node("option", "", item.name || item.title); option.value = String(item.id); select.append(option); }
     if (value && !items.some((item) => String(item.id) === String(value))) {
-      const unavailable = node("option", "", (currentLabel || "#" + value) + " · accesso da verificare"); unavailable.value = String(value); select.append(unavailable);
+      const unavailable = node("option", "", (currentLabel || "#" + value) + t(" · accesso da verificare")); unavailable.value = String(value); select.append(unavailable);
     }
     select.value = value ? String(value) : "";
   }
@@ -3446,17 +4574,17 @@
     $("work-task-error").hidden = true;
     $("work-task-reload").hidden = true;
     $("work-task-save").disabled = false;
-    $("work-task-dialog-title").textContent = task ? "Modifica attività" : parentId ? "Nuova sottoattività" : "Nuova attività";
-    $("work-task-save").textContent = task ? "Salva modifiche" : "Crea attività";
+    $("work-task-dialog-title").textContent = task ? t("Modifica attività") : parentId ? t("Nuova sottoattività") : t("Nuova attività");
+    $("work-task-save").textContent = task ? t("Salva modifiche") : t("Crea attività");
     const job = state.jobs.find((job) => String(job.id) === state.workJobId);
-    $("work-task-dialog-description").textContent = `${job?.code || ""} · ${job?.name || ""}. Ogni attività ha un avanzamento indipendente dalle sue sottoattività.`;
+    $("work-task-dialog-description").textContent = t("{0} · {1}. Ogni attività ha un avanzamento indipendente dalle sue sottoattività.", [job?.code || "", job?.name || ""]);
     ["title", "description", "status", "priority"].forEach((field) => { $("work-task-" + field).value = task?.[field] || (field === "status" ? "todo" : field === "priority" ? "normal" : ""); });
     $("work-task-due").value = task?.due_date || "";
-    workSelect("work-task-assignee", state.workAssignees, task?.assigned_user_id, "Da assegnare", task?.assigned_user_name);
+    workSelect("work-task-assignee", state.workAssignees, task?.assigned_user_id, t("Da assegnare"), task?.assigned_user_name);
     const excluded = new Set(task ? [String(task.id)] : []);
     let changed = true;
     while (changed) { changed = false; for (const item of state.workTasks) if (excluded.has(String(item.parent_id)) && !excluded.has(String(item.id))) { excluded.add(String(item.id)); changed = true; } }
-    workSelect("work-task-parent", state.workTasks.filter((item) => !excluded.has(String(item.id))), task?.parent_id || parentId, "Nessuna · attività principale");
+    workSelect("work-task-parent", state.workTasks.filter((item) => !excluded.has(String(item.id))), task?.parent_id || parentId, t("Nessuna · attività principale"));
     $("work-task-dialog").showModal();
     $("work-task-title").focus();
   }
@@ -3468,27 +4596,27 @@
     $("work-blocker-error").hidden = true;
     $("work-blocker-reload").hidden = true;
     $("work-blocker-save").disabled = false;
-    $("work-blocker-dialog-title").textContent = blocker ? "Gestisci blocco" : "Segnala blocco";
-    $("work-blocker-dialog-description").textContent = "Descrivi l’impedimento e il prossimo passo per risolverlo. La risoluzione del blocco non cambia automaticamente lo stato dell’attività.";
-    $("work-blocker-save").textContent = blocker ? "Salva modifiche" : "Segnala blocco";
+    $("work-blocker-dialog-title").textContent = blocker ? t("Gestisci blocco") : t("Segnala blocco");
+    $("work-blocker-dialog-description").textContent = t("Descrivi l’impedimento e il prossimo passo per risolverlo. La risoluzione del blocco non cambia automaticamente lo stato dell’attività.");
+    $("work-blocker-save").textContent = blocker ? t("Salva modifiche") : t("Segnala blocco");
     ["title", "description", "impact", "status"].forEach((field) => { $("work-blocker-" + field).value = blocker?.[field] || (field === "impact" ? "medium" : field === "status" ? "open" : ""); });
     $("work-blocker-action").value = blocker?.next_action || "";
     $("work-blocker-due").value = blocker?.due_date || "";
-    workSelect("work-blocker-task", state.workTasks, blocker?.task_id || taskId, "Intera commessa");
-    workSelect("work-blocker-owner", state.workAssignees, blocker?.owner_id, "Da assegnare", blocker?.owner_name);
+    workSelect("work-blocker-task", state.workTasks, blocker?.task_id || taskId, t("Intera commessa"));
+    workSelect("work-blocker-owner", state.workAssignees, blocker?.owner_id, t("Da assegnare"), blocker?.owner_name);
     $("work-blocker-owner-field").hidden = !state.workPermissions.manage_tasks;
     $("work-blocker-owner-help").hidden = state.workPermissions.manage_tasks;
-    $("work-blocker-owner-help").textContent = blocker ? "Responsabile: " + (blocker.owner_name || "Da assegnare") + ". Un gestore può modificare il responsabile." : "Il blocco sarà assegnato a te. Un gestore può modificare il responsabile.";
+    $("work-blocker-owner-help").textContent = blocker ? t("Responsabile: ") + (blocker.owner_name || t("Da assegnare")) + ". Un gestore può modificare il responsabile." : t("Il blocco sarà assegnato a te. Un gestore può modificare il responsabile.");
     $("work-blocker-dialog").showModal();
     $("work-blocker-title").focus();
   }
 
   function openWorkDelete(kind, item) {
     if (!state.workReady || !state.workPermissions.manage_tasks || state.workBusy || busyDialogs.has("work-delete-dialog")) return;
-    if (kind === "task" && state.workTasks.some((task) => String(task.parent_id) === String(item.id))) { showNotice("Questa attività contiene sottoattività. Spostale o eliminale prima di eliminare l’attività principale.", true); return; }
+    if (kind === "task" && state.workTasks.some((task) => String(task.parent_id) === String(item.id))) { showNotice(t("Questa attività contiene sottoattività. Spostale o eliminale prima di eliminare l’attività principale."), true); return; }
     state.workDeleting = { kind, item };
-    $("work-delete-title").textContent = kind === "task" ? "Eliminare questa attività?" : "Eliminare questo blocco?";
-    $("work-delete-description").textContent = `“${item.title}” sarà eliminato definitivamente.` + (kind === "task" ? " Gli eventuali blocchi collegati resteranno nel registro della commessa. Le ore registrate non cambiano." : " L’operazione non può essere annullata dall’app.");
+    $("work-delete-title").textContent = kind === "task" ? t("Eliminare questa attività?") : t("Eliminare questo blocco?");
+    $("work-delete-description").textContent = t("“{0}” sarà eliminato definitivamente.", [item.title]) + (kind === "task" ? t(" Gli eventuali blocchi collegati resteranno nel registro della commessa. Le ore registrate non cambiano.") : t(" L’operazione non può essere annullata dall’app."));
     $("work-delete-error").hidden = true;
     $("work-delete-save").disabled = false;
     $("work-delete-dialog").showModal();
@@ -3532,7 +4660,7 @@
       await post("/api/tasks/" + task.id, { status, revision: task.revision });
       if (!workContextCurrent(epoch, jobId)) return;
       state.auditReady = false;
-      showNotice("Stato dell’attività aggiornato.");
+      showNotice(t("Stato dell’attività aggiornato."));
       await refreshWorkBoard();
     } catch (error) {
       if (!workContextCurrent(epoch, jobId)) return;
@@ -3554,7 +4682,7 @@
     if (state.workBusy || busyDialogs.has(dialogId) || !state.workReady || (taskKind ? !state.workPermissions.manage_tasks : edited ? !edited.can_edit : !state.workPermissions.report_blockers)) return;
     ["title", "description"].forEach((field) => { $(prefix + "-" + field).value = $(prefix + "-" + field).value.trim(); });
     const due = $(prefix + "-due");
-    due.setCustomValidity(due.value && !validDate(due.value) ? "Inserisci una data valida." : "");
+    due.setCustomValidity(due.value && !validDate(due.value) ? t("Inserisci una data valida.") : "");
     if (!$(prefix + "-form").reportValidity()) return;
     const fields = Object.fromEntries(["title", "description", "status"].map((field) => [field, $(prefix + "-" + field).value]));
     fields.due_date = due.value;
@@ -3570,7 +4698,7 @@
       if (state.workPermissions.manage_tasks) fields.owner_id = $("work-blocker-owner").value;
     }
     const epoch = state.workEpoch, jobId = state.workJobId;
-    const label = edited ? "Salva modifiche" : taskKind ? "Crea attività" : "Segnala blocco";
+    const label = edited ? t("Salva modifiche") : taskKind ? t("Crea attività") : t("Segnala blocco");
     let conflict = false;
     let savedId = null;
     $(prefix + "-error").hidden = true;
@@ -3582,7 +4710,7 @@
       savedId = result.id || edited?.id || null;
       state.auditReady = false;
       $(dialogId).close();
-      showNotice(taskKind ? edited ? "Attività aggiornata." : "Attività creata." : edited ? "Blocco aggiornato." : "Blocco segnalato.");
+      showNotice(taskKind ? edited ? t("Attività aggiornata.") : t("Attività creata.") : edited ? t("Blocco aggiornato.") : t("Blocco segnalato."));
       await refreshWorkBoard();
     } catch (error) {
       if (!workContextCurrent(epoch, jobId)) return;
@@ -3640,21 +4768,21 @@
     const epoch = state.workEpoch, jobId = state.workJobId;
     let reloadFocus = false;
     workSetBusy(true);
-    dialogBusy("work-delete-dialog", true, "work-delete-save", "Elimina");
+    dialogBusy("work-delete-dialog", true, "work-delete-save", t("Elimina"));
     try {
       await post("/api/" + (kind === "task" ? "tasks" : "blockers") + "/" + item.id + "/delete", { revision: item.revision });
       if (!workContextCurrent(epoch, jobId)) return;
       state.auditReady = false;
       $("work-delete-dialog").close();
       reloadFocus = true;
-      showNotice(kind === "task" ? "Attività eliminata." : "Blocco eliminato.");
+      showNotice(kind === "task" ? t("Attività eliminata.") : t("Blocco eliminato."));
       await refreshWorkBoard();
     } catch (error) {
       if (!workContextCurrent(epoch, jobId)) return;
       if (error.status === 409) { $("work-delete-dialog").close(); reloadFocus = true; showNotice(error.message, true); await refreshWorkBoard(); }
       else dialogError("work-delete-error", error);
     } finally {
-      dialogBusy("work-delete-dialog", false, "work-delete-save", "Elimina");
+      dialogBusy("work-delete-dialog", false, "work-delete-save", t("Elimina"));
       if (workContextCurrent(epoch, jobId)) {
         workSetBusy(false);
         if (reloadFocus) focusWorkResult(kind, item.id);
@@ -3668,7 +4796,7 @@
     if (!requirePermission("manage_jobs")) return;
     if (busyDialogs.has("job-dialog")) return;
     ["code", "name", "client", "description"].forEach((field) => { $("job-" + field).value = $("job-" + field).value.trim(); });
-    if (can("manage_contracts") && !state.contractsReady) { dialogError("job-error", new Error("Ricarica l’elenco dei contratti prima di salvare.")); return; }
+    if (can("manage_contracts") && !state.contractsReady) { dialogError("job-error", new Error(t("Ricarica l’elenco dei contratti prima di salvare."))); return; }
     if (!$("job-form").reportValidity()) return;
     $("job-error").hidden = true;
     const id = $("job-id").value;
@@ -3676,18 +4804,18 @@
     fields.is_common = $("job-common").checked ? "1" : "0";
     if (can("manage_contracts")) fields.contract_id = $("job-contract").value;
     const followWithEntry = state.openEntryAfterJob && !id;
-    dialogBusy("job-dialog", true, "job-save", id ? "Salva modifiche" : "Crea commessa");
+    dialogBusy("job-dialog", true, "job-save", id ? t("Salva modifiche") : t("Crea commessa"));
     try {
       const result = await post("/api/jobs" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
       $("job-dialog").close();
-      showNotice(id ? "Commessa aggiornata. Tutto al punto." : "Commessa creata. Un nuovo punto di partenza.");
+      showNotice(id ? t("Commessa aggiornata. Tutto al punto.") : t("Commessa creata. Un nuovo punto di partenza."));
       await refreshAll();
       if (followWithEntry && state.jobs.some((job) => String(job.id) === String(result.id))) openEntry(null, result.id);
     } catch (error) {
       dialogError("job-error", error);
     } finally {
-      dialogBusy("job-dialog", false, "job-save", id ? "Salva modifiche" : "Crea commessa");
+      dialogBusy("job-dialog", false, "job-save", id ? t("Salva modifiche") : t("Crea commessa"));
       state.openEntryAfterJob = false;
     }
   });
@@ -3709,7 +4837,7 @@
     $("alert-rule-name").value = $("alert-rule-name").value.trim();
     $("alert-rule-emails").setCustomValidity("");
     if (!$("alert-rule-form").reportValidity()) return;
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test($("alert-rule-time").value)) { dialogError("alert-rule-error", new Error("Scegli un orario valido, con ore e minuti.")); return; }
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test($("alert-rule-time").value)) { dialogError("alert-rule-error", new Error(t("Scegli un orario valido, con ore e minuti."))); return; }
     let emails;
     try { emails = alertRecipientEmails(); } catch (error) {
       $("alert-rule-emails").setCustomValidity(error.message);
@@ -3717,15 +4845,16 @@
       return;
     }
     const selected = [...$("alert-rule-users").querySelectorAll("input:checked")];
-    if (selected.some((checkbox) => checkbox.dataset.unavailable === "1")) { dialogError("alert-rule-error", new Error("Deseleziona gli utenti non più attivi prima di salvare la regola.")); return; }
-    if (selected.length > 50) { dialogError("alert-rule-error", new Error("Seleziona al massimo 50 utenti destinatari.")); return; }
-    if (!selected.length && !emails.length) { dialogError("alert-rule-error", new Error("Scegli almeno un utente destinatario oppure inserisci un indirizzo email.")); return; }
+    if (selected.some((checkbox) => checkbox.dataset.unavailable === "1")) { dialogError("alert-rule-error", new Error(t("Deseleziona gli utenti non più attivi prima di salvare la regola."))); return; }
+    if (selected.length > 50) { dialogError("alert-rule-error", new Error(t("Seleziona al massimo 50 utenti destinatari."))); return; }
+    if (!selected.length && !emails.length) { dialogError("alert-rule-error", new Error(t("Scegli almeno un utente destinatario oppure inserisci un indirizzo email."))); return; }
     const id = state.editingAlertRule?.id;
     const email = state.session.email;
     const fields = { name: $("alert-rule-name").value, type: $("alert-rule-type").value, run_time: $("alert-rule-time").value, enabled: $("alert-rule-enabled").checked ? "1" : "0", recipient_user_ids: selected.map((checkbox) => checkbox.value).join(","), recipient_emails: emails.join(",") };
     if (fields.type === "inventory_due") fields.days_before = $("alert-rule-days").value;
+    if (fields.type === "inventory_verification") fields.verification_days = $("alert-rule-verification-days").value;
     $("alert-rule-error").hidden = true;
-    dialogBusy("alert-rule-dialog", true, "alert-rule-save", id ? "Salva modifiche" : "Crea regola");
+    dialogBusy("alert-rule-dialog", true, "alert-rule-save", id ? t("Salva modifiche") : t("Crea regola"));
     try {
       await post("/api/alert-rules" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       if (!isAlertManager() || state.session.email !== email) return;
@@ -3733,12 +4862,12 @@
       $("alert-rule-dialog").close();
       state.alertRulesRequest++;
       state.alertRulesLoading = false;
-      showNotice(id ? "Regola aggiornata." : fields.enabled === "1" ? "Regola creata. La prossima esecuzione è indicata nell’elenco." : "Regola creata e sospesa. Puoi attivarla o eseguire un controllo manuale.");
+      showNotice(id ? t("Regola aggiornata.") : fields.enabled === "1" ? t("Regola creata. La prossima esecuzione è indicata nell’elenco.") : t("Regola creata e sospesa. Puoi attivarla o eseguire un controllo manuale."));
       await refreshAlertRules();
     } catch (error) {
       if (isAlertManager() && state.session.email === email) dialogError("alert-rule-error", error);
     } finally {
-      dialogBusy("alert-rule-dialog", false, "alert-rule-save", id ? "Salva modifiche" : "Crea regola");
+      dialogBusy("alert-rule-dialog", false, "alert-rule-save", id ? t("Salva modifiche") : t("Crea regola"));
     }
   });
 
@@ -3749,8 +4878,8 @@
     if (!requirePermission("manage_jobs") || !state.deleteJob || busyDialogs.has("job-delete-dialog")) return;
     const job = state.deleteJob;
     $("job-delete-error").hidden = true;
-    dialogBusy("job-delete-dialog", true, "job-delete-save", "Elimina commessa e ore");
-    $("job-delete-save").textContent = "Eliminazione…";
+    dialogBusy("job-delete-dialog", true, "job-delete-save", t("Elimina commessa e ore"));
+    $("job-delete-save").textContent = t("Eliminazione…");
     try {
       await api("/api/jobs/" + encodeURIComponent(job.id), { method: "DELETE" });
       state.auditReady = false;
@@ -3763,12 +4892,12 @@
         state.assignmentsReady = false;
         $("assignment-dialog").close();
       }
-      showNotice(`Commessa “${job.name}” eliminata insieme a tutte le ore e alle abilitazioni collegate.`);
+      showNotice(t("Commessa “{0}” eliminata insieme a tutte le ore e alle abilitazioni collegate.", [job.name]));
       await refreshAll();
     } catch (error) {
       dialogError("job-delete-error", error);
     } finally {
-      dialogBusy("job-delete-dialog", false, "job-delete-save", "Elimina commessa e ore");
+      dialogBusy("job-delete-dialog", false, "job-delete-save", t("Elimina commessa e ore"));
     }
   });
 
@@ -3786,11 +4915,11 @@
       $("entry-hours").reportValidity();
       return;
     }
-    if (!validDate($("entry-date").value)) { dialogError("entry-error", new Error("Scegli una giornata lavorativa valida.")); return; }
+    if (!validDate($("entry-date").value)) { dialogError("entry-error", new Error(t("Scegli una giornata lavorativa valida."))); return; }
     const id = $("entry-id").value;
     const fields = { job_id: $("entry-job").value, date: $("entry-date").value, minutes, note: $("entry-note").value.trim() };
     $("entry-error").hidden = true;
-    dialogBusy("entry-dialog", true, "entry-save", id ? "Salva modifiche" : "Salva ore");
+    dialogBusy("entry-dialog", true, "entry-save", id ? t("Salva modifiche") : t("Salva ore"));
     try {
       await post("/api/time-entries" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
@@ -3798,12 +4927,12 @@
       state.selectedDate = fields.date;
       $("entry-date-filter").value = fields.date;
       selectTab("hours");
-      showNotice(id ? "Registrazione aggiornata." : "Ore salvate. Il tuo lavoro ha la sua traccia.");
+      showNotice(id ? t("Registrazione aggiornata.") : t("Ore salvate. Il tuo lavoro ha la sua traccia."));
       await refreshAll();
     } catch (error) {
       dialogError("entry-error", error);
     } finally {
-      dialogBusy("entry-dialog", false, "entry-save", id ? "Salva modifiche" : "Salva ore");
+      dialogBusy("entry-dialog", false, "entry-save", id ? t("Salva modifiche") : t("Salva ore"));
     }
   });
 
@@ -3812,19 +4941,19 @@
     if (!requirePermission("edit_time_entries")) return;
     if (busyDialogs.has("delete-dialog") || !state.deleteEntry) return;
     $("delete-error").hidden = true;
-    dialogBusy("delete-dialog", true, "delete-save", "Elimina registrazione");
-    $("delete-save").textContent = "Eliminazione…";
+    dialogBusy("delete-dialog", true, "delete-save", t("Elimina registrazione"));
+    $("delete-save").textContent = t("Eliminazione…");
     try {
       await api("/api/time-entries/" + encodeURIComponent(state.deleteEntry.id), { method: "DELETE" });
       state.auditReady = false;
       $("delete-dialog").close();
       state.deleteEntry = null;
-      showNotice("Registrazione eliminata. Totali aggiornati.");
+      showNotice(t("Registrazione eliminata. Totali aggiornati."));
       await refreshAll();
     } catch (error) {
       dialogError("delete-error", error);
     } finally {
-      dialogBusy("delete-dialog", false, "delete-save", "Elimina registrazione");
+      dialogBusy("delete-dialog", false, "delete-save", t("Elimina registrazione"));
     }
   });
 
@@ -3839,7 +4968,7 @@
     if (!id) {
       const bytes = new TextEncoder().encode($("user-password").value).length;
       if (bytes < 8 || bytes > 1024) {
-        $("user-password").setCustomValidity("La password deve contenere da 8 a 1024 byte. Usa almeno 8 caratteri.");
+        $("user-password").setCustomValidity(t("La password deve contenere da 8 a 1024 byte. Usa almeno 8 caratteri."));
         $("user-password").reportValidity();
         return;
       }
@@ -3849,7 +4978,7 @@
     else { fields.email = $("user-email").value; fields.password = $("user-password").value; }
     const editingSelf = id && $("user-email").value === state.session.email;
     $("user-error").hidden = true;
-    dialogBusy("user-dialog", true, "user-save", id ? "Salva modifiche" : "Crea utente");
+    dialogBusy("user-dialog", true, "user-save", id ? t("Salva modifiche") : t("Crea utente"));
     try {
       await post("/api/users" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
@@ -3867,13 +4996,13 @@
       $("group-members").replaceChildren();
       $("user-dialog").close();
       if (editingSelf && !await refreshSession()) return;
-      showNotice(id ? "Utente aggiornato." : "Utente creato. L’account è pronto per accedere.");
+      showNotice(id ? t("Utente aggiornato.") : t("Utente creato. L’account è pronto per accedere."));
       if (can("manage_users")) await refreshUsers();
     } catch (error) {
       dialogError("user-error", error);
     } finally {
       fields.password = "";
-      dialogBusy("user-dialog", false, "user-save", id ? "Salva modifiche" : "Crea utente");
+      dialogBusy("user-dialog", false, "user-save", id ? t("Salva modifiche") : t("Crea utente"));
     }
   });
 
@@ -3883,8 +5012,8 @@
     $("assignment-end").setCustomValidity("");
     const startsOn = $("assignment-start").value;
     const endsOn = $("assignment-end").value;
-    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("assignment-error", new Error("Scegli date valide per il periodo di abilitazione.")); return; }
-    if (startsOn && endsOn && startsOn > endsOn) $("assignment-end").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("assignment-error", new Error(t("Scegli date valide per il periodo di abilitazione."))); return; }
+    if (startsOn && endsOn && startsOn > endsOn) $("assignment-end").setCustomValidity(t("La data finale deve essere uguale o successiva alla data iniziale."));
     if (!$("assignment-form").reportValidity()) return;
     const jobId = state.assignmentJob.id;
     const fields = { user_id: $("assignment-user").value, role_id: $("assignment-role").value, starts_on: startsOn, ends_on: endsOn };
@@ -3895,7 +5024,7 @@
       state.auditReady = false;
       state.revokeAssignment = null;
       $("assignment-revoke").hidden = true;
-      showNotice("Abilitazione salvata. Ruolo e periodo di accesso alla commessa sono aggiornati.");
+      showNotice(t("Abilitazione salvata. Ruolo e periodo di accesso alla commessa sono aggiornati."));
       await loadAssignments();
       await refreshAll();
     } catch (error) {
@@ -3915,7 +5044,7 @@
       state.auditReady = false;
       state.revokeAssignment = null;
       $("assignment-revoke").hidden = true;
-      showNotice("Abilitazione revocata. Le ore già registrate sono conservate.");
+      showNotice(t("Abilitazione revocata. Le ore già registrate sono conservate."));
       await loadAssignments();
       await refreshAll();
     } catch (error) {
@@ -3953,9 +5082,9 @@
   $("delete-group").addEventListener("click", () => {
     if (!state.selectedGroup) return;
     const group = state.selectedGroup;
-    confirmOrganization(`Eliminare il gruppo ${group.name}? È possibile eliminare solo gruppi senza membri, sottogruppi o abilitazioni alle commesse.`, async () => {
+    confirmOrganization(t("Eliminare il gruppo {0}? È possibile eliminare solo gruppi senza membri, sottogruppi o abilitazioni alle commesse.", [group.name]), async () => {
       await api(`/api/groups/${encodeURIComponent(group.id)}`, { method: "DELETE" });
-      showNotice("Gruppo eliminato.");
+      showNotice(t("Gruppo eliminato."));
       await refreshOrganization(null);
     });
   });
@@ -3990,7 +5119,7 @@
     try {
       await post(`/api/groups/${encodeURIComponent(groupId)}/members`, { user_id: userId });
       state.auditReady = false;
-      showNotice("Utente aggiunto al gruppo. Riceve anche le abilitazioni dei gruppi padre.");
+      showNotice(t("Utente aggiunto al gruppo. Riceve anche le abilitazioni dei gruppi padre."));
       await refreshOrganization(groupId);
       await refreshAll();
     } catch (error) { dialogError("group-members-error", error); }
@@ -4004,16 +5133,16 @@
     const id = $("group-id").value;
     const fields = { name: $("group-name").value, parent_id: $("group-parent").value };
     $("group-error").hidden = true;
-    dialogBusy("group-dialog", true, "group-save", id ? "Salva modifiche" : "Crea gruppo");
+    dialogBusy("group-dialog", true, "group-save", id ? t("Salva modifiche") : t("Crea gruppo"));
     try {
       const data = await post("/api/groups" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
       $("group-dialog").close();
-      showNotice(id ? "Gruppo aggiornato. Le abilitazioni ereditate seguono la nuova struttura." : "Gruppo creato. Puoi aggiungere i membri.");
+      showNotice(id ? t("Gruppo aggiornato. Le abilitazioni ereditate seguono la nuova struttura.") : t("Gruppo creato. Puoi aggiungere i membri."));
       await refreshOrganization(id || data.id);
       await refreshAll();
     } catch (error) { dialogError("group-error", error); }
-    finally { dialogBusy("group-dialog", false, "group-save", id ? "Salva modifiche" : "Crea gruppo"); }
+    finally { dialogBusy("group-dialog", false, "group-save", id ? t("Salva modifiche") : t("Crea gruppo")); }
   });
   $("job-role-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -4023,16 +5152,16 @@
     const id = $("job-role-id").value;
     const fields = { code: $("job-role-code").value, name: $("job-role-name").value, can_log_time: $("job-role-log-time").value };
     $("job-role-error").hidden = true;
-    dialogBusy("job-role-dialog", true, "job-role-save", id ? "Salva modifiche" : "Crea ruolo");
+    dialogBusy("job-role-dialog", true, "job-role-save", id ? t("Salva modifiche") : t("Crea ruolo"));
     try {
       await post("/api/job-roles" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
       $("job-role-dialog").close();
-      showNotice(id ? "Ruolo aggiornato. Le abilitazioni che lo utilizzano sono aggiornate." : "Ruolo creato. Puoi assegnarlo agli utenti o ai gruppi nelle commesse.");
+      showNotice(id ? t("Ruolo aggiornato. Le abilitazioni che lo utilizzano sono aggiornate.") : t("Ruolo creato. Puoi assegnarlo agli utenti o ai gruppi nelle commesse."));
       await refreshOrganization();
       await refreshAll();
     } catch (error) { dialogError("job-role-error", error); }
-    finally { dialogBusy("job-role-dialog", false, "job-role-save", id ? "Salva modifiche" : "Crea ruolo"); }
+    finally { dialogBusy("job-role-dialog", false, "job-role-save", id ? t("Salva modifiche") : t("Crea ruolo")); }
   });
   $("group-grant-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -4040,8 +5169,8 @@
     $("group-grant-end").setCustomValidity("");
     const startsOn = $("group-grant-start").value;
     const endsOn = $("group-grant-end").value;
-    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("assignment-error", new Error("Scegli date valide per il periodo di abilitazione del gruppo.")); return; }
-    if (startsOn && endsOn && startsOn > endsOn) $("group-grant-end").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("assignment-error", new Error(t("Scegli date valide per il periodo di abilitazione del gruppo."))); return; }
+    if (startsOn && endsOn && startsOn > endsOn) $("group-grant-end").setCustomValidity(t("La data finale deve essere uguale o successiva alla data iniziale."));
     if (!$("group-grant-form").reportValidity()) return;
     const jobId = state.assignmentJob.id;
     const fields = { group_id: $("group-grant-group").value, role_id: $("group-grant-role").value, starts_on: startsOn, ends_on: endsOn };
@@ -4052,7 +5181,7 @@
       state.auditReady = false;
       state.revokeGroupGrant = null;
       $("group-grant-revoke").hidden = true;
-      showNotice("Gruppo abilitato. L’accesso vale anche per i membri dei suoi sottogruppi.");
+      showNotice(t("Gruppo abilitato. L’accesso vale anche per i membri dei suoi sottogruppi."));
       await loadAssignments();
       await refreshAll();
     } catch (error) { dialogError("assignment-error", error); }
@@ -4069,7 +5198,7 @@
       state.auditReady = false;
       state.revokeGroupGrant = null;
       $("group-grant-revoke").hidden = true;
-      showNotice("Abilitazione del gruppo revocata. Le ore già registrate sono conservate.");
+      showNotice(t("Abilitazione del gruppo revocata. Le ore già registrate sono conservate."));
       await loadAssignments();
       await refreshAll();
     } catch (error) { dialogError("assignment-error", error); }
@@ -4094,25 +5223,25 @@
     const fields = Object.fromEntries(keys.map((key) => [key, $("supplier-" + key).value]));
     fields.active = $("supplier-active").value;
     $("supplier-error").hidden = true;
-    dialogBusy("supplier-dialog", true, "supplier-save", id ? "Salva modifiche" : "Crea fornitore");
+    dialogBusy("supplier-dialog", true, "supplier-save", id ? t("Salva modifiche") : t("Crea fornitore"));
     try {
       await post("/api/suppliers" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
       $("supplier-dialog").close();
-      showNotice(id ? "Fornitore aggiornato." : "Fornitore censito. Puoi associarlo a un contratto.");
+      showNotice(id ? t("Fornitore aggiornato.") : t("Fornitore censito. Puoi associarlo a un contratto."));
       await refreshRegistry("suppliers");
       if (can("manage_contracts") && state.contractsReady) await refreshRegistry("contracts");
     } catch (error) {
       dialogError("supplier-error", error);
     } finally {
-      dialogBusy("supplier-dialog", false, "supplier-save", id ? "Salva modifiche" : "Crea fornitore");
+      dialogBusy("supplier-dialog", false, "supplier-save", id ? t("Salva modifiche") : t("Crea fornitore"));
     }
   });
 
   $("contract-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!requirePermission("manage_contracts") || busyDialogs.has("contract-dialog")) return;
-    if (!state.suppliersReady) { dialogError("contract-error", new Error("Ricarica l’elenco dei fornitori prima di salvare.")); return; }
+    if (!state.suppliersReady) { dialogError("contract-error", new Error(t("Ricarica l’elenco dei fornitori prima di salvare."))); return; }
     ["code", "title", "notes"].forEach((key) => { $("contract-" + key).value = $("contract-" + key).value.trim(); });
     $("contract-value").setCustomValidity("");
     $("contract-ends_on").setCustomValidity("");
@@ -4120,24 +5249,24 @@
     try { cents = valueToCents($("contract-value").value); } catch (error) { $("contract-value").setCustomValidity(error.message); }
     const startsOn = $("contract-starts_on").value;
     const endsOn = $("contract-ends_on").value;
-    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("contract-error", new Error("Scegli date valide per il contratto.")); return; }
-    if (startsOn && endsOn && startsOn > endsOn) $("contract-ends_on").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (startsOn && !validDate(startsOn) || endsOn && !validDate(endsOn)) { dialogError("contract-error", new Error(t("Scegli date valide per il contratto."))); return; }
+    if (startsOn && endsOn && startsOn > endsOn) $("contract-ends_on").setCustomValidity(t("La data finale deve essere uguale o successiva alla data iniziale."));
     if (!$("contract-form").reportValidity()) return;
     const id = $("contract-id").value;
     const fields = { code: $("contract-code").value, title: $("contract-title").value, supplier_id: $("contract-supplier").value, status: $("contract-status").value, starts_on: startsOn, ends_on: endsOn, value_cents: cents, currency: "EUR", notes: $("contract-notes").value };
     $("contract-error").hidden = true;
-    dialogBusy("contract-dialog", true, "contract-save", id ? "Salva modifiche" : "Crea contratto");
+    dialogBusy("contract-dialog", true, "contract-save", id ? t("Salva modifiche") : t("Crea contratto"));
     try {
       await post("/api/contracts" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
       $("contract-dialog").close();
-      showNotice(id ? "Contratto aggiornato." : "Contratto censito. Usa il pulsante PDF per archiviare i documenti originali.");
+      showNotice(id ? t("Contratto aggiornato.") : t("Contratto censito. Usa il pulsante PDF per archiviare i documenti originali."));
       await refreshRegistry("contracts");
       await refreshAll();
     } catch (error) {
       dialogError("contract-error", error);
     } finally {
-      dialogBusy("contract-dialog", false, "contract-save", id ? "Salva modifiche" : "Crea contratto");
+      dialogBusy("contract-dialog", false, "contract-save", id ? t("Salva modifiche") : t("Crea contratto"));
     }
   });
 
@@ -4147,24 +5276,24 @@
     $("document-file").setCustomValidity("");
     const file = $("document-file").files[0];
     if (file && !/\.pdf$/i.test(file.name)) $("document-file").setCustomValidity("Seleziona un documento con estensione .pdf.");
-    if (file && (file.size === 0 || file.size > 10 * 1024 * 1024)) $("document-file").setCustomValidity("Il documento deve avere una dimensione da 1 byte a 10 MiB.");
+    if (file && (file.size === 0 || file.size > 10 * 1024 * 1024)) $("document-file").setCustomValidity(t("Il documento deve avere una dimensione da 1 byte a 10 MiB."));
     if (!$("document-form").reportValidity() || !file) return;
     const id = state.documentsContract.id;
     $("documents-error").hidden = true;
-    dialogBusy("documents-dialog", true, "document-save", "Carica PDF");
-    $("document-save").textContent = "Caricamento…";
+    dialogBusy("documents-dialog", true, "document-save", t("Carica PDF"));
+    $("document-save").textContent = t("Caricamento…");
     try {
       await api(`/api/contracts/${encodeURIComponent(id)}/documents?filename=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "Content-Type": "application/pdf" }, body: file, timeoutMs: 60000 });
       if (!can("manage_contracts") || !state.documentsContract || String(state.documentsContract.id) !== String(id)) return;
       state.auditReady = false;
       $("document-form").reset();
-      showNotice("PDF archiviato. Il documento originale è disponibile per il download.");
+      showNotice(t("PDF archiviato. Il documento originale è disponibile per il download."));
       await loadDocuments();
       await refreshRegistry("contracts");
     } catch (error) {
       if (state.documentsContract && String(state.documentsContract.id) === String(id)) dialogError("documents-error", error);
     } finally {
-      dialogBusy("documents-dialog", false, "document-save", "Carica PDF");
+      dialogBusy("documents-dialog", false, "document-save", t("Carica PDF"));
     }
   });
 
@@ -4231,27 +5360,27 @@
     let cents;
     try {
       cents = valueToCents($("labor-rate-hourly").value);
-      if (cents === "" || BigInt(cents) > 99999999n) throw new Error("Inserisci una tariffa da 0 a 999.999,99 EUR, con al massimo due decimali.");
+      if (cents === "" || BigInt(cents) > 99999999n) throw new Error(t("Inserisci una tariffa da 0 a 999.999,99 EUR, con al massimo due decimali."));
     } catch (error) { $("labor-rate-hourly").setCustomValidity(error.message); }
     const from = $("labor-rate-from").value;
     const to = $("labor-rate-to").value;
-    if (!validDate(from) || to && !validDate(to)) { dialogError("labor-rate-error", new Error("Scegli date valide per la tariffa.")); return; }
-    if (to && from > to) $("labor-rate-to").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (!validDate(from) || to && !validDate(to)) { dialogError("labor-rate-error", new Error(t("Scegli date valide per la tariffa."))); return; }
+    if (to && from > to) $("labor-rate-to").setCustomValidity(t("La data finale deve essere uguale o successiva alla data iniziale."));
     if (!$("labor-rate-form").reportValidity()) return;
     const fields = { user_id: editing ? String(editing.user_id) : $("labor-rate-user").value, hourly_cents: cents, starts_on: from, ends_on: to, currency: "EUR" };
     $("labor-rate-error").hidden = true;
-    dialogBusy("labor-rate-dialog", true, "labor-rate-save", editing ? "Salva modifiche" : "Crea tariffa");
+    dialogBusy("labor-rate-dialog", true, "labor-rate-save", editing ? t("Salva modifiche") : t("Crea tariffa"));
     try {
       await post("/api/labor-rates" + (editing ? "/" + encodeURIComponent(editing.id) : ""), fields);
       if (!isReportManager()) return;
       state.auditReady = false;
       $("labor-rate-dialog").close();
-      showNotice(editing ? "Tariffa aggiornata. Le stime sono state ricalcolate." : "Tariffa creata. Le ore nel periodo di validità sono ora valorizzate.");
+      showNotice(editing ? t("Tariffa aggiornata. Le stime sono state ricalcolate.") : t("Tariffa creata. Le ore nel periodo di validità sono ora valorizzate."));
       await Promise.all([refreshReports(), refreshLaborRates()]);
     } catch (error) {
       if (isReportManager() && $("labor-rate-dialog").open) dialogError("labor-rate-error", error);
     } finally {
-      dialogBusy("labor-rate-dialog", false, "labor-rate-save", editing ? "Salva modifiche" : "Crea tariffa");
+      dialogBusy("labor-rate-dialog", false, "labor-rate-save", editing ? t("Salva modifiche") : t("Crea tariffa"));
       $("labor-rate-user").disabled = Boolean(editing) || !isReportManager();
     }
   });
@@ -4279,7 +5408,7 @@
     state.documentsReady = false;
     $("documents-list").replaceChildren();
     $("documents-dialog-description").textContent = "";
-    $("documents-dialog-title").textContent = "Documenti del contratto";
+    $("documents-dialog-title").textContent = t("Documenti del contratto");
     $("document-form").reset();
   });
 
@@ -4297,7 +5426,7 @@
   $("job-dialog").addEventListener("close", () => {
     if (!busyDialogs.has("job-dialog")) state.openEntryAfterJob = false;
     state.editingJob = null;
-    $("job-dialog-description").textContent = "Definisci i dettagli della commessa. Potrai aggiornarli in ogni momento.";
+    $("job-dialog-description").textContent = t("Definisci i dettagli della commessa. Potrai aggiornarli in ogni momento.");
   });
   $("user-dialog").addEventListener("close", () => { $("user-form").reset(); $("user-password").value = ""; $("user-password").setCustomValidity(""); });
   $("user-password").addEventListener("input", () => $("user-password").setCustomValidity(""));
@@ -4335,7 +5464,7 @@
     try { await post("/api/logout", {}); window.location.replace("/"); } catch (error) { showNotice(error.message, true); $("logout").disabled = false; }
   });
   $("current-year").textContent = new Date().getFullYear();
-  const mobileNavigation = window.matchMedia("(max-width: 760px)");
+  const mobileNavigation = window.matchMedia(t("(max-width: 760px)"));
   const updateTabOrientation = () => document.querySelector(".app-navigation").setAttribute("aria-orientation", mobileNavigation.matches ? "horizontal" : "vertical");
   updateTabOrientation();
   mobileNavigation.addEventListener("change", updateTabOrientation);
@@ -4344,12 +5473,18 @@
   async function initialize() {
     try {
       if (!await refreshSession()) return;
+      await loadIdentityManagement();
       $("session-status").hidden = true;
       $("workspace").hidden = false;
+      try {
+        const pending = JSON.parse(sessionStorage.getItem("punto.ticket.return") || "null");
+        sessionStorage.removeItem("punto.ticket.return");
+        if (!location.hash && pending && Date.now() - pending.at < 600000 && (/^#ticket-connect\?state=[a-f0-9]{64}$/.test(pending.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(pending.hash))) history.replaceState(null, "", location.pathname + pending.hash);
+      } catch { /* Il ripristino del collegamento è facoltativo. */ }
       applyReportRoute();
       await refreshAll();
     } catch (error) {
-      $("session-status").textContent = error.message + " Ricarica la pagina per riprovare.";
+      $("session-status").textContent = error.message + t(" Ricarica la pagina per riprovare.");
     }
   }
   initialize();

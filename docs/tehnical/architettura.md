@@ -1,5 +1,7 @@
 # Architettura tecnica
 
+**Italiano** | [English](../en/tehnical/architettura.md)
+
 Questa guida descrive il codice e la configurazione presenti l’**11 ottobre 2026**. Le funzionalità pianificate nei documenti di roadmap non diventano implementate per il solo fatto di essere descritte. Per l'ingresso alla documentazione consultare il [README del progetto](../../README.md).
 
 ## Componenti e responsabilità
@@ -82,7 +84,7 @@ Il worker Calendar è invece un thread distinto, con propria connessione SQLite.
 
 ## Persistenza, consistenza e transazioni
 
-Lo schema applicativo corrente è **versione 9**, con 24 tabelle MySQL o 22 tabelle funzionali SQLite, oltre alla tabella interna `sqlite_sequence`. Lo schema 9 estende le regole alert con `inventory_due` e `days_before`, senza aggiungere altre tabelle applicative. Le tabelle `job_tasks` e `job_blockers`, introdotte nello schema 8, appartengono alla stessa persistenza delle commesse; non introducono un servizio o un database separato. Le migrazioni sono applicate all'avvio e un database con versione non supportata viene rifiutato. Calendar non aggiunge tabelle allo schema MySQL: conserva i propri dati nel volume dedicato.
+Lo schema applicativo corrente è **versione 10**, con 24 tabelle MySQL o 22 tabelle funzionali SQLite, oltre alla tabella interna `sqlite_sequence`. Lo schema 9 estende le regole alert con `inventory_due` e `days_before`; lo schema 10 aggiunge `inventory_return`, `inventory_verification` e `verification_days` (1–365, predefinito 90). Entrambi conservano ID, relazioni e storico, senza aggiungere altre tabelle applicative. Le tabelle `job_tasks` e `job_blockers`, introdotte nello schema 8, appartengono alla stessa persistenza delle commesse; non introducono un servizio o un database separato. Le migrazioni sono applicate all'avvio e un database con versione non supportata viene rifiutato. Calendar non aggiunge tabelle allo schema MySQL: conserva i propri dati nel volume dedicato.
 
 MySQL contiene i dati gestionali, i metadati PDF e l'outbox degli alert. GridFS contiene i byte PDF. Un upload attraversa entrambi gli archivi, senza transazione distribuita: un errore può lasciare un blob non referenziato, e non è presente una riconciliazione automatica. Il backup coordinato deve preservare sia SQL sia documenti.
 

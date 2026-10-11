@@ -1,5 +1,7 @@
 # Interni del server C
 
+**Italiano** | [English](../en/tehnical/interni-server-c.md)
+
 Stato verificato sul codice l’**11 ottobre 2026**. Questo documento descrive il funzionamento implementato del processo `punto` e i contratti interni da rispettare quando lo si modifica. Per l'inventario dei container vedere [architettura](architettura.md); per i percorsi e i payload pubblici vedere [API app](api-app.md). Non sono state eseguite nuove prove runtime durante questa stesura.
 
 Fonti principali: [server.c](../../src/server.c), [Makefile](../../Makefile), gli header in [src](../../src), [db_mysql.c](../../src/db_mysql.c), [calendar.c](../../calendar-addon/src/calendar.c), [mailer.c](../../addon/src/mailer.c).

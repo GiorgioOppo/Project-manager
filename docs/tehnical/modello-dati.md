@@ -1,6 +1,8 @@
 # Modello dei dati e dizionario degli archivi
 
-Verificato sul codice del repository l’**11 ottobre 2026**. Schema applicativo **9**; schema del calendario SQLite **1**. Questo documento descrive l'implementazione presente, non le proposte finanziarie o crittografiche della roadmap.
+**Italiano** | [English](../en/tehnical/modello-dati.md)
+
+Verificato sul codice del repository l’**11 ottobre 2026**. Schema applicativo **10**; schema del calendario SQLite **1** e schema inventory SQLite **5**. Questo documento descrive l'implementazione presente, non le proposte finanziarie o crittografiche della roadmap.
 
 Fonti: [DDL MySQL](../../src/mysql_schema.c), [migrazioni](../../src/storage.c), [utenti](../../src/accounts.c), [commesse e ore](../../src/workspace.c), [organizzazione](../../src/organization.c), [attività e blocchi](../../src/work_board.c), [contratti](../../src/procurement.c), [documenti](../../src/documents.c), [alert](../../src/alerts.c), [mailer](../../addon/src/mailer.c), [calendario](../../calendar-addon/src/calendar.c) e [Compose](../../compose.yaml).
 
@@ -8,7 +10,7 @@ Fonti: [DDL MySQL](../../src/mysql_schema.c), [migrazioni](../../src/storage.c),
 
 | Archivio | Nome/percorso predefinito | Contenuto e proprietario |
 | --- | --- | --- |
-| MySQL InnoDB, tre repliche Group Replication | `punto`, configurabile con `MYSQL_DATABASE`/`DB_NAME` | Le 24 tabelle applicative sotto descritte. Tre nodi replicano lo stesso database logico: non sono tre database business diversi. |
+| MySQL InnoDB, tre repliche Group Replication | `punto`, configurabile con `MYSQL_DATABASE`/`DB_NAME` | Le 25 tabelle applicative sotto descritte. Tre nodi replicano lo stesso database logico: non sono tre database business diversi. |
 | SQLite applicativo, sviluppo nativo | `DB_PATH`, predefinito `data/punto.db` | Alternativa a MySQL per le stesse funzioni; versione con `PRAGMA user_version`. |
 | MongoDB GridFS | `punto_documents`, configurabile con `DOC_DB_NAME` | Originali PDF e metadati GridFS, gestiti dall'app tramite account documentale. |
 | SQLite Nginx Proxy Manager | `nginx-proxy-manager/data/database.sqlite` sull'host, `/data/database.sqlite` nel container | Configurazione NPM, utenti amministrativi NPM, host proxy e riferimenti ai certificati. Schema di competenza di NPM 2.16.0, non delle migrazioni applicative. |
@@ -35,6 +37,7 @@ Gli addon non accedono a MySQL o MongoDB. I loro ID utente sono riferimenti logi
 ```mermaid
 erDiagram
     users ||--o{ time_entries : registra
+    users ||--o| oidc_identities : identita_provider
     jobs ||--o{ time_entries : riceve
     jobs ||--o{ job_tasks : contiene
     job_tasks o|--o{ job_tasks : padre
@@ -68,15 +71,16 @@ erDiagram
 
 `alert_events.job_id` è intenzionalmente privo di FK: registra tentativi relativi a una commessa inesistente. `audit_events.entity_id` è un riferimento polimorfico storico, non una FK: lo storico sopravvive alla cancellazione dell'entità.
 
-## Catalogo funzionale delle 24 tabelle MySQL
+## Catalogo funzionale delle 25 tabelle MySQL
 
 Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, indice, chiave e CHECK**. Qui sono spiegate le responsabilità e le regole che il solo DDL non esprime.
 
 | Tabella | Responsabilità e interpretazione |
 | --- | --- |
-| `schema_metadata` | Una riga `id=1`; `version=9` dopo le migrazioni. Una versione futura sconosciuta impedisce l'avvio. |
+| `schema_metadata` | Una riga `id=1`; `version=10` dopo le migrazioni. Una versione futura sconosciuta impedisce l'avvio. |
 | `cluster_write_guard` | Una riga `id=1`, `generation>=0`; aggiornata all'inizio delle scritture applicative per far certificare sul cluster i conflitti fra transazioni, incluse regole dipendenti da aggregati. Non è un dato utente. |
 | `users` | Identità applicativa: email univoca, nome, ruolo globale `manager`/`worker`, abilitazione, hash password e salt. L'API non espone hash/salt. Creazione attiva; disabilitazione reversibile; nessuna cancellazione utente esposta. |
+| `oidc_identities` | Collegamento persistente della coppia esatta `(issuer,subject)` al `user_id` locale, anch’esso univoco e FK verso `users`. Identifica l’utente indipendentemente da cambi di email e impedisce che due identità reclamino lo stesso profilo. Non contiene password o token. |
 | `suppliers` | Codice univoco, ragione sociale, partita IVA, contatti, indirizzo, note e stato attivo. Il flag non elimina contratti o documenti. |
 | `contracts` | Codice, titolo, fornitore, stato `draft`/`active`/`expired`/`closed`/`cancelled`, validità, valore facoltativo in EUR e note. Nessun calcolo fiscale o registro fatture. |
 | `contract_documents` | Manifesto SQL del PDF: `storage_key` casuale univoca, nome, dimensione, SHA-256, autore e istante. `storage_key` risolve il contenuto in GridFS; non è un percorso filesystem. Metadati immutabili. |
@@ -90,8 +94,8 @@ Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, 
 | `group_members` | Appartenenza diretta utente–gruppo, PK composta. Le autorizzazioni dei gruppi antenati sono risolte dal codice senza duplicare righe di appartenenza. |
 | `job_group_grants` | Abilitazione commessa–gruppo, ruolo locale obbligatorio e validità opzionale. Una riga per coppia. |
 | `job_assignments` | Abilitazione diretta commessa–utente e validità. `role_id` nullable per compatibilità: il codice interpreta il valore assente come Collaboratore, ID 2. |
-| `alert_rules` | Regola di proprietà di un gestore: nome, `invalid_job`/`missing_hours`/`inventory_due`, anticipo `days_before` (1–365), ora, abilitazione, date di gestione/esecuzione e ultimo evento processato. Una regola non è condivisa automaticamente tra gestori. |
-| `alert_rule_users` | Destinatari interni della regola; una riga per utente. L'app richiede utenti esistenti e attivi; un destinatario worker riceve solo notifiche che lo riguardano come soggetto. |
+| `alert_rules` | Regola di proprietà di un gestore: nome, `invalid_job`/`missing_hours`/`inventory_due`/`inventory_return`/`inventory_verification`, anticipo `days_before` (1–365, default 30) e intervallo `verification_days` (1–365, default 90), ora, abilitazione, date di gestione/esecuzione e ultimo evento processato. Una regola non è condivisa automaticamente tra gestori. |
+| `alert_rule_users` | Destinatari interni della regola; una riga per utente. L'app richiede utenti esistenti e attivi. Per gli alert sulle ore un destinatario worker riceve solo notifiche che lo riguardano come soggetto; gli alert inventory sono condivisi con tutti i destinatari attivi selezionati. |
 | `alert_rule_emails` | Destinatari email della regola, indirizzi case-insensitive nella PK composta. Non occorre un account applicativo per un indirizzo email. |
 | `alert_subjects` | Utenti osservati per le ore mancanti: inizio del monitoraggio e ultimo giorno verificato. Sono soggetti dell'alert, distinti dai destinatari. |
 | `alert_events` | Tentativi di registrare ore su ID commessa inesistente, con utente, data lavorata, minuti e momento del tentativo. Le ore invalide non entrano in `time_entries`. |
@@ -133,8 +137,11 @@ In modalità nativa, `users`, `jobs` e `time_entries` vengono inizializzate dai 
 | 7 | Stati di consegna email ampliati per il servizio email; mantenimento dei contatori ID anche delle righe eliminate. |
 | 8 | Attività e sottoattività, stati Kanban e blocchi con revisioni, FK nella stessa commessa e audit delle nuove operazioni. |
 | 9 | Regole alert `inventory_due` e anticipo `days_before` sulle scadenze inventory; nessuna nuova tabella applicativa. |
+| 10 | Regole `inventory_return` e `inventory_verification`, intervallo `verification_days` 1–365 (default 90). Conserva ID, sequenza, FK, destinatari e storico delle consegne; nessuna nuova tabella applicativa. |
 
-SQLite non possiede `schema_metadata` né `cluster_write_guard`: usa `PRAGMA user_version` e transazioni `BEGIN IMMEDIATE`. Il suo schema business comprende le altre 22 tabelle; `sqlite_sequence` è una tabella interna SQLite. Non si devono copiare i DDL MySQL sul file SQLite. Le migrazioni sono eseguite dall'app, senza un endpoint HTTP di migrazione.
+SQLite non possiede `schema_metadata` né `cluster_write_guard`: usa `PRAGMA user_version` e transazioni `BEGIN IMMEDIATE`. Il suo schema business comprende le altre 23 tabelle; `sqlite_sequence` è una tabella interna SQLite. Non si devono copiare i DDL MySQL sul file SQLite. Le migrazioni sono eseguite dall'app, senza un endpoint HTTP di migrazione.
+
+La tabella `oidc_identities` viene creata idempotentemente dall’inizializzazione degli account SQLite e dalla preparazione dello schema MySQL, anche con autenticazione locale, senza incrementare la versione 10. In SQLite `issuer` e `subject` sono `TEXT COLLATE BINARY`, con PK composta, mentre `user_id` è `INTEGER NOT NULL UNIQUE REFERENCES users(id)`; in MySQL le chiavi del provider sono `VARBINARY`, come nel DDL seguente.
 
 In modalità nativa i PDF sono file locali nella directory `DOC_FILES_DIR`, oppure nella sottocartella `documents` accanto al file `DB_PATH` (per default `data/documents`), con chiavi validate ed esclusione di symlink. In Docker il backend documentale è MongoDB.
 
@@ -183,6 +190,20 @@ I dati autenticati della cifratura legano utente e finalità della riga: token; 
 
 Il formato binario dei valori cifrati è versionato: byte versione `1`, nonce casuale di 12 byte, tag GCM di 16 byte e ciphertext. I dati autenticati sono costruiti come `punto-calendar:v1:<user_id>:<purpose>`. Non modificare direttamente blob, identificatori o chiave: l'autenticazione fallisce. Il controllo cifrato `metadata.key_check` impedisce l'apertura con una chiave estranea; non esiste ancora una procedura automatica di rotazione dei ciphertext.
 
+## Archivio inventory
+
+SQLite inventory usa schema **5**, FK, WAL e `synchronous=FULL` nel volume indipendente `inventory_addon_data`. Le tabelle preesistenti `assets`, `asset_history`, `asset_relations`, `inventory_import_previews`, `inventory_places`, `asset_context`, `asset_custody` e `asset_verifications` conservano catalogo, revisioni, relazioni, anteprime CSV, luoghi, assegnazioni, consegne e verifiche. Lo schema 5 aggiunge cinque tabelle:
+
+| Tabella | Colonne e vincoli |
+| --- | --- |
+| `inventory_people` | `id` autoincrementale; `person_code` univoco `NOCASE` fino a 64 byte, `display_name` obbligatorio fino a 160; `email`, `organization`, `job_title`, `notes`; `active`, `version`, `actor_id`, date di creazione e aggiornamento. Rappresenta una persona reale, anche senza account di login. |
+| `inventory_identities` | `id` autoincrementale; coppia `realm`/`login` obbligatoria e univoca `NOCASE`, fino a 160 byte ciascuno; `display_name`, `kind=personal|shared|service`, `notes`; `active`, `version`, autore e date. Censisce un'utenza senza password o token; il tipo non limita il numero di persone associate. |
+| `inventory_identity_people` | FK `identity_id` e `person_id`; `role=owner|user`, note, stato attivo, autore/data di creazione e di rimozione. Un indice parziale impedisce più legami attivi per la stessa coppia; il legame molti a molti è disattivato senza cancellare la riga. Aggiunta/rimozione incrementa e storicizza entrambe le versioni nella stessa transazione. |
+| `inventory_entity_history` | Tipo `person|identity`, ID soggetto, `action=created|updated`, autore, versione, data e snapshot JSON, con `change` facoltativo. UNIQUE `(entity_type,entity_id,version)`; storico delle anagrafiche e snapshot immutabili dei legami aggiunti/rimossi. |
+| `inventory_asset_subjects` | FK `asset_id` e uno solo fra `person_id`/`identity_id`; `role=owner|user|administrator`, note, snapshot JSON del soggetto, autore/date/stato. Indici parziali univoci sulle coppie attive asset-persona e asset-identità. La scrittura incrementa e storicizza solo la versione del bene. |
+
+Anagrafiche e legami sono indipendenti da `users` del database applicativo: gli ID autore sono riferimenti fidati dell'app, senza FK fra database. La disattivazione conserva i riferimenti; i nuovi legami richiedono soggetti attivi. Un asset collegato a un'identità condivisa non si propaga alle persone associate e non cambia custodia, stato, posti licenza o permessi. Dati e snapshot rimangono in chiaro nel volume. La migrazione 4 → 5 è additiva e transazionale, conserva assegnazioni e snapshot precedenti e non cambia lo schema applicativo 10. Contratti e limiti nel [manuale inventory](asset-inventory.md#persone-identità-e-beni-collegati).
+
 ## Quali dati sono cifrati e quali no
 
 | Dati | Protezione effettivamente implementata |
@@ -200,7 +221,7 @@ Non sono implementati FHE/calcolo omomorfico, vault con chiavi per utente o camp
 
 Per procedure coerenti di backup e ripristino vedere [operazioni](operazioni-backup-ripristino.md). Per i vincoli esposti ai chiamanti vedere [API app](api-app.md) e [API addon](api-addon.md).
 
-## DDL MySQL completo, schema 9
+## DDL MySQL completo, schema 10
 
 Le definizioni seguenti sono estratte dalle stringhe DDL di `mysql_schema_prepare()` e formattate senza modificarne il contenuto. Sono un riferimento dello schema atteso, **non uno script da lanciare per aggiornare manualmente un database esistente**: le migrazioni includono anche verifiche, trigger, dati iniziali e audit.
 
@@ -240,6 +261,19 @@ CREATE TABLE IF NOT EXISTS users (
   UNIQUE KEY users_email(email),
   CHECK(role IN ('manager','worker')),
   CHECK(active IN (0,1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+```
+
+### `oidc_identities`
+
+```sql
+CREATE TABLE IF NOT EXISTS oidc_identities (
+  issuer VARBINARY(1023) NOT NULL,
+  subject VARBINARY(255) NOT NULL,
+  user_id BIGINT NOT NULL,
+  PRIMARY KEY(issuer,subject),
+  UNIQUE KEY oidc_identities_user(user_id),
+  CONSTRAINT oidc_identities_user_fk FOREIGN KEY(user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 ```
 
@@ -540,8 +574,10 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   KEY alert_rules_owner(owner_id,id),
   CONSTRAINT alert_rules_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),
   days_before INT NOT NULL DEFAULT 30,
-  CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due')),
+  verification_days INT NOT NULL DEFAULT 90,
+  CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due','inventory_return','inventory_verification')),
   CONSTRAINT alert_rules_days_before CHECK(days_before BETWEEN 1 AND 365),
+  CONSTRAINT alert_rules_verification_days CHECK(verification_days BETWEEN 1 AND 365),
   CHECK(CHAR_LENGTH(run_time)=5),
   CHECK(enabled IN (0,1)),
   CHECK(last_event_id>=0)

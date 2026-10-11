@@ -1,6 +1,8 @@
 # Panoramica di prodotto
 
-Stato documentato: **11 ottobre 2026**, codice applicativo con schema dati **9**. Questa pagina descrive le funzioni presenti; la [roadmap](roadmap.md) distingue le estensioni ancora da realizzare.
+**Italiano** | [English](../en/prod/panoramica.md)
+
+Stato documentato: **11 ottobre 2026**, codice applicativo con schema dati **10**. Questa pagina descrive le funzioni presenti; la [roadmap](roadmap.md) distingue le estensioni ancora da realizzare.
 
 ## Scopo
 

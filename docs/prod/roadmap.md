@@ -1,6 +1,8 @@
 # Roadmap di prodotto e stato di avanzamento
 
-Questa pagina aggiorna la lettura dei piani rispetto alla base applicativa documentata il **11 ottobre 2026**, schema **9**. Il [piano delle venti funzionalità](roadmap-20-funzionalita.md) e il [piano finanziario](piano-modulo-finanziario.md) conservano il disegno di dettaglio originario, redatto quando la base era lo schema 3. I numeri di schema, i conteggi e le descrizioni di «base attuale» presenti in quei piani sono riferimenti storici, non lo stato corrente.
+**Italiano** | [English](../en/prod/roadmap.md)
+
+Questa pagina aggiorna la lettura dei piani rispetto alla base applicativa documentata il **11 ottobre 2026**, schema **10**. Il [piano delle venti funzionalità](roadmap-20-funzionalita.md) e il [piano finanziario](piano-modulo-finanziario.md) conservano il disegno di dettaglio originario, redatto quando la base era lo schema 3. I numeri di schema, i conteggi e le descrizioni di «base attuale» presenti in quei piani sono riferimenti storici, non lo stato corrente.
 
 Gli stati usati qui sono:
 

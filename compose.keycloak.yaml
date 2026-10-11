@@ -1,0 +1,177 @@
+# Optional authentication overlay; use with compose.yaml and generated compose.env.
+services:
+  auth-config-init:
+    image: busybox:1.37.0
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/opt/punto/prepare-runtime.sh"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    volumes:
+      - ./auth/keycloak/prepare-runtime.sh:/opt/punto/prepare-runtime.sh:ro
+      - ./data/keycloak/secrets/database-password:/source/database-password:ro
+      - ./data/keycloak/secrets/bootstrap-password:/source/bootstrap-password:ro
+      - ./data/keycloak/secrets/punto-client-secret:/source/punto-client-secret:ro
+      - ./data/keycloak/secrets/tickets-client-secret:/source/tickets-client-secret:ro
+      - ./data/keycloak/realm/punto-realm.json:/source/punto-realm.json:ro
+      - ./data/keycloak/bindings/punto.json:/source/punto-bindings.json:ro
+      - ./data/keycloak/bindings/tickets.json:/source/tickets-bindings.json:ro
+      - ./data/keycloak/tls/keycloak.crt:/source/keycloak.crt:ro
+      - ./data/keycloak/tls/keycloak.key:/source/keycloak.key:ro
+      - ./data/keycloak/tls/ca.crt:/source/ca.crt:ro
+      - keycloak_runtime:/runtime/keycloak
+      - keycloak_database_runtime:/runtime/database
+      - punto_auth_runtime:/runtime/punto
+      - tickets_auth_runtime:/runtime/tickets
+
+  keycloak-db:
+    image: postgres:17.11-bookworm
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD_FILE: /run/punto-auth/database-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    depends_on:
+      auth-config-init:
+        condition: service_completed_successfully
+    volumes:
+      - keycloak_database:/var/lib/postgresql/data
+      - keycloak_database_runtime:/run/punto-auth:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_drop: [NET_ADMIN, NET_RAW]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "keycloak", "-d", "keycloak"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+    networks:
+      auth_database:
+        ipv4_address: 172.30.91.3
+        interface_name: auth_database
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0
+    user: "1000:1000"
+    entrypoint: ["/bin/bash", "/opt/punto/entrypoint.sh"]
+    command: ["start", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD_FILE: /run/punto-auth/database-password
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_BOOTSTRAP_ADMIN:-punto-bootstrap}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/punto-auth/bootstrap-password
+      KC_HOSTNAME: "${KEYCLOAK_PUBLIC_ORIGIN:?Esegui configure_keycloak.py init e carica data/keycloak/compose.env}"
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_PROXY_TRUSTED_ADDRESSES: 172.30.20.2/32
+      KC_HTTP_ENABLED: "false"
+      KC_HTTPS_PORT: "8443"
+      KC_HTTPS_CERTIFICATE_FILE: /run/punto-auth/keycloak.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /run/punto-auth/keycloak.key
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_HOST: 127.0.0.1
+      KC_HTTP_MANAGEMENT_SCHEME: http
+      KC_CACHE: local
+    depends_on:
+      auth-config-init:
+        condition: service_completed_successfully
+      keycloak-db:
+        condition: service_healthy
+    volumes:
+      - ./auth/keycloak/entrypoint.sh:/opt/punto/entrypoint.sh:ro
+      - ./auth/keycloak/healthcheck.sh:/opt/punto/healthcheck.sh:ro
+      - keycloak_runtime:/run/punto-auth:ro
+      - keycloak_runtime:/opt/keycloak/data/import:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    healthcheck:
+      test: ["CMD", "/bin/bash", "/opt/punto/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      private_app:
+        ipv4_address: 172.30.20.12
+        interface_name: private_app
+      auth_api:
+        ipv4_address: 172.30.90.2
+        interface_name: auth_api
+      auth_database:
+        ipv4_address: 172.30.91.2
+        interface_name: auth_database
+
+  app:
+    environment:
+      AUTH_MODE: "${KEYCLOAK_AUTH_MODE:-hybrid}"
+      AUTH_USER_MANAGEMENT: "${KEYCLOAK_USER_MANAGEMENT:-local}"
+      AUTH_LOCAL_ADMIN_EMAIL: "${KEYCLOAK_LOCAL_ADMIN_EMAIL:-}"
+      OIDC_ROLE_CLAIM: app_roles
+      OIDC_ADMIN_ROLE: manager
+      OIDC_USER_ROLE: worker
+      OIDC_USERS_ADMIN_URL: "${KEYCLOAK_USERS_ADMIN_URL:-}"
+      OIDC_ISSUER_URL: "${KEYCLOAK_ISSUER_URL:?Esegui configure_keycloak.py init}"
+      OIDC_BACKCHANNEL_URL: https://keycloak:8443/realms/punto
+      OIDC_CLIENT_ID: punto
+      OIDC_CLIENT_SECRET_FILE: /run/punto-auth/client-secret
+      OIDC_REDIRECT_URI: "${KEYCLOAK_PUNTO_REDIRECT_URI:?Esegui configure_keycloak.py init}"
+      OIDC_BINDINGS_FILE: /run/punto-auth/bindings.json
+      OIDC_CA_FILE: /run/punto-auth/ca.crt
+    depends_on:
+      auth-config-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - punto_auth_runtime:/run/punto-auth:ro
+    networks:
+      auth_api:
+        ipv4_address: 172.30.90.10
+        interface_name: auth_api
+
+  proxy-web:
+    volumes:
+      - ./data/keycloak/tls/ca.crt:/etc/punto/keycloak-ca.crt:ro
+
+volumes:
+  keycloak_database:
+  keycloak_runtime:
+  keycloak_database_runtime:
+  punto_auth_runtime:
+  tickets_auth_runtime:
+
+networks:
+  auth_api:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.90.0/24
+  auth_database:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.91.0/24

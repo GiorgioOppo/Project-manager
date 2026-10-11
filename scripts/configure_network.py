@@ -252,10 +252,12 @@ def check_engine(cluster):
                         raise ClusterError("Subnet di rete già utilizzata; aggiorna indirizzi, bind, allowlist e SAN prima di applicare.")
 
 
-def apply(env_file, context):
+def apply(env_file, context, *, keycloak=False, tickets=False,
+          keycloak_env_file=None, tickets_env_file=None):
     if not load_state().get("initialized"):
         raise ClusterError("Cluster non inizializzato: esegui prepare e poi manage_cluster.py init.")
-    cluster = Cluster(env_file, context)
+    cluster = Cluster(env_file, context, keycloak=keycloak, tickets=tickets,
+                      keycloak_env_file=keycloak_env_file, tickets_env_file=tickets_env_file)
     cluster.require_service_migration_complete()
     prepare()
     check_engine(cluster)
@@ -275,10 +277,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, default=PROJECT / ".env.docker")
     parser.add_argument("--docker-context", default=os.environ.get("DOCKER_CONTEXT", "desktop-linux" if sys.platform == "darwin" else ""))
+    parser.add_argument("--keycloak", action="store_true", help="Conserva l'overlay Keycloak durante apply")
+    parser.add_argument("--tickets", action="store_true", help="Conserva l'overlay Tickets durante apply")
+    parser.add_argument("--keycloak-env-file", type=Path, help="Ambiente Keycloak alternativo, richiede --keycloak")
+    parser.add_argument("--tickets-env-file", type=Path, help="Ambiente Tickets alternativo, richiede --tickets")
     parser.add_argument("action", choices=("prepare", "apply"))
     args = parser.parse_args()
     lock = None
     try:
+        if args.keycloak_env_file and not args.keycloak:
+            raise ClusterError("--keycloak-env-file richiede la selezione esplicita --keycloak.")
+        if args.tickets_env_file and not args.tickets:
+            raise ClusterError("--tickets-env-file richiede la selezione esplicita --tickets.")
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         lock = (STATE_PATH.parent / "cluster-controller.lock").open("a")
         try:
@@ -288,7 +298,8 @@ def main():
         if args.action == "prepare":
             prepare()
         else:
-            apply(args.env_file, args.docker_context)
+            apply(args.env_file, args.docker_context, keycloak=args.keycloak, tickets=args.tickets,
+                  keycloak_env_file=args.keycloak_env_file, tickets_env_file=args.tickets_env_file)
         return 0
     except Exception as error:
         message = str(error) if isinstance(error, ClusterError) else "Operazione non completata; verifica lo stato dei servizi prima di procedere."

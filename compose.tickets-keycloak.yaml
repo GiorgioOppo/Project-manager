@@ -1,0 +1,29 @@
+# Add after compose.yaml, compose.tickets.yaml and compose.keycloak.yaml.
+services:
+  tickets:
+    environment:
+      AUTH_MODE: "${KEYCLOAK_TICKETS_AUTH_MODE:-hybrid}"
+      AUTH_USER_MANAGEMENT: "${KEYCLOAK_USER_MANAGEMENT:-local}"
+      AUTH_LOCAL_ADMIN_EMAIL: "${KEYCLOAK_LOCAL_ADMIN_EMAIL:-}"
+      OIDC_ROLE_CLAIM: app_roles
+      OIDC_ADMIN_ROLE: admin
+      OIDC_USER_ROLE: agent
+      OIDC_USERS_ADMIN_URL: "${KEYCLOAK_USERS_ADMIN_URL:-}"
+      OIDC_ISSUER_URL: "${KEYCLOAK_ISSUER_URL:?Esegui configure_keycloak.py init}"
+      OIDC_BACKCHANNEL_URL: https://keycloak:8443/realms/punto
+      OIDC_CLIENT_ID: punto-tickets
+      OIDC_CLIENT_SECRET_FILE: /run/punto-auth/client-secret
+      OIDC_REDIRECT_URI: "${KEYCLOAK_TICKETS_REDIRECT_URI:?Inizializza Keycloak anche con --tickets-origin}"
+      OIDC_BINDINGS_FILE: /run/punto-auth/bindings.json
+      OIDC_CA_FILE: /run/punto-auth/ca.crt
+    depends_on:
+      auth-config-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - tickets_auth_runtime:/run/punto-auth:ro
+    networks:
+      auth_api:
+        ipv4_address: 172.30.90.11
+        interface_name: auth_api

@@ -47,6 +47,7 @@ class TicketApplicationTests(unittest.TestCase):
         self.origin = f"http://127.0.0.1:{self.port}"
         self.environment = os.environ.copy()
         self.environment.update({
+            "AUTH_MODE": "local",
             "TICKETS_BIND": "127.0.0.1",
             "TICKETS_PORT": str(self.port),
             "TICKETS_DB_PATH": str(Path(self.temporary.name) / "tickets.sqlite"),
@@ -168,6 +169,33 @@ class TicketApplicationTests(unittest.TestCase):
         for path in ("/api/session", "/api/tickets", "/api/users", "/api/tickets/1"):
             with self.subTest(path=path):
                 self.api("GET", path, expected=401)
+
+    def test_local_auth_configuration_and_sso_routes(self):
+        body, _headers = self.api("GET", "/api/auth/config")
+        self.assertEqual(body, {"sso": False, "local": True})
+        self.api("POST", "/api/auth/config", {}, expected=405)
+        for path in ("/auth/login", "/auth/callback?state=forged&code=forged"):
+            with self.subTest(path=path):
+                status, body, _headers = self.request("GET", path)
+                self.assertIn(status, (400, 404, 503), body)
+                self.assertIs(body.get("ok"), False)
+
+    def test_invalid_auth_mode_fails_before_creating_database(self):
+        database_path = Path(self.temporary.name) / "invalid-auth.sqlite"
+        environment = {**self.environment, "AUTH_MODE": "unknown", "TICKETS_DB_PATH": str(database_path)}
+        result = subprocess.run([str(self.binary)], cwd=APP, env=environment,
+                                capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(database_path.exists())
+
+    def test_oidc_without_configuration_fails_before_creating_database(self):
+        database_path = Path(self.temporary.name) / "missing-oidc.sqlite"
+        environment = {key: value for key, value in self.environment.items() if not key.startswith("OIDC_")}
+        environment.update({"AUTH_MODE": "oidc", "TICKETS_DB_PATH": str(database_path)})
+        result = subprocess.run([str(self.binary)], cwd=APP, env=environment,
+                                capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(database_path.exists())
 
     def test_login_session_and_logout(self):
         admin = self.login()
@@ -605,6 +633,62 @@ class TicketApplicationTests(unittest.TestCase):
             self.assertEqual(database.execute("SELECT * FROM sentinel").fetchall(), [(1, "Archivio da preservare")])
             self.assertEqual(database.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY name").fetchall(),
                              original_schema)
+
+    def test_schema_one_migration_preserves_existing_accounts_tickets_and_history(self):
+        self.stop()
+        with sqlite3.connect(self.environment["TICKETS_DB_PATH"]) as database:
+            account = database.execute("SELECT id,name,email,role,active,password_salt,password_hash,created_at FROM users").fetchone()
+        legacy_path = Path(self.temporary.name) / "schema-one.sqlite"
+        with sqlite3.connect(legacy_path) as database:
+            # The actual prior schema: no new reference columns or current-schema pragma trick.
+            database.executescript("""
+                CREATE TABLE users(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,email TEXT NOT NULL COLLATE NOCASE UNIQUE,role TEXT NOT NULL CHECK(role IN('admin','agent')),active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));
+                CREATE TABLE tickets(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT '',requester TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open' CHECK(status IN('open','in_progress','waiting','resolved','closed')),priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN('low','normal','high','urgent')),assignee_id INTEGER REFERENCES users(id),created_by INTEGER NOT NULL REFERENCES users(id),due_date TEXT,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),updated_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),revision INTEGER NOT NULL DEFAULT 1);
+                CREATE INDEX tickets_updated_idx ON tickets(updated_at DESC,id DESC);
+                CREATE INDEX tickets_filter_idx ON tickets(status,priority,assignee_id);
+                CREATE TABLE comments(id INTEGER PRIMARY KEY AUTOINCREMENT,ticket_id INTEGER NOT NULL REFERENCES tickets(id),author_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));
+                CREATE INDEX comments_ticket_idx ON comments(ticket_id,id);
+                CREATE TABLE history(id INTEGER PRIMARY KEY AUTOINCREMENT,ticket_id INTEGER NOT NULL REFERENCES tickets(id),actor_id INTEGER NOT NULL REFERENCES users(id),actor_name TEXT NOT NULL,action TEXT NOT NULL,detail TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));
+                CREATE INDEX history_ticket_idx ON history(ticket_id,id);
+                PRAGMA user_version=1;
+            """)
+            database.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?,?)", account)
+            original_ticket = (41, "Ticket storico", "Descrizione originale caffè", "Richiedente originale", "waiting", "high",
+                               account[0], account[0], "2030-12-31", "2030-01-02T03:04:05Z", "2030-01-03T04:05:06Z", 7)
+            database.execute("INSERT INTO tickets VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", original_ticket)
+            original_comment = (77, 41, account[0], "Commento storico", "2030-01-03T04:05:06Z")
+            database.execute("INSERT INTO comments VALUES(?,?,?,?,?)", original_comment)
+            original_history = (88, 41, account[0], account[1], "created", "Ticket creato prima della migrazione.", "2030-01-02T03:04:05Z")
+            database.execute("INSERT INTO history VALUES(?,?,?,?,?,?,?)", original_history)
+        self.environment["TICKETS_DB_PATH"] = str(legacy_path)
+        for _restart in range(2):
+            self.start()
+            admin = self.login()
+            detail, _headers = self.api("GET", "/api/tickets/41", session=admin)
+            self.assertEqual(detail["ticket"]["revision"], 7)
+            self.assertEqual(detail["ticket"]["description"], original_ticket[2])
+            self.assertEqual(detail["comments"][0]["id"], 77)
+            self.assertEqual(detail["comments"][0]["body"], original_comment[3])
+            self.assertEqual(detail["history"][0]["id"], 88)
+            for key in ("job_id", "job_code", "job_name", "asset_id", "asset_tag", "asset_name"):
+                self.assertIsNone(detail["ticket"][key], key)
+            self.stop()
+            with sqlite3.connect(legacy_path) as database:
+                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
+                self.assertEqual(database.execute("SELECT id,name,email,role,active,password_salt,password_hash,created_at FROM users").fetchone(), account)
+                self.assertEqual(database.execute("SELECT id,title,description,requester,status,priority,assignee_id,created_by,due_date,created_at,updated_at,revision FROM tickets WHERE id=41").fetchone(), original_ticket)
+                self.assertEqual(database.execute("SELECT * FROM comments WHERE id=77").fetchone(), original_comment)
+                self.assertEqual(database.execute("SELECT * FROM history WHERE id=88").fetchone(), original_history)
+        self.start()
+        admin = self.login()
+        created = self.create_ticket(admin, title="Creato dopo la migrazione")
+        self.assertGreater(created["id"], 41)
+        updated = self.update_ticket(admin, detail["ticket"], title="Modifica da client precedente")
+        self.assertEqual(updated["revision"], 8)
+        comment, _headers = self.api("POST", "/api/tickets/41/comments", {"body": "Commento dopo la migrazione"}, admin, expected=201)
+        self.assertGreater(comment["comment"]["id"], 77)
 
     def test_ambiguous_http_request_framing_is_rejected(self):
         host = f"Host: 127.0.0.1:{self.port}\r\n".encode("ascii")

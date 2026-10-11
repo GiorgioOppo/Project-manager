@@ -485,6 +485,7 @@ static bool rule_json(DbStmt *statement, Json *json, time_t now, bool private_de
     for (int i=0;i<3;i++) { append(json,",\""); append(json,keys[i]); append(json,"\":"); append_string(json,column_text(statement,i+1)); }
     append(json,",\"enabled\":"); append(json,db_column_int(statement,4) ? "true" : "false");
     append(json,",\"days_before\":"); append_integer(json,db_column_int64(statement,9));
+    append(json,",\"verification_days\":"); append_integer(json,db_column_int64(statement,10));
     append(json,",\"created_at\":"); append_string(json,column_text(statement,5));
     append(json,",\"updated_at\":"); append_string(json,column_text(statement,6));
     append(json,",\"last_run_at\":");
@@ -511,7 +512,7 @@ static bool rule_json(DbStmt *statement, Json *json, time_t now, bool private_de
     return !json->failed;
 }
 
-static const char rule_select[]="SELECT id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,days_before FROM alert_rules ";
+static const char rule_select[]="SELECT id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,days_before,verification_days FROM alert_rules ";
 
 static int rule_snapshot(DbInt id, DbInt owner, Json *json) {
     DbStmt *statement=NULL; char sql[256];
@@ -555,19 +556,21 @@ failure:
 
 static void write_rule(const char *body, DbInt owner, DbInt id, WorkspaceResponse *response) {
     Field fields[]={{"name",NULL},{"type",NULL},{"run_time",NULL},{"enabled",NULL},
-        {"recipient_user_ids",NULL},{"recipient_emails",NULL},{"days_before",NULL}};
+        {"recipient_user_ids",NULL},{"recipient_emails",NULL},{"days_before",NULL},{"verification_days",NULL}};
     const size_t field_count=sizeof(fields)/sizeof(fields[0]);
     if (!parse_fields(body,fields,field_count,response)) return;
     trim(fields[0].value);
     const char *name=field_value(&fields[0]), *type=field_value(&fields[1]), *run_time=field_value(&fields[2]);
-    DbInt days_before=30;
+    DbInt days_before=30,verification_days=90;
     Recipients recipients;
     if (!valid_text(name,120,true,false) ||
-        (strcmp(type,"invalid_job")!=0 && strcmp(type,"missing_hours")!=0 && strcmp(type,"inventory_due")!=0) || !valid_time(run_time) ||
+        (strcmp(type,"invalid_job")!=0 && strcmp(type,"missing_hours")!=0 && strcmp(type,"inventory_due")!=0 &&
+         strcmp(type,"inventory_return")!=0 && strcmp(type,"inventory_verification")!=0) || !valid_time(run_time) ||
         (fields[6].value && (!parse_positive(fields[6].value,&days_before) || days_before>365)) ||
+        (fields[7].value && (!parse_positive(fields[7].value,&verification_days) || verification_days>365)) ||
         (strcmp(field_value(&fields[3]),"0")!=0 && strcmp(field_value(&fields[3]),"1")!=0) ||
         !parse_recipients(fields[4].value,fields[5].value,&recipients)) {
-        error(response,400,"Inserisci nome (max 120 caratteri), tipo, orario HH:MM, stato 0/1, anticipo da 1 a 365 giorni e almeno un destinatario valido (massimo 50 utenti e 50 email, senza duplicati).");
+        error(response,400,"Inserisci nome (max 120 caratteri), tipo, orario HH:MM, stato 0/1, anticipo e intervallo verifiche da 1 a 365 giorni e almeno un destinatario valido (massimo 50 utenti e 50 email, senza duplicati).");
         free_fields(fields,field_count); return;
     }
     char day[11],utc[21];
@@ -578,10 +581,11 @@ static void write_rule(const char *body, DbInt owner, DbInt id, WorkspaceRespons
         int found=rule_snapshot(id,owner,&before);
         if (found<0) goto failure;
         if (!found) { rollback(); error(response,404,"Regola non trovata."); goto done; }
-        if (!prepare(&statement,"SELECT type,run_time,days_before FROM alert_rules WHERE id=? AND owner_id=?") ||
+        if (!prepare(&statement,"SELECT type,run_time,days_before,verification_days FROM alert_rules WHERE id=? AND owner_id=?") ||
             !bind_id(statement,1,id) || !bind_id(statement,2,owner) || db_step(statement)!=DB_ROW) goto failure;
         reset=strcmp(column_text(statement,0),type)!=0 ||
-            (strcmp(type,"inventory_due")==0 && db_column_int64(statement,2)!=days_before);
+            (strcmp(type,"inventory_due")==0 && db_column_int64(statement,2)!=days_before) ||
+            (strcmp(type,"inventory_verification")==0 && db_column_int64(statement,3)!=verification_days);
         schedule_changed=strcmp(column_text(statement,1),run_time)!=0;
         db_finalize(statement); statement=NULL;
     } else {
@@ -599,13 +603,13 @@ static void write_rule(const char *body, DbInt owner, DbInt id, WorkspaceRespons
         if (result!=DB_ROW) { rollback(); error(response,400,"Seleziona soltanto utenti esistenti e attivi."); goto done; }
     }
     if (!prepare(&statement,id ?
-        "UPDATE alert_rules SET name=?,type=?,run_time=?,enabled=?,updated_at=?,days_before=? WHERE id=? AND owner_id=?" :
-        "INSERT INTO alert_rules(name,type,run_time,enabled,updated_at,days_before,owner_id,created_at,last_event_id) "
-        "VALUES(?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(id),0) FROM alert_events))") ||
+        "UPDATE alert_rules SET name=?,type=?,run_time=?,enabled=?,updated_at=?,days_before=?,verification_days=? WHERE id=? AND owner_id=?" :
+        "INSERT INTO alert_rules(name,type,run_time,enabled,updated_at,days_before,verification_days,owner_id,created_at,last_event_id) "
+        "VALUES(?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(id),0) FROM alert_events))") ||
         !bind_text(statement,1,name) || !bind_text(statement,2,type) || !bind_text(statement,3,run_time) ||
         !bind_id(statement,4,strcmp(fields[3].value,"1")==0) || !bind_text(statement,5,utc) ||
-        !bind_id(statement,6,days_before) || !bind_id(statement,7,id ? id : owner) ||
-        (id ? !bind_id(statement,8,owner) : !bind_text(statement,8,utc)) || db_step(statement)!=DB_DONE) goto failure;
+        !bind_id(statement,6,days_before) || !bind_id(statement,7,verification_days) || !bind_id(statement,8,id ? id : owner) ||
+        (id ? !bind_id(statement,9,owner) : !bind_text(statement,9,utc)) || db_step(statement)!=DB_DONE) goto failure;
     db_finalize(statement); statement=NULL;
     DbInt saved=id ? id : db_last_insert_rowid(database);
     if (id) {
@@ -866,8 +870,49 @@ static bool run_inventory(DbInt rule_id, DbInt owner, Delivery *delivery,
     return true;
 }
 
+static bool inventory_rule_type(const char *type) {
+    return strcmp(type,"inventory_due")==0 || strcmp(type,"inventory_return")==0 ||
+        strcmp(type,"inventory_verification")==0;
+}
+
+static bool run_inventory_operational(DbInt rule_id, DbInt owner, Delivery *delivery,
+                                     struct json_object *items, const char *today,
+                                     const char *type, int verification_days, const char *utc) {
+    bool returns=strcmp(type,"inventory_return")==0;
+    const char *expected_kind=returns ? "return_due" : "verification_due";
+    if (!items || !json_object_is_type(items,json_type_array)) return false;
+    size_t count=json_object_array_length(items);
+    for (size_t i=0;i<count;i++) {
+        struct json_object *item=json_object_array_get_idx(items,i);
+        if (!item || !json_object_is_type(item,json_type_object)) return false;
+        DbInt asset_id,remaining,source_id;
+        const char *tag=json_text(item,"asset_tag"),*name=json_text(item,"name"),
+            *asset_type=json_text(item,"asset_type"),*kind=json_text(item,"due_kind"),*due=json_text(item,"due_on");
+        if (!json_integer(item,"asset_id",&asset_id) || asset_id<=0 ||
+            !json_integer(item,"source_id",&source_id) || source_id<0 || (returns && !source_id) ||
+            !json_integer(item,"days_remaining",&remaining) || remaining>(returns ? -1 : 0) ||
+            !tag || !valid_text(tag,64,true,false) || !name || !valid_text(name,160,true,false) ||
+            !asset_type || (strcmp(asset_type,"it_device") && strcmp(asset_type,"network_device") && strcmp(asset_type,"physical")) ||
+            !kind || strcmp(kind,expected_kind) || !valid_date(due) ||
+            remaining!=(DbInt)calendar_day(due)-calendar_day(today)) return false;
+        char key[128],message[1400];
+        int length=returns ?
+            snprintf(key,sizeof(key),"inventory_return:%lld:%lld:%s",(long long)asset_id,(long long)source_id,due) :
+            snprintf(key,sizeof(key),"inventory_verification:%lld:%lld:%s:%d",(long long)asset_id,(long long)source_id,due,verification_days);
+        if (length<0 || (size_t)length>=sizeof(key)) return false;
+        if (returns) length=snprintf(message,sizeof(message),"%s — %s. Restituzione prevista il %s: in ritardo da %lld giorni.",
+            tag,name,due,(long long)-remaining);
+        else if (!source_id) length=snprintf(message,sizeof(message),"%s — %s. Il bene non è mai stato verificato: occorre una verifica inventario.",tag,name);
+        else length=snprintf(message,sizeof(message),"%s — %s. Verifica da ripetere entro il %s: intervallo di %d giorni%s.",
+            tag,name,due,verification_days,remaining<0 ? " superato" : " raggiunto oggi");
+        if (length<0 || (size_t)length>=sizeof(message) ||
+            !deliver(rule_id,delivery,owner,key,returns ? "Restituzione inventario scaduta" : "Verifica inventario da eseguire",message,NULL,0,utc,true)) return false;
+    }
+    return true;
+}
+
 static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, WorkspaceResponse *response) {
-    char today[11],utc[21],run_time[6],type[20];
+    char today[11],utc[21],run_time[6],type[32],fetched_type[32]="";
     if (!clock_text(now,today,utc)) { server_error(response); return; }
     DbStmt *statement=NULL;
     struct json_object *due_items=NULL;
@@ -875,18 +920,21 @@ static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, Workspac
     /* Read the source without holding the application database write lock.
        The transaction below rechecks both access and the threshold before
        inserting any notification or consuming the scheduled run. */
-    if (!prepare(&statement,"SELECT type,run_time,enabled,last_run_on,days_before FROM alert_rules "
+    if (!prepare(&statement,"SELECT type,run_time,enabled,last_run_on,days_before,verification_days FROM alert_rules "
         "WHERE id=? AND owner_id=? AND EXISTS(SELECT 1 FROM users WHERE id=owner_id AND active=1 AND role='manager')") ||
         !bind_id(statement,1,id) || !bind_id(statement,2,owner)) goto source_failure;
     int result=db_step(statement);
-    if (result==DB_ROW && strcmp(column_text(statement,0),"inventory_due")==0) {
-        fetched_days=db_column_int(statement,4);
+    if (result==DB_ROW && inventory_rule_type(column_text(statement,0))) {
+        (void)snprintf(fetched_type,sizeof(fetched_type),"%s",column_text(statement,0));
+        fetched_days=db_column_int(statement,strcmp(fetched_type,"inventory_due")==0 ? 4 : 5);
         time_t slot=today_run(now,column_text(statement,1));
         bool skip=scheduled && (!db_column_int(statement,2) || strcmp(column_text(statement,3),today)==0 ||
                                (slot!=(time_t)-1 && now<slot));
         db_finalize(statement); statement=NULL;
-        if (!skip && (slot==(time_t)-1 || fetched_days<1 || fetched_days>365 ||
-            !inventory_client_due(today,fetched_days,&due_items))) {
+        bool source_okay=skip || (slot!=(time_t)-1 && fetched_days>=1 && fetched_days<=365 &&
+            (strcmp(fetched_type,"inventory_due")==0 ? inventory_client_due(today,fetched_days,&due_items) :
+             inventory_client_operational_due(today,strcmp(fetched_type,"inventory_return")==0 ? "return" : "verification",fetched_days,&due_items)));
+        if (!source_okay) {
             if (due_items) json_object_put(due_items);
             error(response,503,"Inventario non disponibile: nessuna notifica è stata creata. Riprova."); return;
         }
@@ -895,7 +943,7 @@ static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, Workspac
         if (result!=DB_ROW && result!=DB_DONE) goto source_failure;
     }
     if (!begin_transaction(response)) { if (due_items) json_object_put(due_items); return; }
-    if (!prepare(&statement,"SELECT type,run_time,enabled,last_run_on,last_event_id,days_before FROM alert_rules "
+    if (!prepare(&statement,"SELECT type,run_time,enabled,last_run_on,last_event_id,days_before,verification_days FROM alert_rules "
         "WHERE id=? AND owner_id=? AND EXISTS(SELECT 1 FROM users WHERE id=owner_id AND active=1 AND role='manager')") ||
         !bind_id(statement,1,id) || !bind_id(statement,2,owner)) goto failure;
     result=db_step(statement);
@@ -910,6 +958,7 @@ static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, Workspac
     bool ran_today=strcmp(column_text(statement,3),today)==0;
     DbInt cursor=db_column_int64(statement,4);
     int days_before=db_column_int(statement,5);
+    int verification_days=db_column_int(statement,6);
     db_finalize(statement); statement=NULL;
     if (scheduled) {
         time_t slot=today_run(now,run_time);
@@ -919,7 +968,10 @@ static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, Workspac
             response->status=200; response->body=duplicate("{\"ok\":true,\"skipped\":true}"); return;
         }
     }
-    if (strcmp(type,"inventory_due")==0 && (!due_items || days_before!=fetched_days)) {
+    if ((inventory_rule_type(type) || *fetched_type) &&
+        (!due_items || strcmp(type,fetched_type)!=0 ||
+         (strcmp(type,"inventory_due")==0 && days_before!=fetched_days) ||
+         (strcmp(type,"inventory_verification")==0 && verification_days!=fetched_days))) {
         rollback(); if (due_items) json_object_put(due_items);
         error(response,409,"La regola è stata modificata durante l'esecuzione. Riprova."); return;
     }
@@ -927,7 +979,8 @@ static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, Workspac
     if (!load_delivery(id,&delivery) ||
         (strcmp(type,"invalid_job")==0 ? !run_invalid(id,&cursor,&delivery,utc) :
          strcmp(type,"missing_hours")==0 ? !run_missing(id,&delivery,today,utc,now) :
-         strcmp(type,"inventory_due")==0 ? !run_inventory(id,owner,&delivery,due_items,today,days_before,utc) : true)) goto failure;
+         strcmp(type,"inventory_due")==0 ? !run_inventory(id,owner,&delivery,due_items,today,days_before,utc) :
+         inventory_rule_type(type) ? !run_inventory_operational(id,owner,&delivery,due_items,today,type,verification_days,utc) : true)) goto failure;
     if (!prepare(&statement,"UPDATE alert_rules SET last_run_at=?,last_run_on=?,last_event_id=? WHERE id=? AND owner_id=?") ||
         !bind_text(statement,1,utc) || !bind_text(statement,2,today) || !bind_id(statement,3,cursor) ||
         !bind_id(statement,4,id) || !bind_id(statement,5,owner) || db_step(statement)!=DB_DONE) goto failure;
@@ -1068,6 +1121,24 @@ void alerts_tick_at(time_t now) {
 void alerts_tick(void) { alerts_tick_at(time(NULL)); }
 
 static void notification_event_json(Json *json, const char *key) {
+    bool returns=strncmp(key,"inventory_return:",17)==0;
+    bool verifies=strncmp(key,"inventory_verification:",23)==0;
+    if (returns || verifies) {
+        size_t prefix=returns ? 17U : 23U;
+        long long asset_id=0,source_id=0; char due[11]={0}; int interval=0,consumed=0;
+        int parsed=returns ? sscanf(key+prefix,"%lld:%lld:%10[^:]%n",&asset_id,&source_id,due,&consumed) :
+            sscanf(key+prefix,"%lld:%lld:%10[^:]:%d%n",&asset_id,&source_id,due,&interval,&consumed);
+        if (parsed==(returns ? 3 : 4) && !key[prefix+(size_t)consumed] && asset_id>0 && source_id>=0 &&
+            (!returns || source_id>0) && valid_date(due) && (returns || (interval>=1 && interval<=365))) {
+            append(json,",\"event_kind\":"); append_string(json,returns ? "inventory_return" : "inventory_verification");
+            append(json,",\"asset_id\":"); append_integer(json,(DbInt)asset_id);
+            append(json,",\"due_kind\":"); append_string(json,returns ? "return_due" : "verification_due");
+            append(json,",\"due_on\":"); append_string(json,due);
+            append(json,",\"source_id\":"); append_integer(json,(DbInt)source_id);
+            if (verifies) { append(json,",\"verification_days\":"); append_integer(json,interval); }
+            return;
+        }
+    }
     if (strncmp(key,"inventory_due:",14)==0) {
         long long asset_id=0; char kind[32]={0},due[11]={0}; int days_before=0,consumed=0;
         if (sscanf(key+14,"%lld:%31[^:]:%10[^:]:%d%n",&asset_id,kind,due,&days_before,&consumed)==4 &&

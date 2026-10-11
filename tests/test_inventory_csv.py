@@ -184,6 +184,47 @@ class InventoryCsvTests(unittest.TestCase):
         invalid = self.document(["asset_tag", "name", "asset_type", "details"], [["BAD", "Errato", "software", '{"publisher":"A","publisher":"B"}']])
         self.assertFalse(self.preview(invalid)[1]["can_commit"])
 
+    def test_license_cannot_bind_to_temporary_software_id_reused_by_concurrent_create(self):
+        self.start()
+        text = self.document(["asset_tag", "name", "asset_type", "details"], [
+            ["DRAFT-SW", "Software del CSV", "software", "{}"],
+            ["DRAFT-LIC", "Licenza del CSV", "license", json.dumps({"software_id": 1, "seats_total": 2})],
+        ])
+        status, preview = self.preview(text)
+        self.assertEqual(status, 200, preview)
+        self.assertFalse(preview["can_commit"])
+        self.assertIsNone(preview["preview_id"])
+        self.assertEqual([item["action"] for item in preview["items"]], ["create", "error"])
+        self.assertIn("prima dell'anteprima", preview["items"][1]["errors"][0])
+        self.assertEqual(self.rows(), [])
+        other = self.create(tag="OTHER-SW", name="Software di un altro gestore", actor_id=28,
+                            asset_type="software", details="{}")
+        self.assertEqual(other["id"], 1)
+        # The rejected preview has no usable token; it cannot create a license
+        # whose software_id now resolves to this unrelated concurrent software.
+        self.assertEqual(self.commit(preview)[0], 400)
+        self.assertEqual(self.rows(), [other])
+        self.assertEqual(self.history_count(), 1)
+
+    def test_old_license_preview_without_persistent_reference_proof_rolls_back(self):
+        self.start()
+        other = self.create(tag="OTHER-SW", asset_type="software", details="{}")
+        status, preview = self.preview('asset_tag,name,asset_type,details\nDRAFT-SW,Software CSV,software,{}\n')
+        self.assertEqual(status, 200, preview)
+        # Reconstruct a still-open preview from the former implementation,
+        # where a license could refer to a temporary software ID during dry-run.
+        license_asset = dict(other, asset_tag="DRAFT-LIC", name="Licenza CSV", asset_type="license",
+                             details={"software_id": other["id"], "seats_total": 2, "license_model": "per_device", "renewal_mode": "manual"})
+        with closing(sqlite3.connect(self.db)) as database:
+            plan = json.loads(database.execute("SELECT plan FROM inventory_import_previews WHERE preview_id=?", (preview["preview_id"],)).fetchone()[0])
+            plan.append({"id": 0, "expected_version": 0, "asset": license_asset})
+            database.execute("UPDATE inventory_import_previews SET plan=? WHERE preview_id=?", (json.dumps(plan), preview["preview_id"]))
+            database.commit()
+        self.assertEqual(self.commit(preview)[0], 409)
+        self.assertEqual(self.rows(), [other])
+        self.assertEqual(self.history_count(), 1)
+        self.assertEqual(self.commit(preview)[0], 409)
+
     def test_export_safe_cells_round_trip_quotes_unicode_multiline_and_apostrophes(self):
         self.start()
         assets = [self.create(tag="FORMULA", name="=1+1", notes=" \t\r\n@SUM(A1)", location="'Roma", asset_type="it_device", details="{}"),
@@ -269,7 +310,10 @@ class InventoryCsvTests(unittest.TestCase):
         asset = self.create(tag="BEFORE", asset_type="network_device", details=json.dumps({"vlan": 27, "port_count": 24}))
         self.stop()
         with closing(sqlite3.connect(self.db)) as database:
-            # Schema 3 adds only this table/index to the real previous schema.
+            # Remove all later additions, preserving the actual previous v2 schema.
+            for table in ("inventory_asset_subjects", "inventory_entity_history", "inventory_identity_people", "inventory_identities", "inventory_people",
+                          "asset_verifications", "asset_custody", "asset_context", "inventory_places"):
+                database.execute("DROP TABLE " + table)
             database.execute("DROP TABLE inventory_import_previews")
             database.execute("PRAGMA user_version=2")
             database.commit()
@@ -277,7 +321,7 @@ class InventoryCsvTests(unittest.TestCase):
         self.assertEqual(self.rows(), [asset])
         self.assertEqual(self.history_count(), 1)
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
             self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         status, preview = self.preview("asset_tag,name\nAFTER,Nuovo\n")
         self.assertEqual(status, 200, preview)
