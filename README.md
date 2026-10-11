@@ -1,12 +1,23 @@
 # punto — Commesse e ore di lavoro in C
 
-Web app in italiano con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, gruppi gerarchici, ruoli sulle commesse, fornitori, contratti e PDF originali, registrazioni delle ore e storico delle modifiche.
+Web app in italiano con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, gruppi gerarchici, ruoli sulle commesse, fornitori, contratti e PDF originali, registrazioni delle ore, alert giornalieri e storico delle modifiche.
 
 Sono disponibili due modalità indipendenti: **Docker con MySQL** per i dati strutturati e **MongoDB GridFS** per i PDF, oppure **avvio nativo con SQLite** e archivio documentale locale. Le due modalità non condividono dati e non eseguono importazioni automatiche.
 
+## Documentazione di dettaglio
+
+L’[indice della documentazione](docs/README.md) raccoglie le guide organizzate per destinatario:
+
+- **[Documentazione tecnica](docs/tehnical/README.md):** architettura, installazione, configurazione, reti, sicurezza, modello dati, API, addon, backup, ripristino, sviluppo e test.
+- **[Documentazione di prodotto](docs/prod/README.md):** funzionalità disponibili, guide per operatori e gestori, processi, regole, glossario e roadmap.
+
+Sono disponibili anche approfondimenti sugli [interni del server](docs/tehnical/interni-server-c.md), sul [frontend](docs/tehnical/frontend-e-interfaccia.md), sul [motore alert](docs/tehnical/motore-alert.md) e sui [flussi delle integrazioni](docs/tehnical/flussi-integrazioni.md), insieme a [scenari di accesso](docs/prod/scenari-accessi.md), [esempi economici](docs/prod/esempi-analisi-e-costi.md) e un [piano di collaudo](docs/prod/collaudo-accettazione.md).
+
+I documenti descrivono il codice presente nel workspace al 10 ottobre 2026; i piani futuri e le evidenze di collaudo storiche sono contrassegnati esplicitamente. Questo README resta la guida generale per l’avvio.
+
 ## Avvio con Docker e cluster MySQL
 
-Servono **Docker Engine 28 o successivo**, **Docker Compose 2.36.0 o successivo**, Python 3 e OpenSSL. La versione del daemon deve supportare il gateway bridge `isolated`; Compose deve supportare `gw_priority` e `interface_name`. Su macOS queste funzionalità sono fornite dal daemon Linux di Docker Desktop. La configurazione locale usa **tre istanze MySQL 8.4 con Group Replication multi-primary**, un proxy TCP HAProxy 3.2, MongoDB 8.0 e l’app C. Dalla cartella del progetto:
+Servono **Docker Engine 28 o successivo**, **Docker Compose 2.36.0 o successivo**, Python 3 e OpenSSL. La versione del daemon deve supportare il gateway bridge `isolated`; Compose deve supportare `gw_priority` e `interface_name`. Su macOS queste funzionalità sono fornite dal daemon Linux di Docker Desktop. La configurazione locale usa **tre istanze MySQL 8.4 con Group Replication multi-primary**, un proxy TCP HAProxy 3.2, MongoDB 8.0, Nginx Proxy Manager, Squid per l’uscita filtrata, l’app C e due addon C per email e Google Calendar. Dalla cartella del progetto:
 
 ```sh
 cp .env.docker.example .env.docker
@@ -28,7 +39,7 @@ La CA locale dura dieci anni e i certificati server un anno. **Il rinnovo è man
 
 Lo script ferma l’app durante la preparazione, esegue un backup dei dati del primo nodo, inizializza i nuovi nodi vuoti con una copia coerente, crea il gruppo e avvia gli altri servizi. Il primo nodo conserva il volume `mysql_data` già usato dal progetto: non occorre eliminare il database per aggiungere le repliche. Il file locale `data/cluster-state.json` conserva i marcatori dei nodi già preparati, così il seed non viene ripetuto sui dati esistenti. Gli account interni vengono creati su ciascun nodo e il seed viene importato localmente, senza registrare le password nell’output del controller. Su macOS il comando usa per impostazione predefinita il contesto Docker `desktop-linux`; `--docker-context` permette di sceglierne un altro.
 
-Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 3, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
+Per aggiornare un’installazione esistente con fornitori, contratti e MongoDB, **esegui prima un backup SQL con la configurazione precedente**, conserva `.env.docker` e i volumi, poi aggiorna il codice. Aggiungi le nuove variabili documentali dal modello senza sovrascrivere le credenziali esistenti ed esegui `prepare` e `init` come sopra. Se `data/cluster-state.json` indica un cluster già inizializzato, `init` genera le sole password mancanti e richiama il recupero: non ripete il seed. L’app applica le migrazioni fino alla versione 7, conservando utenti, commesse, registrazioni e abilitazioni; Compose avvia MongoDB come dipendenza dell’app. L’aggiornamento da versione 2 aggiunge gruppi e ruoli: ogni abilitazione precedente diventa Collaboratore, senza ampliare gli utenti autorizzati.
 
 Per applicare la segmentazione e il TLS a un **cluster già inizializzato**, usa invece:
 
@@ -55,6 +66,9 @@ Apri [http://localhost](http://localhost) tramite Nginx Proxy Manager e accedi c
 | `documents` | MongoDB 8.0: PDF originali in GridFS, porta interna `27017` | Volumi `documents_data` e `documents_config` |
 | `app` | Server C, con `DB_HOST=db-proxy` e `DOC_DB_HOST=documents` | Dati strutturati nel cluster; PDF in MongoDB |
 | `nginx-proxy-manager` | Reverse proxy HTTP/HTTPS e pannello amministrativo | Directory locali NPM |
+| `squid` | Proxy esplicito in uscita, porta interna `3128`, destinazioni Google autorizzate | Configurazione e allowlist del progetto; nessuna cache |
+| `mail-addon` | Servizio C per invio SMTP tramite API HTTPS privata `8090`; provider da configurare | Volume `mail_addon_data`, registro persistente degli invii |
+| `calendar-addon` | Servizio C per sincronizzazione Google tramite API HTTPS privata `8091`; OAuth da configurare | Volume `calendar_addon_data`, credenziali ed eventi cifrati |
 
 Ogni membro MySQL conserva una copia completa di utenti, gruppi, appartenenze, ruoli, fornitori, contratti, metadati documentali, commesse, abilitazioni, ore e storico. Tutti e tre possono ricevere scritture; HAProxy sceglie un nodo per ciascuna nuova connessione, mantenendo su quel nodo l’intera transazione. Il monitor ammette nel bilanciamento soltanto membri `ONLINE`, con ruolo `PRIMARY`, scrivibili e con almeno due membri disponibili. MySQL e HAProxy non pubblicano porte database sull’host; il loro traffico rimane sulla rete Compose `backend_app`.
 
@@ -70,12 +84,19 @@ MySQL impone `require_secure_transport=ON`: le connessioni TCP devono usare TLS,
 
 ```mermaid
 flowchart LR
-  Client["Client HTTP/HTTPS"] --> NPM["Nginx Proxy Manager"]
+  Client["Client HTTP/HTTPS"] -->|"public · 80 / 443"| NPM["Nginx Proxy Manager"]
   NPM -->|"private_app · HTTP 8080"| App["App C"]
   App -->|"backend_app · MySQL TLS"| Proxy["HAProxy"]
   Proxy --> DB["db / db2 / db3"]
   App -->|"backend_app · MongoDB TLS"| Docs["documents · GridFS"]
   DB -->|"XCom e recupero TLS"| DB
+  App -->|"app_egress · proxy 3128"| Squid["Squid"]
+  App -->|"mail_api · HTTPS 8090"| Mail["Addon email C"]
+  Mail -->|"app_egress · proxy 3128"| Squid
+  App -->|"calendar_api · HTTPS 8091"| Calendar["Addon Calendar C"]
+  Calendar -->|"app_egress · proxy 3128"| Squid
+  Squid -->|"proxy_wan · CONNECT 443"| Google["Host Google autorizzati"]
+  Squid -.->|"proxy_wan · CONNECT 465 / 587 · da configurare"| SMTP["Provider SMTP"]
 ```
 
 | Rete e interfaccia nel container | Subnet | Membri | Accesso esterno |
@@ -83,8 +104,12 @@ flowchart LR
 | `public` | `172.30.10.0/24` | Solo `nginx-proxy-manager` | Bridge normale; porte host HTTP/HTTPS e pannello locale |
 | `private_app` | `172.30.20.0/24` | `nginx-proxy-manager`, `app` | `internal: true`, gateway bridge `isolated` |
 | `backend_app` | `172.30.30.0/24` | `app`, `db-proxy`, `db`, `db2`, `db3`, `documents` | `internal: true`, gateway bridge `isolated` |
+| `app_egress` | `172.30.40.0/24` | `app`, `mail-addon`, `calendar-addon`, `squid` | `internal: true`, gateway bridge `isolated` |
+| `proxy_wan` | `172.30.50.0/24` | Solo `squid` | Bridge normale per l’uscita del proxy; nessuna porta host |
+| `mail_api` | `172.30.60.0/24` | `app`, `mail-addon` | `internal: true`, gateway bridge `isolated` |
+| `calendar_api` | `172.30.70.0/24` | `app`, `calendar-addon` | `internal: true`, gateway bridge `isolated` |
 
-NPM ha la connettività esterna necessaria per ricevere richieste e gestire i certificati HTTPS. App e componenti database sono collegati soltanto a reti interne: non dispongono di una normale uscita verso Internet. La modalità `isolated` elimina anche l’indirizzo gateway del bridge; `internal: true` da solo non elimina tale indirizzo. [Reti Compose](https://docs.docker.com/reference/compose-file/networks/#internal), [gateway Docker](https://docs.docker.com/engine/network/port-publishing/#gateway-modes)
+NPM ha la connettività esterna necessaria per ricevere richieste e gestire i certificati HTTPS. Squid dispone della propria rete di uscita separata `proxy_wan`; la rete `public` rimane esclusiva di NPM. App, addon e componenti database sono collegati soltanto a reti interne: non dispongono di una normale uscita diretta verso Internet. L’app raggiunge le destinazioni autorizzate attraverso Squid su `app_egress` e chiama gli addon sulle interfacce dedicate `mail_api` e `calendar_api`, per un totale di cinque interfacce. La modalità `isolated` elimina anche l’indirizzo gateway del bridge; `internal: true` da solo non elimina tale indirizzo. [Reti Compose](https://docs.docker.com/reference/compose-file/networks/#internal), [gateway Docker](https://docs.docker.com/engine/network/port-publishing/#gateway-modes)
 
 L’app ascolta su **`172.30.20.10:8080`**, soltanto sull’indirizzo `private_app`; il controllo di salute interno usa lo stesso indirizzo. Il suo indirizzo `backend_app` **`172.30.30.10`** non espone HTTP. NPM usa **`172.30.10.2`** su `public` e **`172.30.20.2`** su `private_app`; HAProxy usa **`172.30.30.20`**. MongoDB ascolta soltanto sul proprio loopback e su **`172.30.30.30:27017`**, senza porte pubblicate sull’host. I membri MySQL usano gli indirizzi **`172.30.30.21`**, **`.22`** e **`.23`**; l’allowlist XCom accetta soltanto questi tre peer. X Protocol è disattivato, quindi non viene aperta la porta MySQL `33060`. Le interfacce IPv4 dentro i container hanno i nomi delle rispettive reti. Le subnet definite in Compose devono essere libere e non sovrapposte alle reti dell’ambiente; una modifica degli indirizzi richiede l’aggiornamento coordinato di bind, allowlist e SAN dei certificati.
 
@@ -97,6 +122,49 @@ La segmentazione limita i collegamenti tra reti, ma **non applica ACL per porta 
 L’immagine NPM derivata limita invece i listener amministrativi: l’API interna sulla porta `3000` ascolta soltanto sul loopback del container, il pannello sulla porta `81` soltanto su loopback e sull’indirizzo `public` `172.30.10.2`. Il pannello non ascolta su `172.30.20.2`, quindi l’app non dispone di accesso amministrativo tramite `private_app`. L’host pubblica `81` soltanto su `127.0.0.1`; la rete `public` contiene soltanto NPM.
 
 Su Docker Desktop le reti bridge risiedono nella VM Linux, quindi non costituiscono interfacce direttamente instradabili dal Mac. Chi amministra Docker o l’host può comunque collegare container alle reti o accedere ai volumi: questa configurazione non separa il servizio dall’amministratore dell’infrastruttura. Il collegamento HTTP NPM → app resta sulla rete privata; il TLS del database non lo trasforma in HTTPS. [Networking Docker Desktop](https://docs.docker.com/desktop/features/networking/networking-how-tos/#known-limitations)
+
+### Uscita filtrata con Squid
+
+Squid ascolta soltanto su **`172.30.40.2:3128`**, accetta l’app **`172.30.40.10`**, l’addon email **`172.30.40.11`** e l’addon Calendar **`172.30.40.12`** con policy per sorgente e apre le connessioni esterne dall’indirizzo **`172.30.50.2`** di `proxy_wan`. Non pubblica porte sull’host, non appartiene a `private_app` o `backend_app` e non instrada pacchetti per gli altri container. Il processo usa l’utente non privilegiato `10002`, filesystem in sola lettura, `/tmp` temporaneo, `cap_drop: ALL` e `no-new-privileges`. Cache, ICP, HTCP e pinger sono disattivati.
+
+La allowlist in `docker/squid/allowed-domains.txt` contiene i tre host esatti necessari alla futura integrazione Google Calendar/OAuth:
+
+```text
+accounts.google.com
+oauth2.googleapis.com
+www.googleapis.com
+```
+
+Per l’app e l’addon Calendar sono consentiti soltanto tunnel **`CONNECT` sulla porta `443`** verso questi nomi. L’addon email può usare soltanto `CONNECT` sulle porte **465/587**, verso gli host esatti in `docker/squid/allowed-smtp-domains.txt`: il file contiene ora soltanto il segnaposto riservato `smtp-not-configured.invalid`, quindi nessun provider SMTP reale è autorizzato. App e Calendar non ereditano le destinazioni SMTP e l’addon email non eredita quelle Google. Le altre richieste vengono negate, comprese HTTP semplice, porte alternative, IP letterali e destinazioni private o riservate risultanti dalla risoluzione DNS. I nomi sono senza punto iniziale, wildcard, schema, percorso o porta: `www.googleapis.com.example.org` non corrisponde alla voce autorizzata. L’opzione ACL `-n` impedisce di autorizzare un IP attraverso una ricerca DNS inversa. [ACL Squid](https://www.squid-cache.org/Doc/config/acl/)
+
+Il proxy **non decifra TLS**: controlla host e porta dichiarati nella richiesta `CONNECT`, senza poter filtrare percorsi HTTPS, contenuto o scope OAuth. In particolare `www.googleapis.com` ospita anche altre API Google; l’addon vincola quindi percorsi e scope alle operazioni Calendar. L’endpoint REST è `https://www.googleapis.com/calendar/v3`, mentre l’autorizzazione OAuth usa `accounts.google.com` e lo scambio/rinnovo token usa `oauth2.googleapis.com`. L’uso reale richiede le credenziali OAuth e il consenso dell’utente. [Tunnel HTTPS Squid](https://wiki.squid-cache.org/Features/HTTPS), [riferimento Calendar](https://developers.google.com/workspace/calendar/api/v3/reference), [OAuth per applicazioni web Google](https://developers.google.com/identity/protocols/oauth2/web-server)
+
+Compose imposta nell’app `HTTP_PROXY`, `HTTPS_PROXY` e le varianti minuscole a `http://squid:3128`. `NO_PROXY` e `no_proxy` escludono loopback e servizi interni; il controllo `/healthz` usa inoltre `curl --noproxy '*'`. Le future librerie HTTP del server C dovranno rispettare queste variabili o configurare esplicitamente il proxy. Non sono un firewall: il blocco dell’uscita diretta è fornito dalle reti interne. Il client dell’API email disabilita esplicitamente il proxy per il collegamento privato; l’addon impone invece Squid per SMTP anche in presenza di `NO_PROXY`.
+
+Per aggiungere Squid e gli addon a uno stack già avviato con le reti `private_app` e `backend_app` correnti, esegui prima un backup SQL, quindi prepara certificati e segreti e aggiorna i soli servizi interessati:
+
+```sh
+python3 scripts/configure_network.py prepare --env-file .env.docker
+docker compose --env-file .env.docker build squid mail-addon calendar-addon app nginx-proxy-manager
+docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait squid mail-addon calendar-addon app nginx-proxy-manager
+```
+
+Compose crea le reti e i volumi mancanti, avvia Squid e addon e ricrea app e NPM. Il servizio può essere brevemente indisponibile; l’app applica le migrazioni SQL mancanti fino alla versione 7 conservando i dati. L’addon Calendar non richiede altre migrazioni MySQL. Questo aggiornamento non richiede `configure_network.py apply`, un nuovo seed o la ricreazione dei database. Il controllo di salute di Squid verifica una risposta locale `403` senza richiedere Internet: non dimostra da solo che Google sia raggiungibile. Se Squid si arresta, le nuove richieste esterne falliscono; il lavoro sui database rimane indipendente dal proxy mentre l’app è già avviata. A un nuovo avvio Compose attende invece che Squid e addon siano sani.
+
+Per aggiornare la allowlist, modifica `docker/squid/allowed-domains.txt` mantenendo un host esatto per riga. I file sono montati in sola lettura nel container. Prima di ricaricare, verifica il contenuto effettivamente montato e la sintassi:
+
+```sh
+docker compose --env-file .env.docker exec -T squid cat /etc/squid/allowed-domains.txt
+docker compose --env-file .env.docker exec -T squid squid -k parse -f /etc/squid/squid.conf
+```
+
+**Soltanto se la verifica termina con esito zero** e il file montato contiene le modifiche, ricarica:
+
+```sh
+docker compose --env-file .env.docker exec -T squid squid -k reconfigure -f /etc/squid/squid.conf
+```
+
+Un editor che sostituisce il file anziché modificarlo sul posto può lasciare il bind mount sul contenuto precedente. In quel caso esegui prima `docker compose --env-file .env.docker build squid`: la build verifica la sintassi dei file aggiornati. Se riesce, ricrea soltanto Squid con `docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait squid`, quindi ricontrolla il contenuto montato e ripeti i test di rete. Gli access log riportano sorgente, dominio, metodo ed esito, senza header, percorsi o query; sono consultabili con `docker compose --env-file .env.docker logs --tail=100 squid`. Docker limita i log a tre file da 10 MB ciascuno. [Verifica e ricaricamento Squid](https://wiki.squid-cache.org/SquidFaq/InstallingSquid), [rotazione dei log Docker](https://docs.docker.com/engine/logging/drivers/json-file/)
 
 ### Backup congiunto dei dati e dei PDF
 
@@ -357,7 +425,49 @@ Dal comando **Abilitazioni** il gestore sceglie utenti o gruppi, ruolo e date fa
 
 Per un operatore, l’abilitazione alla registrazione deve essere valida sia **oggi** sia **nella data del lavoro registrato**. Un accesso futuro, scaduto o revocato non abilita nuove ore. Le registrazioni precedenti restano consultabili. I gestori possono utilizzare tutte le commesse senza assegnazione; lo stato della commessa, da solo, non blocca la registrazione delle ore.
 
-Gli utenti non vengono abilitati automaticamente a tutte le commesse quando si aggiorna un database esistente: il gestore assegna esplicitamente gli accessi.
+La casella **Commessa comune**, disponibile al gestore, rende quella singola commessa consultabile e utilizzabile per registrare le proprie ore da tutti gli account attivi, anche quelli creati in seguito. È adatta a Generale, Formazione, Riunioni e Attività interne. Le altre commesse continuano a richiedere abilitazioni esplicite; l'aggiornamento non rende comuni le commesse esistenti.
+
+Il gestore può **eliminare definitivamente una commessa** dalla finestra di modifica, dopo una conferma dedicata. L'operazione rimuove in un'unica transazione anche tutte le ore di tutti gli utenti registrate su quella commessa e le sue abilitazioni dirette e per gruppo. Conserva utenti, gruppi, ruoli, contratti e gli eventi dello storico; registra un evento di eliminazione con il riepilogo dei dati rimossi. Non esiste un cestino: per recuperare i dati occorre un backup.
+
+## Alert e trigger
+
+La sezione **Alert e trigger**, riservata ai gestori, propone due controlli: tentativi respinti di registrare ore su una commessa inesistente (anche eliminata) e giornate lavorative con meno di **480 minuti** registrati. Le ore su commesse inesistenti rimangono bloccate: l’alert segnala il tentativo, senza creare una registrazione invalida.
+
+Ogni gestore crea le proprie regole, sceglie un nome, l’orario giornaliero **HH:MM nel fuso Europe/Rome**, lo stato attivo e i destinatari: utenti dell’app e indirizzi email. Le regole sono eseguite automaticamente una sola volta per giornata locale, con stato persistente anche dopo un riavvio. **Esegui ora** avvia un controllo manuale, utile anche per una regola disattivata; le stesse anomalie non generano notifiche duplicate.
+
+Il controllo delle ore considera le giornate **lunedì–venerdì**, dopo **48 ore effettive dalla fine della giornata**. Per esempio, il lunedì termina martedì alle 00:00 e diventa verificabile giovedì alle 00:00, quindi al successivo orario configurato. Il monitoraggio parte dalla creazione della regola; gli utenti aggiunti in seguito vengono inclusi dal primo controllo, senza segnalazioni anteriori all’inizio del loro monitoraggio. Non è ancora presente un calendario di festività, ferie o contratti a tempo parziale: la soglia attuale è di 8 ore per ogni giorno lun–ven.
+
+La sezione **Notifiche** mostra soltanto gli avvisi del proprio account, con stato letto/non letto. Un gestore destinatario può ricevere anomalie degli utenti monitorati; un operatore riceve e consulta soltanto quelle che riguardano se stesso. Le regole il cui proprietario è disattivato o perde il ruolo Gestore non vengono eseguite automaticamente.
+
+Il canale **email è implementato ma SMTP non è ancora configurato**: gli indirizzi vengono validati e gli avvisi restano in coda con stato `pending_configuration`. Il trasporto è delegato al nuovo addon C; nessun avviso viene presentato come email spedita finché il server SMTP non lo accetta.
+
+### Addon email in C
+
+Il servizio Compose **`mail-addon`** espone `GET /healthz`, `GET /v1/status` e `POST /v1/emails` tramite HTTPS su **`https://mail-api:8090`**. È un’API interna: ascolta soltanto su `172.30.60.2`, accetta l’app `172.30.60.10` e richiede un token Bearer per gli endpoint `/v1/*`. Non pubblica porte sull’host e non riceve credenziali dei database. Il nome `mail-api` appartiene soltanto alla rete dedicata, evitando ambiguità con l’interfaccia egress condivisa.
+
+`configure_network.py prepare` crea il certificato dell’addon e i file in `data/addon-secrets/`, senza cambiare CA, certificati esistenti o token già generati. Il token API è montato soltanto in app e addon; la password SMTP soltanto nell’addon. La directory locale ha permessi `0700`; i file readonly sono leggibili dai distinti utenti non privilegiati dei due container. I materiali sono esclusi da Git e dalle immagini. Il processo addon usa UID `10003`, filesystem in sola lettura e il volume `mail_addon_data` per il registro degli esiti.
+
+Il POST riceve `idempotency_key`, `to`, `subject` e `body` codificati come form. L’app ricontrolla proprietario e destinatario della regola, poi chiama l’API fuori dalla transazione SQL. Una chiave stabile identifica ogni elemento della coda: i tentativi ripetuti recuperano l’esito già registrato. Il ledger SQLite conserva solo chiave, hash del contenuto, stato e orari; destinatario e testo restano nell’outbox SQL. Una risposta SMTP incerta, compreso un crash durante l’invio, richiede verifica manuale e non produce un reinvio automatico. `sent` conferma l’accettazione SMTP, non la consegna nella casella.
+
+Gli stati della coda sono `pending_configuration`, `retrying`, `sent`, `delivery_unknown` e `delivery_failed`. La migrazione 7 aggiorna il vincolo degli stati, conservando righe e identificativi; non aggiunge tabelle applicative. Prima di attivare un provider reale occorre configurare mittente, host, modalità TLS, credenziali e hostname esatto nella allowlist SMTP di Squid. **SMTP rimane disabilitato finché questa configurazione non viene completata.**
+
+Il [manuale dell’addon](addon/README.md) descrive formato API, errori, configurazione futura e ripristino. Il backup MySQL non include il ledger: outbox, ledger e `MAIL_API_NAMESPACE` devono essere salvati e ripristinati insieme per conservare la deduplicazione.
+
+## Addon Google Calendar
+
+**`calendar-addon`** è un secondo microservizio C, indipendente dall’addon email. Espone un’API HTTPS privata su **`https://calendar-api:8091`** e sincronizza gli eventi Google con il proprio archivio locale. L’app conserva autenticazione e autorizzazione: ricava sempre l’utente dalla sessione, mentre l’addon riceve un token di servizio dedicato. Gestori e operatori possono usare il proprio collegamento; il ruolo Gestore non concede accesso ai calendari degli altri utenti.
+
+Il flusso OAuth usa stato temporaneo monouso, PKCE e associazione alla sessione applicativa. Gli scope sono `calendar.events` e `calendar.calendarlist.readonly`. L’addon rinnova i token e mantiene una coda persistente delle modifiche; il controllo periodico usa `CALENDAR_SYNC_INTERVAL`, predefinito 300 secondi. Le modifiche di un evento esistente usano ETag per rilevare conflitti. Le creazioni hanno identificativi deterministici per evitare duplicati quando l’esito di rete è incerto. La sincronizzazione in ingresso usa paginazione e `syncToken`, con ricostruzione della copia locale se Google invalida il token. [Sincronizzazione incrementale Google](https://developers.google.com/workspace/calendar/api/guides/sync), [modifiche condizionali con ETag](https://developers.google.com/workspace/calendar/api/guides/version-resources)
+
+L’addon ha soltanto le reti interne `calendar_api` e `app_egress`; ascolta su `172.30.70.2:8091`, accetta l’app `172.30.70.10` e usa Squid da `172.30.40.12` per i soli host Google autorizzati su porta 443. Non dispone di credenziali MySQL/MongoDB, non raggiunge i database e non pubblica porte sull’host. Il processo usa UID `10004`, filesystem readonly, capacità Linux rimosse e il volume `calendar_addon_data`.
+
+Token OAuth, contenuti degli eventi e modifiche accodate vengono cifrati nel database SQLite dell’addon con AES-256-GCM. La chiave locale separata è `data/addon-secrets/calendar-token-key`, montata soltanto nell’addon; non è memorizzata nel suo volume. Gli identificativi utente/calendario/evento, ETag, cursori e stati operativi restano in chiaro; l’identificativo Google può contenere l’indirizzo email. L’addon decifra i contenuti durante l’elaborazione e li restituisce all’utente autorizzato: questa protezione non realizza calcoli su dati sempre cifrati. Il backup MySQL non include l’archivio calendari; volume e chiave richiedono un backup protetto congiunto. Una chiave persa rende il contenuto dell’archivio illeggibile.
+
+La callback `/api/calendar/oauth/callback` eredita le restrizioni di accesso del Proxy Host NPM ed esclude i propri accessi ed errori dai log, per evitare di registrarvi codici OAuth. Gli altri percorsi conservano i normali log diagnostici con URL senza query. L’immagine aggiorna sia i Proxy Host esistenti sia quelli rigenerati dal pannello, con backup dei file precedenti; configurazioni personalizzate incompatibili richiedono revisione e vengono rifiutate.
+
+**Google OAuth resta non configurato nello stack locale.** Per attivarlo occorrono Calendar API abilitata nel proprio progetto Google Cloud, client OAuth Web, `GOOGLE_CLIENT_ID`, `GOOGLE_REDIRECT_URI` e client secret nel file locale `data/addon-secrets/google-client-secret`. La redirect URI deve coincidere esattamente con quella registrata in Google Cloud e terminare con `/api/calendar/oauth/callback`; in produzione usare HTTPS. Non inserire il client secret in `.env.docker`, sorgenti o messaggi. Ogni utente deve poi concedere il consenso. [Configurazione OAuth Google](https://developers.google.com/identity/protocols/oauth2/web-server), [scope Calendar](https://developers.google.com/workspace/calendar/api/auth)
+
+Questa integrazione espone API: la schermata Calendario e il collegamento evento → commessa/ore sono sviluppi successivi. Non crea automaticamente registrazioni di lavoro a partire dagli appuntamenti. Il [manuale Calendar](calendar-addon/README.md) descrive contratto API, stati della coda, limiti e attivazione del provider.
 
 ## Registro ore
 
@@ -367,19 +477,37 @@ Il registro mostra il totale giornaliero. Il server impedisce valori nulli o neg
 
 Ogni registrazione appartiene all’**identificativo stabile dell’utente** (`user_id`), attribuito dal server. L’email memorizzata insieme alle ore è un dato storico; non determina i permessi di lettura o modifica. Il modulo e l’API non consentono di attribuire ore a un altro utente.
 
+## Analisi per periodo, commessa, utente e contratti
+
+La sezione **Analisi** raccoglie cinque viste con filtri condivisi **Dal**, **Al**, **Commessa** e, per i gestori, **Utente**. Per una data singola imposta lo stesso giorno nei due campi; gli estremi sono inclusi e l’intervallo massimo è di 366 giorni. I comandi Oggi, Questa settimana e Questo mese usano la data del server. Le viste e i filtri sono riportati nell’URL per poter riaprire o condividere la selezione; il collegamento non concede accessi.
+
+- **Per periodo:** ore e registrazioni raggruppate per giornata.
+- **Per commessa:** tempo registrato, numero di registrazioni e persone coinvolte per progetto.
+- **Per utente:** ore e commesse per persona, includendo gli account disattivati nello storico dei gestori.
+- **Valore contratti:** contratti collegati alle ore del periodo, con valore contrattuale noto, valori non definiti e ore senza contratto. Riservata ai gestori.
+- **Costo delle ore:** stima del costo del lavoro per persona e commessa, usando le tariffe orarie valide alla data di ciascuna registrazione. Include la gestione delle tariffe ed è riservata ai gestori.
+
+Il gestore può consultare gli aggregati di tutti gli utenti. L’operatore consulta soltanto le proprie registrazioni, comprese quelle storiche su commesse successivamente revocate; il server applica questo limite a ogni richiesta. Le analisi non espongono note delle attività o credenziali.
+
+La vista contratti mostra **il valore intero dei contratti attualmente collegati alle commesse**, contato una sola volta anche quando un contratto è collegato a più commesse. Il periodo seleziona il lavoro registrato, non ripartisce il valore contrattuale nel tempo o tra utenti e commesse. Un valore non definito resta distinto da zero. Cambiare il contratto di una commessa aggiorna anche questa analisi del lavoro storico.
+
+Le tariffe del costo delle ore sono espresse in **centesimi EUR per ora**, da 0 a 99.999.999 centesimi, con data iniziale obbligatoria e data finale facoltativa. Gli estremi sono inclusi e due tariffe dello stesso utente non possono sovrapporsi; la tariffa zero è un valore esplicito. Il costo viene arrotondato al centesimo, con metà arrotondata in alto, per ogni registrazione prima di sommare i risultati. Le ore senza tariffa restano indicate come non valorizzate: una somma incompleta è una stima parziale e non un costo zero.
+
+Questi report sono stime gestionali basate sulle tariffe correnti applicabili alle date lavorate. Modificare una tariffa ricalcola le stime storiche; non vengono congelati importi contabili o fatturabili. Le modifiche delle tariffe hanno audit atomico. Spese consuntive, pagamenti, ricavi, multivaluta e modulo finanziario completo restano da implementare. Lo schema 4 aggiunge soltanto `labor_rates`, senza valorizzare automaticamente le ore esistenti.
+
 ## Storico delle modifiche e aggiornamenti dei dati
 
-La scheda **Storico** è riservata ai gestori. Mostra creazioni e modifiche di utenti, gruppi, ruoli, fornitori, contratti e commesse, cambiamenti delle appartenenze, caricamenti PDF, aggiunte e correzioni delle ore, eliminazioni delle registrazioni e modifiche alle abilitazioni dirette o per gruppo. Ogni evento conserva data UTC, autore e valori precedenti e successivi; non contiene password, hash o sali. I filtri per tipo e la paginazione consentono di consultare anche uno storico esteso.
+La scheda **Storico** è riservata ai gestori. Mostra creazioni e modifiche di utenti, gruppi, ruoli, fornitori, contratti, commesse e tariffe orarie, cambiamenti delle appartenenze, caricamenti PDF, aggiunte e correzioni delle ore, eliminazioni delle registrazioni e modifiche alle abilitazioni dirette o per gruppo. Ogni evento conserva data UTC, autore e valori precedenti e successivi; non contiene password, hash o sali. I filtri per tipo e la paginazione consentono di consultare anche uno storico esteso.
 
 Una modifica applicativa e il suo evento di audit vengono salvati nella stessa transazione. Se lo storico non può essere scritto, viene annullata anche la modifica. Le richieste rifiutate non producono eventi di modifica.
 
 Gli aggiornamenti dello schema sono versionati. Per un precedente database SQLite, la migrazione conserva i dati e associa le ore agli utenti attraverso l’email, senza distinguere maiuscole e minuscole. Le righe senza un account corrispondente restano conservate ma non vengono esposte ad altri utenti; la creazione successiva dell’account corrispondente può associarle al suo `user_id`. Un database con versione futura non supportata viene rifiutato senza modificarlo.
 
-La base attuale gestisce fino a 200 utenti, 200 gruppi, 100 ruoli sulle commesse, 1000 commesse, 1000 fornitori, 1000 contratti, 1000 documenti per contratto e 1000 registrazioni per utente nella stessa giornata. Un superamento restituisce un errore esplicito senza troncare gli elenchi.
+La base attuale gestisce fino a 200 utenti, 200 gruppi, 100 ruoli sulle commesse, 1000 commesse, 1000 fornitori, 1000 contratti, 1000 tariffe orarie, 1000 documenti per contratto e 1000 registrazioni per utente nella stessa giornata. Le analisi restituiscono fino a 1000 gruppi di risultati, calcolando sempre tutte le registrazioni filtrate. Un superamento restituisce un errore esplicito senza troncare gli elenchi.
 
 ## Tabelle del database
 
-Nel backend MySQL il database applicativo, predefinito `punto`, contiene quattordici tabelle InnoDB; lo schema corrente è la **versione 3**. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
+Nel backend MySQL il database applicativo, predefinito `punto`, contiene ventidue tabelle InnoDB; lo schema corrente è la **versione 7**. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
 
 | Tabella | Dati principali e struttura |
 | --- | --- |
@@ -387,20 +515,27 @@ Nel backend MySQL il database applicativo, predefinito `punto`, contiene quattor
 | `suppliers` | ID `BIGINT`, codice univoco `VARCHAR(40)`, nome `VARCHAR(120)`, partita IVA, email, telefono, indirizzo, note e stato `TINYINT` |
 | `contracts` | ID `BIGINT`, codice univoco, titolo, `supplier_id` obbligatorio, stato, date `CHAR(10)` nullable, `value_cents BIGINT` nullable, valuta `EUR` e note |
 | `contract_documents` | ID `BIGINT`, `contract_id`, chiave archivio univoca `CHAR(64)`, nome `VARCHAR(180)`, dimensione `INT`, SHA-256 `CHAR(64)`, autore `uploaded_by` e data UTC; nessun byte PDF |
-| `jobs` | ID commessa `BIGINT`, codice univoco, nome, cliente, descrizione, stato e `contract_id BIGINT` nullable |
+| `jobs` | ID commessa `BIGINT`, codice univoco, nome, cliente, descrizione, stato, `contract_id BIGINT` nullable e `is_common TINYINT` (0/1, predefinito 0) |
 | `job_assignments` | Chiave composta `(job_id,user_id)`, riferimenti a commessa, utente e `role_id`, date di validità facoltative |
 | `organization_groups` | ID, nome e `parent_id` nullable verso la stessa tabella; albero senza cicli |
 | `group_members` | Chiave composta `(group_id,user_id)`; appartenenze multiple degli utenti |
 | `job_roles` | ID, codice univoco, nome, `can_log_time` e `builtin`; Lettore e Collaboratore predefiniti |
 | `job_group_grants` | Chiave composta `(job_id,group_id)`, riferimento al ruolo e date di validità facoltative |
 | `time_entries` | ID registrazione `BIGINT`, riferimenti a commessa e utente, copia storica dell’email, giornata, minuti e nota |
+| `labor_rates` | ID `BIGINT`, utente immutabile `user_id`, tariffa `hourly_cents BIGINT`, valuta `EUR`, date di validità; univocità `(user_id,starts_on)` |
+| `alert_rules` | Regola, gestore proprietario, tipo, orario locale, attivazione e ultimo controllo persistente |
+| `alert_rule_users`, `alert_rule_emails` | Destinatari di ogni regola, con chiavi composte e indirizzi email univoci |
+| `alert_subjects` | Utenti monitorati, data iniziale e ultima giornata controllata per regola |
+| `alert_events` | Tentativi respinti su commesse inesistenti: utente, ID commessa, giornata, minuti e data UTC; nessuna nota dell’attività |
+| `alert_notifications` | Avvisi interni, destinatario, utente interessato, chiave di deduplicazione e stato di lettura |
+| `alert_email_outbox` | Coda email con destinatario, contenuto e stato: `pending_configuration`, `retrying`, `sent`, `delivery_unknown`, `delivery_failed` |
 | `audit_events` | ID evento `BIGINT`, autore, data UTC, azione, tipo e ID dell’elemento, JSON precedenti e successivi |
 | `schema_metadata` | Versione dello schema, conservata in una singola riga |
 | `cluster_write_guard` | Riga interna modificata dalle transazioni applicative per rilevare conflitti tra scritture sui membri del cluster |
 
 I testi usano `utf8mb4`; email e codici sono univoci senza distinzione tra maiuscole e minuscole. Le giornate e gli intervalli sono stringhe ISO `YYYY-MM-DD`, le durate sono minuti interi e i JSON dello storico sono testo. I trigger proteggono lo storico da aggiornamenti ed eliminazioni e impediscono di cambiare l’utente già associato a una registrazione. La definizione completa si trova in `src/mysql_schema.c`.
 
-SQLite conserva le stesse tabelle funzionali della modalità nativa e usa `PRAGMA user_version=3` per la versione dello schema. `cluster_write_guard` appartiene alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi.
+SQLite conserva le stesse tabelle funzionali della modalità nativa e usa `PRAGMA user_version=7` per la versione dello schema. `cluster_write_guard` appartiene alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
 
 Il database MongoDB, predefinito **`punto_documents`**, contiene i PDF nel bucket GridFS `contract_pdfs`:
 
@@ -420,9 +555,27 @@ Le risposte sono JSON. Gli endpoint applicativi richiedono una sessione. I POST 
 | --- | --- |
 | `GET /healthz` | Controllo di salute senza login |
 | `GET /api/session` | Identità, ruolo e permessi dell’utente autenticato |
-| `GET /api/jobs` | Commesse visibili con totale minuti dell’utente e `can_log_time`; conteggi delle abilitazioni per i gestori |
-| `POST /api/jobs` | Gestore: crea con `code`, `name`, `client`, `description`, `status`, `contract_id` facoltativo |
+| `GET /api/calendar/status` | Configurazione del provider e stato del proprio collegamento |
+| `POST /api/calendar/oauth/start` | Genera l’URL di consenso Google associato alla sessione corrente |
+| `GET /api/calendar/oauth/callback` | Callback Google, controllo dello stato e redirect all’app senza codici nella risposta |
+| `GET /api/calendar/calendars` | Calendari Google dell’account collegato, paginati con `page_token` |
+| `POST /api/calendar/selection` | Seleziona `calendar_id` fra i calendari su cui l’utente può scrivere |
+| `GET /api/calendar/events` | Eventi della copia locale, con filtri e paginazione |
+| `POST /api/calendar/events/create` | Accoda un evento con `idempotency_key` e `event` JSON |
+| `POST /api/calendar/events/update` | Accoda una modifica con `idempotency_key`, `event_id`, `etag` ed `event` JSON |
+| `POST /api/calendar/events/delete` | Accoda una cancellazione con `idempotency_key`, `event_id` ed `etag` |
+| `POST /api/calendar/sync` | Richiede la sincronizzazione del proprio calendario |
+| `GET /api/calendar/changes` | Stato delle ultime modifiche accodate, inclusi conflitti ed errori |
+| `POST /api/calendar/disconnect` | Scollega il proprio account Google |
+| `GET /api/alert-rules`, `POST /api/alert-rules` | Gestore: consulta/crea le proprie regole con nome, tipo, orario, stato e destinatari |
+| `POST /api/alert-rules/<id>` | Gestore proprietario: aggiorna la regola |
+| `POST /api/alert-rules/<id>/run` | Gestore proprietario: esegue un controllo manuale |
+| `GET /api/notifications` | Avvisi destinati all’utente corrente, nel suo ambito autorizzato |
+| `POST /api/notifications/<id>/read` | Segna come letto un proprio avviso autorizzato |
+| `GET /api/jobs` | Commesse visibili con `is_common`, totale minuti dell’utente e `can_log_time`; conteggi delle abilitazioni per i gestori |
+| `POST /api/jobs` | Gestore: crea con `code`, `name`, `client`, `description`, `status`, `contract_id` e `is_common` (`0`/`1`) facoltativi |
 | `POST /api/jobs/<id>` | Gestore: modifica gli stessi campi |
+| `DELETE /api/jobs/<id>` | Gestore: elimina definitivamente commessa, ore di tutti gli utenti e abilitazioni, senza corpo della richiesta |
 | `GET /api/jobs/<id>/assignments` | Gestore: elenco utenti abilitati e relativi intervalli |
 | `POST /api/jobs/<id>/assignments` | Gestore: crea o aggiorna abilitazione con `user_id`, `role_id`, `starts_on`, `ends_on` |
 | `DELETE /api/jobs/<id>/assignments/<user_id>` | Gestore: revoca un’abilitazione, senza corpo della richiesta |
@@ -436,6 +589,9 @@ Le risposte sono JSON. Gli endpoint applicativi richiedono una sessione. I POST 
 | `GET /api/job-roles`, `POST /api/job-roles` | Gestore: elenco/creazione ruoli con `code`, `name`, `can_log_time` (`0`/`1`) |
 | `POST /api/job-roles/<id>` | Gestore: modifica un ruolo personalizzato; vietato per quelli predefiniti |
 | `GET /api/time-entries?date=YYYY-MM-DD` | Registro giornaliero dell’utente e totale minuti |
+| `GET /api/reports?view=date&from=YYYY-MM-DD&to=YYYY-MM-DD` | Analisi aggregate: `view` accetta `date`, `job`, `user`, `cost`, `labor_cost`; filtri facoltativi `job_id` e `user_id` |
+| `GET /api/labor-rates` | Gestore: tariffe orarie per utente e intervallo |
+| `POST /api/labor-rates`, `POST /api/labor-rates/<id>` | Gestore: crea/modifica tariffa con `user_id`, `hourly_cents`, `currency=EUR`, `starts_on`, `ends_on` facoltativo; utente immutabile in modifica |
 | `POST /api/time-entries` | Registra tempo con `job_id`, `date`, `minutes`, `note` |
 | `POST /api/time-entries/<id>` | Gestore: modifica una propria registrazione |
 | `DELETE /api/time-entries/<id>` | Gestore: elimina una propria registrazione |
@@ -451,15 +607,15 @@ Le risposte sono JSON. Gli endpoint applicativi richiedono una sessione. I POST 
 | `POST /api/users/<id>` | Gestore: aggiorna `name`, `role`, `active` (`1` oppure `0`) |
 | `GET /api/audit?limit=30&before_id=123&entity_type=job` | Gestore: storico con filtri facoltativi |
 
-`client`, `description` e `note` sono facoltativi. `starts_on` e `ends_on` accettano date `YYYY-MM-DD`, valori vuoti o campi omessi. L’utente abilitato deve esistere ed essere attivo. Omettere `role_id` in una nuova abilitazione diretta sceglie Collaboratore; ometterlo in modifica conserva il ruolo precedente. L’audit accetta `limit` da 1 a 100, un `before_id` positivo e `entity_type` tra `job`, `time_entry`, `assignment`, `user`, `group`, `group_member`, `job_role`, `group_grant`, `supplier`, `contract`, `contract_document` e `system`; restituisce `next_before_id` per la pagina successiva.
+`client`, `description` e `note` sono facoltativi. Nelle abilitazioni, `starts_on` e `ends_on` accettano date `YYYY-MM-DD`, valori vuoti o campi omessi. L’utente abilitato deve esistere ed essere attivo. Omettere `role_id` in una nuova abilitazione diretta sceglie Collaboratore; ometterlo in modifica conserva il ruolo precedente. L’audit accetta `limit` da 1 a 100, un `before_id` positivo e `entity_type` tra `job`, `time_entry`, `assignment`, `user`, `group`, `group_member`, `job_role`, `group_grant`, `supplier`, `contract`, `contract_document`, `labor_rate` e `system`; restituisce `next_before_id` per la pagina successiva.
 
 Gli elenchi fornitori e contratti rispondono con `{suppliers:[...]}` e `{contracts:[...]}`; i documenti con `{documents:[...]}`. Le date e il valore del contratto possono essere vuoti/nulli; `currency` accetta soltanto `EUR`. In modifica i campi facoltativi omessi conservano il valore precedente.
 
-I profili globali sono `manager` e `worker`; i ruoli sulle commesse appartengono al catalogo `job_roles`. La sessione espone anche i permessi amministrativi `manage_groups` e `manage_job_roles`. Le operazioni non autorizzate restituiscono HTTP 403. I dati delle ore sono sempre limitati all’utente autenticato, anche per un gestore.
+I profili globali sono `manager` e `worker`; i ruoli sulle commesse appartengono al catalogo `job_roles`. La sessione espone anche i permessi amministrativi `manage_groups` e `manage_job_roles`. Le operazioni non autorizzate restituiscono HTTP 403. Il registro giornaliero e la modifica delle ore sono sempre limitati all’utente autenticato, anche per un gestore. Il nuovo endpoint di analisi permette al gestore di leggere gli aggregati di tutti, senza modificare le registrazioni altrui; per l’operatore rimane personale e le viste `cost`, `labor_cost` e le tariffe restituiscono 403.
 
 ## Verifica
 
-La suite locale richiede Python 3 e avvia server SQLite su porte libere con database temporanei:
+La suite locale richiede Python 3, compilatore C, `pkg-config`, SQLite, libcurl, json-c e OpenSSL e avvia server su porte libere con database temporanei. I test email e Calendar usano server TLS e proxy di collaudo locali, senza inviare messaggi o modificare calendari reali:
 
 ```sh
 make test
@@ -523,9 +679,25 @@ La suite dedicata è esclusa dalle esecuzioni ordinarie. Per verificarla sullo s
 PUNTO_NETWORK_TEST=1 python3 tests/test_network_security.py -v
 ```
 
-Le verifiche riguardano la matrice delle reti e delle porte pubblicate, i nomi e MAC delle interfacce Docker, il normale accesso all’app tramite NPM, i tentativi verso i database da reti non autorizzate anche tramite IP diretto, l’assenza dell’accesso HTTP sull’interfaccia backend dell’app, il blocco dell’uscita esterna dai servizi interni e il rifiuto delle connessioni MySQL prive di TLS. Il controllo MongoDB verifica rete backend esclusiva, connessione con CA verificata e autenticazione applicativa, e rifiuto delle connessioni senza TLS. Controllano inoltre i cipher delle sessioni applicative effettive, l’isolamento del pannello amministrativo NPM e i parametri di sicurezza dei container. Un controllo della sola risoluzione DNS non dimostra l’isolamento IP; un healthcheck positivo non dimostra che i flussi vietati siano bloccati.
+Le verifiche riguardano la matrice delle sette reti e delle porte pubblicate, i nomi e MAC delle interfacce Docker, il normale accesso all’app tramite NPM, i tentativi verso i database da reti non autorizzate anche tramite IP diretto, l’assenza dell’accesso HTTP sulle interfacce backend, egress, mail e calendario dell’app, il blocco dell’uscita esterna diretta dai servizi interni e il rifiuto delle connessioni MySQL prive di TLS. Il controllo MongoDB verifica rete backend esclusiva, connessione con CA verificata e autenticazione applicativa, e rifiuto delle connessioni senza TLS. Controllano inoltre i cipher delle sessioni applicative effettive, l’isolamento del pannello amministrativo NPM e i parametri di sicurezza dei container. I test Squid verificano variabili proxy, listener privato, rifiuto di HTTP semplice, host non autorizzati, IP letterali, destinazioni private e porte alternative; completano anche una richiesta HTTPS autorizzata con verifica del certificato e rifiutano sorgenti non ammesse. I controlli degli addon verificano TLS, token, nome del certificato, assenza di accesso ai database, separazione delle credenziali e policy SMTP distinta da Google. Controlli DNS verificano i nomi Docker interni e la mancata risoluzione esterna da app e addon. Un controllo della sola risoluzione DNS non dimostra l’isolamento IP; un healthcheck positivo non dimostra che i flussi vietati siano bloccati.
 
-La suite va eseguita dopo `configure_network.py apply` e ripetuta quando cambiano reti, porte o certificati. I risultati delle precedenti prove HA non attestano automaticamente questi controlli di rete.
+La suite va eseguita dopo `configure_network.py apply` o l’aggiunta mirata di Squid e ripetuta quando cambiano reti, allowlist, porte o certificati. I risultati delle precedenti prove HA non attestano automaticamente questi controlli di rete.
+
+Per verificare anche il rifiuto di un host autorizzato che risolve verso loopback, compila prima l’immagine Squid ed esegui:
+
+```sh
+PUNTO_SQUID_POLICY_TEST=1 python3 tests/test_squid_policy.py -v
+```
+
+Il test usa le ACL dell’immagine in un container temporaneo con `--network none`, filesystem in sola lettura, senza mount host o credenziali. Adatta gli indirizzi di ascolto/client al loopback e inserisce una risposta locale per `accounts.google.com`; un codice `451` riservato alla fixture dimostra che il rifiuto proviene proprio dalla ACL delle destinazioni private. La policy di produzione restituisce `403`. Non modifica lo stack avviato.
+
+La protezione dei log OAuth ha test Node e una prova Nginx in un container temporaneo, senza modificare lo stack:
+
+```sh
+PUNTO_DOCKER_TESTS=1 python3 tests/test_proxy_privacy.py -v
+```
+
+Serve Node disponibile nel `PATH` oppure indicato da `PUNTO_NODE_BINARY`. La prova verifica l’immagine NPM compilata, la migrazione dei Proxy Host e l’assenza di codici OAuth nei log anche quando l’upstream non risponde o una ACL nega la richiesta.
 
 Il driver dispone anche di una regressione separata, senza database reale o credenziali di ambiente. Richiede compilatore C, `pkg-config` e gli header MariaDB Connector/C:
 
@@ -535,11 +707,27 @@ PUNTO_MYSQL_TLS_TEST=1 python3 tests/test_mysql_tls.py -v
 
 Verifica otto casi di rifiuto: modalità diverse da `verify_identity`, CA mancante/relativa/inesistente/vuota e un server simulato che non offre SSL. In quest’ultimo caso il server deve ricevere zero byte di autenticazione; un client di controllo con credenziali fittizie dimostra che l’handshake simulato è valido. L’harness può essere compilato ed eseguito anche in un container con `--network none`, usando soltanto il proprio loopback.
 
+### Collaudi storici
+
+I risultati seguenti si riferiscono a fasi successive dello sviluppo. Non sono una nuova esecuzione durante la stesura della documentazione; lo stato di riferimento corrente è descritto nelle [guide tecniche](docs/tehnical/README.md).
+
 Il 10 ottobre 2026, dopo l’aggiunta di fornitori, contratti e GridFS, la suite nativa ha completato 114 controlli: **101 superati e 13 opzionali saltati**. Sono passati **7/7 test di rete**, la suite MySQL esistente e la suite contratti/MySQL/MongoDB attraverso NPM. I sette servizi risultano sani; i tre nodi SQL hanno schema versione 2 e conteggi documentali concordi. Nel browser sono stati verificati modulo fornitore, elenco contratti, archivio con due PDF e selettore contratto nella commessa, senza errori JavaScript. Il backup MongoDB popolato ha superato la verifica gzip e dei permessi `0600`.
 
 Durante la precedente migrazione delle reti erano passati anche gli otto casi negativi TLS in un container isolato; prima delle fixture, le impronte delle cinque tabelle applicative preesistenti erano identiche al baseline su tutti i nodi. I backup sono conservati in `backups/`.
 
 Dopo l’aggiunta di gruppi e ruoli, sempre il 10 ottobre 2026, la suite locale ha completato **128 controlli: 114 superati e 14 opzionali saltati**, inclusi 13 nuovi test dell’organizzazione. Sono passate le tre suite live su MySQL per commesse/ore, contratti/GridFS e gruppi/ruoli. Prima di creare le nuove fixture, le impronte delle sette tabelle preesistenti erano invariate su tutti e tre i nodi dopo la migrazione allo schema 3. I sette servizi risultano sani e i conteggi delle nuove tabelle concordano. Nel browser sono stati verificati albero, membri, catalogo ruoli e moduli di abilitazione per utenti e gruppi, senza errori JavaScript.
+
+Con le analisi e le tariffe, la suite locale comprende **150 test: 136 superati e 14 facoltativi saltati**, inclusi 22 nuovi casi su report, permessi, costi, arrotondamenti, audit, concorrenza e migrazione. Il collaudo browser con dati sintetici copre filtri, navigazione, tariffe, profilo operatore e layout fino a 320 px. L’immagine MySQL è stata compilata e distribuita sullo stack locale dopo backup; i tre nodi sono allo schema 4 con una sola migrazione e nessuna tariffa precompilata. Le cinque viste sono state lette anche tramite Nginx/MySQL, senza modificare dati applicativi. I sette servizi risultano healthy. Evidenze sintetiche: [vista per commessa](docs/analisi/per-commessa.jpg), [tariffa su telefono](docs/analisi/tariffa-mobile.jpg).
+
+Con le commesse comuni e gli alert, la suite locale comprende **179 test: 165 superati e 14 facoltativi saltati**. Sono verificati cancellazione delle ore collegate, permessi, destinatari, soglia giornaliera, tolleranza, cambio dell’ora e ripartenza del pianificatore. Il collaudo browser con dati sintetici copre creazione delle regole, esecuzione manuale, lettura degli avvisi, profilo operatore e layout a 320 px. Dopo backup sono state eliminate le 25 commesse precedenti con le 11 registrazioni collegate; restano quattro commesse comuni e nessuna ora. Lo stack locale usa lo schema 6: tutti i servizi sono sani e i tre membri MySQL sono `ONLINE` e `PRIMARY`, con le otto tabelle protette invariate. Le nuove sette tabelle sono state verificate anche con una transazione MySQL poi annullata. Non sono state preconfigurate regole reali; l’invio email rimane in attesa della configurazione SMTP. Evidenze: [commesse predefinite](docs/commesse/predefinite.jpg), [catalogo alert sul deployment](docs/alert/catalogo.jpg), [notifica sintetica di collaudo](docs/alert/notifica-test.jpg).
+
+Dopo l’aggiunta di Squid sono passati **12/12 controlli live di rete** e **8/8 test di regressione del reverse proxy**. Dall’app, tutti e tre gli host Google autorizzati completano `CONNECT 200` e la verifica TLS; le risposte applicative senza credenziali (`302`, `404`, `401`) sono attese. Le prove negative comprendono uscita diretta, DNS esterno, HTTP semplice, IP IPv4/IPv6, suffissi falsi, porte alternative e client diversi dall’app. Gli otto servizi risultano sani e i tre membri SQL restano `ONLINE` e `PRIMARY`. L’aggiornamento ha ricreato soltanto app e nuovo proxy, senza migrazioni SQL; prima dell’operazione è stato salvato un backup MySQL.
+
+È passato anche il controllo isolato della destinazione: un hostname presente nella allowlist ma risolto su loopback riceve `CONNECT 403`, confermando il blocco degli indirizzi privati dopo la risoluzione.
+
+Con l’addon email C la suite comprende **222 test: 198 superati e 24 facoltativi saltati**. Sono inclusi 16 casi SMTP/API e 17 casi client/outbox: STARTTLS e SMTPS tramite proxy, verifica TLS, autenticazione, contenuti italiani, deduplicazione persistente, esiti incerti, revoche e migrazione SQLite 6→7 con conservazione degli identificativi. Sono passati anche **16/16 controlli live di rete** e la prova Squid isolata con verifica della specifica ACL di destinazione. Sul deployment i nove servizi sono sani e tutti i nodi MySQL sono `ONLINE` e `PRIMARY`, allo schema 7 con un solo evento di migrazione. Le impronte delle otto tabelle protette sono invariate sui tre nodi. Login e API alert tramite NPM funzionano; la chiamata privata di invio restituisce correttamente `503 pending_configuration`. SMTP resta da configurare e nessuna email reale è stata inviata. Backup precedente alla migrazione: `backups/mysql-20261010T175353Z-d20e2c.sql`.
+
+Con Calendar la suite completa ha eseguito **270 test: 241 superati e 29 facoltativi saltati**. Dopo le ultime correzioni sono passati **23 test dell’addon** e **15 del bridge applicativo**, compresi isolamento fra utenti, token cifrati, OAuth, conflitti, recupero delle risposte perse e sincronizzazioni concorrenti con la riconnessione. Sono passati anche **8 test della privacy NPM**, la prova Squid isolata e **20/20 controlli live di rete**. I dieci servizi sono sani; login, API Calendar e callback sintetica sono stati verificati attraverso NPM. I tre nodi SQL restano `ONLINE/PRIMARY`, allo schema 7, con le otto tabelle protette invariate, quattro commesse e nessuna ora registrata. L’addon non richiede migrazioni MySQL. Google OAuth resta da configurare; i test funzionali usano un provider simulato e non modificano calendari reali. Backup precedente al deploy: `backups/mysql-20261010T181957Z-2e076f.sql`.
 
 ## Struttura
 
@@ -547,6 +735,9 @@ Dopo l’aggiunta di gruppi e ruoli, sempre il 10 ottobre 2026, la suite locale 
 src/server.c           HTTP, sessioni e health check
 src/accounts.c         Utenti, password e ruoli
 src/workspace.c        Commesse, abilitazioni e ore
+src/alerts.c           Regole giornaliere, pianificatore, notifiche e coda email
+src/mail_client.c      Client HTTPS autenticato dell’addon email
+src/calendar_client.c  Client HTTPS e validazione delle API Calendar
 src/organization.c     Albero dei gruppi, membri, ruoli e valutazione degli accessi
 src/storage.c          Migrazioni e audit
 src/procurement.c      Fornitori, contratti e metadati documentali
@@ -557,7 +748,12 @@ src/mysql_schema.c     Schema MySQL e protezione delle scritture concorrenti
 public/               Login e area di lavoro
 Makefile               Compilazione nativa e test
 Dockerfile             Compilazione e runtime dell’app MySQL
-compose.yaml           App, tre MySQL, HAProxy, MongoDB, NPM e reti dedicate
+compose.yaml           App, due addon, tre MySQL, HAProxy, MongoDB, NPM, Squid e sette reti
+addon/                 Microservizio email C, Makefile, Dockerfile e manuale API
+calendar-addon/        Sincronizzazione Google Calendar C e archivio cifrato separato
+docs/README.md         Indice della documentazione di dettaglio
+docs/tehnical/         Architettura, dati, API, sicurezza e gestione operativa
+docs/prod/             Guide utente e gestore, regole e piani di sviluppo
 .env.docker.example    Modello delle impostazioni Docker
 scripts/configure_proxy.py  Configurazione iniziale del reverse proxy
 scripts/configure_network.py  Preparazione TLS e applicazione della segmentazione di rete
@@ -566,18 +762,27 @@ scripts/backup_documents.py Backup protetto del database MongoDB documentale
 tests/                 Test HTTP e migrazioni
 tests/test_cluster_ha.py  Prove opzionali di guasto dei membri MySQL
 tests/test_network_security.py  Prove opzionali di isolamento e TLS
+tests/test_squid_policy.py  Prova opzionale isolata delle risposte DNS private
+tests/test_mail_addon.py    SMTP TLS, proxy CONNECT, autenticazione e ledger isolati
+tests/test_mail_client.py   TLS client, esiti outbox, revoche e migrazione della coda
+tests/test_calendar_addon.py OAuth, sync bidirezionale e provider Google simulato
+tests/test_calendar_client.py Sessioni, TLS e isolamento delle API Calendar
 tests/test_mysql_tls.py  Regressione opzionale del driver contro downgrade TLS
 tests/test_procurement_mysql.py  Integrazione opzionale contratti e GridFS reali
 docker/mongodb/        Inizializzazione account e health check documentale
 docker/nginx-proxy-manager/  Immagine derivata NPM e listener amministrativi limitati
+docker/squid/          Proxy in uscita, allowlist separate Google/SMTP, blocchi IP e health check
 data/punto.db          Database SQLite nativo, escluso dal versionamento
 data/documents/        PDF della modalità nativa, esclusi dal versionamento
 data/cluster-state.json  Marcatori locali di inizializzazione e seed, esclusi dal versionamento
 data/network-tls/      CA privata locale e certificati, esclusi dal versionamento
+data/addon-secrets/    Token API, chiave Calendar e credenziali provider, esclusi da Git
 backups/               Dump MySQL e archivi MongoDB con permessi 0600, esclusi da Git
 nginx-proxy-manager/   Configurazione, SQLite e certificati NPM persistenti
 ```
 
-L’integrazione con **Google Calendar** e le altre funzioni del piano — attività, Kanban, pianificazione, budget, approvazioni e area cliente — sono sviluppi successivi e non sono ancora implementati.
+Le funzioni del piano — attività, Kanban, pianificazione, budget, approvazioni e area cliente — sono sviluppi successivi. L’addon Google Calendar e le API applicative sono implementati; l’attivazione reale richiede il progetto OAuth e il consenso degli utenti. Restano da sviluppare l’interfaccia Calendario e il collegamento degli eventi alle commesse e alle registrazioni ore.
 
-L’integrazione Google Calendar richiederà un’uscita HTTPS controllata verso i servizi Google: l’app attualmente non dispone di uscita Internet. Tale accesso dovrà essere previsto esplicitamente conservando la segmentazione richiesta.
+La roadmap delle 20 ulteriori funzionalità è descritta in [Piano di implementazione delle 20 funzionalità](docs/prod/roadmap-20-funzionalita.md), con sequenza dei rilasci, dipendenze, schema previsto e criteri di accettazione. Lo [stato aggiornato delle funzionalità](docs/prod/roadmap.md) distingue ciò che è disponibile dai rilasci ancora da realizzare.
+
+Il [Piano del modulo finanziario](docs/prod/piano-modulo-finanziario.md) aggiunge gestione economica delle commesse, più società e paesi, multivaluta, fatture clienti/fornitori, incassi e pagamenti già nel primo rilascio finanziario. Le fasi successive prevedono acquisti, pianificazione, riconciliazione bancaria e consolidamento di gruppo. È una roadmap: il modulo finanziario e la separazione societaria non sono ancora implementati.
