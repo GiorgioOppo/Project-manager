@@ -2685,5 +2685,7 @@
   "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "会话可能已过期，或你的账户可能没有访问 Punto 的权限。",
   "Se il problema continua, contatta l’amministratore.": "如果问题仍然存在，请联系管理员。",
   "Torna alla pagina di accesso": "返回登录页面",
-  "Uscita dall’account…": "正在退出账户…"
+  "Uscita dall’account…": "正在退出账户…",
+  "Accesso aziendale non riuscito · Ticket": "企业账户登录失败 · Ticket",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Ticket.": "会话可能已过期，或你的账户可能没有访问 Ticket 的权限。"
 }

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f6f2">
+    <meta name="referrer" content="no-referrer">
+    <title data-i18n>Accesso aziendale non riuscito · Ticket</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect x='2' y='2' width='36' height='36' rx='11' fill='%23e96850'/%3E%3Cpath d='M12 13h16v5a3 3 0 0 0 0 6v4H12v-4a3 3 0 0 0 0-6z' fill='white'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/app.css">
+    <link rel="stylesheet" href="/i18n.css">
+    <link rel="stylesheet" href="/auth-error.css">
+    <script src="/i18n.js" defer></script>
+    <script src="/auth-error.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content" data-i18n>Vai al contenuto</a>
+    <div class="page-shell auth-error-shell">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Ticket, pagina iniziale" data-i18n-attrs="aria-label">
+          <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 10h14v4a2.5 2.5 0 0 0 0 5v3H9v-3a2.5 2.5 0 0 0 0-5v-4Z" stroke="white" stroke-width="1.7"/><path d="M19 11v2m0 3v2m0 2v1" stroke="white" stroke-linecap="round"/></svg>
+          <span>Ticket<span class="brand-period">.</span></span>
+        </a>
+        <label class="language-control" for="language-select"><span id="language-label" data-i18n>Lingua</span><select id="language-select" name="language" aria-label="Lingua" data-i18n-attrs="aria-label"><option value="it">Italiano</option><option value="en">English</option><option value="zh">简体中文</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option></select></label>
+      </header>
+      <main id="main-content" class="auth-error-main" tabindex="-1">
+        <section class="auth-error-card" aria-labelledby="auth-error-title" aria-describedby="auth-error-description">
+          <div class="auth-error-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></svg></div>
+          <h1 id="auth-error-title" data-i18n>Accesso aziendale non riuscito</h1>
+          <p id="auth-error-description" data-i18n>La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Ticket.</p>
+          <p data-i18n>Esci dall’account aziendale per scegliere un altro account, poi riprova.</p>
+          <div class="auth-error-logout">
+            <button id="sso-error-logout" class="button button-primary" type="button" disabled><span data-i18n>Esci dall’account aziendale</span></button>
+            <p id="sso-error-status" class="auth-error-status" role="status" aria-live="polite" hidden></p>
+            <noscript><p data-i18n>Abilita JavaScript per uscire dall’account aziendale.</p></noscript>
+          </div>
+          <a id="auth-error-back" class="auth-error-back" href="/" data-i18n>Torna alla pagina di accesso</a>
+          <p class="auth-error-help" data-i18n>Se il problema continua, contatta l’amministratore.</p>
+        </section>
+      </main>
+      <footer class="site-footer"><span data-i18n>Ticket<span class="brand-period">.</span> <span class="footer-divider">/</span> Meno dispersione, più soluzioni.</span><span data-i18n>Un’app dedicata al tuo team.</span></footer>
+    </div>
+  </body>
+</html>

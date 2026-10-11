@@ -2685,5 +2685,7 @@
   "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "Votre session a peut-être expiré ou votre compte n’a peut-être pas accès à Punto.",
   "Se il problema continua, contatta l’amministratore.": "Si le problème persiste, contactez votre administrateur.",
   "Torna alla pagina di accesso": "Revenir à la page de connexion",
-  "Uscita dall’account…": "Déconnexion en cours…"
+  "Uscita dall’account…": "Déconnexion en cours…",
+  "Accesso aziendale non riuscito · Ticket": "Échec de la connexion professionnelle · Ticket",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Ticket.": "Votre session a peut-être expiré ou votre compte n’a peut-être pas accès à Ticket."
 }

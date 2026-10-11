@@ -2685,5 +2685,7 @@
   "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "Your session may have expired, or your account may not have access to Punto.",
   "Se il problema continua, contatta l’amministratore.": "If the problem continues, contact your administrator.",
   "Torna alla pagina di accesso": "Return to sign-in",
-  "Uscita dall’account…": "Signing out…"
+  "Uscita dall’account…": "Signing out…",
+  "Accesso aziendale non riuscito · Ticket": "Company sign-in failed · Ticket",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Ticket.": "Your session may have expired, or your account may not have access to Ticket."
 }

@@ -197,7 +197,7 @@ static void response(Request *r, int status, const char *mime, const void *body,
         "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n"
         "Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'\r\n"
         "Cache-Control: no-store\r\n%s\r\n", status, status_text(status), mime, len, extra ? extra : "");
-    if (n > 0 && (size_t)n < sizeof(header) && send_bytes(r->fd, header, (size_t)n)) (void)send_bytes(r->fd, body, len);
+    if (n > 0 && (size_t)n < sizeof(header) && send_bytes(r->fd, header, (size_t)n) && strcmp(r->method, "HEAD")) (void)send_bytes(r->fd, body, len);
 }
 static void send_json_extra(Request *r, int status, json_object *o, const char *extra) {
     const char *body = json_object_to_json_string_ext(o, JSON_C_TO_STRING_PLAIN);
@@ -212,11 +212,9 @@ static void error_response(Request *r, int status, const char *message) {
     add_string(o, "error", message);
     send_json(r, status, o);
 }
-static void auth_error_response(Request *r, int status, const char *message) {
-    json_object *o = json_object_new_object();
-    json_object_object_add(o, "ok", json_object_new_boolean(false));
-    add_string(o, "error", message);
-    send_json_extra(r, status, o, oidc_clear_cookie());
+static void static_file_response(Request *r, const char *path, int status, const char *extra);
+static void auth_error_response(Request *r, int status) {
+    static_file_response(r, "/auth-error.html", status, oidc_clear_cookie());
 }
 static void db_error(Request *r) { error_response(r, 500, "Errore di archivio. Riprova.");
 }
@@ -582,7 +580,7 @@ static void login(Request *r) {
 static void sso_login(Request *r) {
     char location[8192], cookie[512], headers[9000];
     int status = oidc_start(location, cookie);
-    if (status != 200) { auth_error_response(r, status, "Accesso aziendale non disponibile."); return; }
+    if (status != 200) { auth_error_response(r, status); return; }
     snprintf(headers, sizeof(headers), "Location: %s\r\n%s", location, cookie);
     response(r, 303, "text/plain; charset=utf-8", "", 0, headers);
 }
@@ -676,19 +674,19 @@ static void sso_callback(Request *r) {
     } else {
         status = oidc_callback(r->query ? r->query : "", r->cookie, email, &lifetime);
     }
-    if (status != 200) { auth_error_response(r, status, "Accesso aziendale non riuscito. Ripeti l’accesso."); return; }
+    if (status != 200) { auth_error_response(r, status); return; }
     if (!oidc_users_managed()) {
         sqlite3_stmt *st = prepare("SELECT id FROM users WHERE email=?1 COLLATE NOCASE AND active=1");
-        if (!st) { auth_error_response(r, 500, "Errore di archivio. Riprova."); return; }
+        if (!st) { auth_error_response(r, 500); return; }
         bind_text(st, 1, email);
         int rc = sqlite3_step(st);
         user_id = rc == SQLITE_ROW ? sqlite3_column_int64(st, 0) : 0;
         sqlite3_finalize(st);
-        if (!user_id) { auth_error_response(r, rc == SQLITE_DONE ? 403 : 500, "Account Ticket non disponibile. Contatta l’amministratore."); return; }
+        if (!user_id) { auth_error_response(r, rc == SQLITE_DONE ? 403 : 500); return; }
     }
     Auth a = {0};
     char cookie[256], headers[1024];
-    if (!create_session(r, user_id, lifetime, &a, cookie)) { auth_error_response(r, 500, "Impossibile creare la sessione. Riprova."); return; }
+    if (!create_session(r, user_id, lifetime, &a, cookie)) { auth_error_response(r, 500); return; }
     snprintf(headers, sizeof(headers), "Location: /\r\n%s%s", oidc_clear_cookie(), cookie);
     response(r, 303, "text/plain; charset=utf-8", "", 0, headers);
 }
@@ -708,6 +706,30 @@ static void logout(Request *r, Auth *a) {
     char cookie[180];
     snprintf(cookie, sizeof(cookie), "Set-Cookie: tickets_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0%s\r\n", r->secure_cookie ? "; Secure" : "");
     send_json_extra(r, 200, o, cookie);
+}
+static void sso_logout(Request *r) {
+    char location[8192];
+    int status = oidc_logout(location);
+    if (status != 200) { error_response(r, status, "Impossibile uscire dall’account. Riprova."); return; }
+    char token[65] = {0}, hash[65];
+    if (session_cookie(r->cookie, token)) {
+        bool hashed = digest_hex(token, hash);
+        OPENSSL_cleanse(token, sizeof(token));
+        if (!hashed) { db_error(r); return; }
+        sqlite3_stmt *st = prepare("DELETE FROM sessions WHERE token_hash=?1 AND origin=?2");
+        if (!st) { db_error(r); return; }
+        bind_text(st, 1, hash); bind_text(st, 2, r->request_origin);
+        int rc = sqlite3_step(st);
+        sqlite3_finalize(st);
+        if (rc != SQLITE_DONE) { db_error(r); return; }
+    }
+    json_object *o = json_object_new_object();
+    json_object_object_add(o, "ok", json_object_new_boolean(true));
+    add_string(o, "logout_url", location);
+    char headers[1024];
+    snprintf(headers, sizeof(headers), "%sSet-Cookie: tickets_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0%s\r\n",
+             oidc_clear_cookie(), r->secure_cookie ? "; Secure" : "");
+    send_json_extra(r, 200, o, headers);
 }
 static void list_users(Request *r, Auth *a) {
     sqlite3_stmt *st = prepare(!strcmp(a->role, "admin") ? "SELECT id,name,email,role,active FROM users ORDER BY active DESC,name COLLATE NOCASE,id" : "SELECT id,name,email,role,active FROM users WHERE active=1 ORDER BY name COLLATE NOCASE,id");
@@ -1597,9 +1619,9 @@ static const char *mime_type(const char *path) {
     if (!strcasecmp(ext, ".woff2")) return "font/woff2";
     return "application/octet-stream";
 }
-static void static_file(Request *r) {
+static void static_file_response(Request *r, const char *path, int status, const char *extra) {
     char decoded[2048], base[PATH_MAX], candidate[PATH_MAX], resolved[PATH_MAX];
-    if (!url_decode(r->path, decoded, sizeof(decoded), false) || strchr(decoded, '\\')) { error_response(r, 400, "Percorso non valido.");
+    if (!url_decode(path, decoded, sizeof(decoded), false) || strchr(decoded, '\\')) { error_response(r, 400, "Percorso non valido.");
     return;
     }
     for (char *p = decoded; *p; p++) if (*p == '/' && p[1] == '.') { error_response(r, 404, "Pagina non trovata.");
@@ -1639,8 +1661,11 @@ static void static_file(Request *r) {
     error_response(r, 500, "Impossibile leggere la pagina.");
     return;
     }
-    response(r, 200, mime_type(resolved), data, len, NULL);
+    response(r, status, mime_type(resolved), data, len, extra);
     free(data);
+}
+static void static_file(Request *r) {
+    static_file_response(r, r->path, 200, NULL);
 }
 static bool path_id(const char *path, const char *prefix, sqlite3_int64 *id, const char **suffix) {
     size_t len = strlen(prefix);
@@ -1661,6 +1686,24 @@ static bool path_id(const char *path, const char *prefix, sqlite3_int64 *id, con
 }
 static void dispatch(Request *r) {
     bool get = !strcmp(r->method, "GET"), post = !strcmp(r->method, "POST"), put = !strcmp(r->method, "PUT"), mutation = post || put;
+    if (!strcmp(r->path, "/auth/error")) {
+        if (!get && strcmp(r->method, "HEAD")) { error_response(r, 405, "Metodo non consentito."); return; }
+        if (!oidc_enabled()) { error_response(r, 404, "Pagina non trovata."); return; }
+        const char *query = r->query;
+        if (query && *query && strcmp(query, "lang=it") && strcmp(query, "lang=en") &&
+            strcmp(query, "lang=zh") && strcmp(query, "lang=es") &&
+            strcmp(query, "lang=fr") && strcmp(query, "lang=de")) {
+            error_response(r, 400, "Richiesta non valida."); return;
+        }
+        static_file_response(r, "/auth-error.html", 200, NULL); return;
+    }
+    if (!strcmp(r->path, "/auth/logout")) {
+        if (!post) { error_response(r, 405, "Metodo non consentito."); return; }
+        if (!oidc_enabled()) { error_response(r, 404, "Pagina non trovata."); return; }
+        if (!r->has_origin || !origin_allowed(r)) { error_response(r, 403, "Origine della richiesta non consentita."); return; }
+        if ((r->query && *r->query) || r->body_len) { error_response(r, 400, "Richiesta non valida."); return; }
+        sso_logout(r); return;
+    }
     if (!get && !mutation) { error_response(r, 405, "Metodo non consentito.");
     return;
     }
@@ -1692,7 +1735,8 @@ static void dispatch(Request *r) {
     }
     if (!strcmp(r->path, "/auth/login") || !strcmp(r->path, "/auth/callback")) {
         if (!get) { error_response(r, 405, "Metodo non consentito."); return; }
-        if (oidc_enabled() && !sso_origin_allowed(r)) { error_response(r, 403, "Usa l’indirizzo configurato per l’accesso aziendale."); return; }
+        if (!oidc_enabled()) { error_response(r, 404, "Pagina non trovata."); return; }
+        if (!sso_origin_allowed(r)) { auth_error_response(r, 403); return; }
         if (!strcmp(r->path, "/auth/login")) sso_login(r); else sso_callback(r);
         return;
     }
