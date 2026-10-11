@@ -22,7 +22,7 @@ The `/v1/*` APIs require `Authorization: Bearer <token>` and a source authorized
 
 `smtp_configured` indicates that the required SMTP configuration is present; it does not make a test connection to the provider.
 
-The POST accepts `Content-Type: application/x-www-form-urlencoded`, including with `charset=UTF-8`, and these four required fields:
+The POST accepts `Content-Type: application/x-www-form-urlencoded`, including with `charset=UTF-8`, and the fields below (the first four are required):
 
 | Field | Content |
 | --- | --- |
@@ -30,8 +30,13 @@ The POST accepts `Content-Type: application/x-www-form-urlencoded`, including wi
 | `to` | A single email address, up to 254 bytes |
 | `subject` | Nonempty UTF-8 text, up to 250 bytes, without control characters |
 | `body` | Nonempty UTF-8 text, up to 8192 bytes; line breaks and tabs are allowed |
+| `message_id` | Optional canonical `<id@domain>` identifier, at most 255 bytes |
+| `in_reply_to` | Optional canonical request identifier, at most 255 bytes |
+| `references` | Optional canonical identifiers separated by one space, at most 1024 bytes and 32 identifiers |
 
 Unknown or duplicate fields, multiple addresses and invalid content are rejected. The encoded HTTP body cannot exceed 32768 bytes. The service generates `text/plain` messages; attachments, HTML and multiple sends in the same request are not implemented.
+
+Conversation headers reject line breaks and ambiguous syntax and participate in the idempotency hash. Existing requests without these headers retain compatible hashes; changing the thread while reusing a key returns a conflict.
 
 | HTTP | Relevant response | App behavior |
 | --- | --- | --- |

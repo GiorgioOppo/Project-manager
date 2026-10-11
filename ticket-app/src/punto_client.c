@@ -97,7 +97,8 @@ static int punto_client_call(const char *grant, const char *endpoint, const char
     for (const char *p = grant; *p; p++) if (!isxdigit((unsigned char)*p)) return 503;
     if (strcmp(endpoint,"scope") && strcmp(endpoint,"jobs") && strcmp(endpoint,"assets") && strcmp(endpoint,"validate") &&
         strcmp(endpoint,"calendar/status") && strcmp(endpoint,"calendar/event") && strcmp(endpoint,"calendar/change") &&
-        strcmp(endpoint,"calendar/create") && strcmp(endpoint,"calendar/update") && strcmp(endpoint,"calendar/delete")) return 503;
+        strcmp(endpoint,"calendar/create") && strcmp(endpoint,"calendar/update") && strcmp(endpoint,"calendar/delete") &&
+        strcmp(endpoint,"time/status") && strcmp(endpoint,"time/entries") && strcmp(endpoint,"time/create")) return 503;
     char url[8192], authorization[96];
     int n = snprintf(url, sizeof(url), "%s/api/integrations/tickets/%s%s%s", origin, endpoint, query && *query ? "?" : "", query ? query : "");
     if (n < 0 || (size_t)n >= sizeof(url)) return 503;

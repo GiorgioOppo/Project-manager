@@ -22,5 +22,10 @@ const char *mail_client_namespace(void);
 void mail_client_refresh(time_t now);
 MailDelivery mail_client_send(const char *key, const char *to,
                               const char *subject, const char *body);
+/* Optional RFC 5322 thread headers; empty values preserve the legacy payload. */
+MailDelivery mail_client_send_threaded(const char *key, const char *to,
+                                      const char *subject, const char *body,
+                                      const char *message_id, const char *in_reply_to,
+                                      const char *references);
 
 #endif

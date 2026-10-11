@@ -279,6 +279,7 @@ class TicketPuntoIntegrationTests(unittest.TestCase):
         admin = self.login()
         self.connect(admin, all_jobs=True)
         existing = self.create_ticket(admin, title="Archivio da preservare")
+        initial_detail, _headers = self.api("GET", f"/api/tickets/{existing['id']}", session=admin)
         for value in ({"job": {"id": 22, "code": "WRONG", "name": "Altro"}, "asset": None},
                       {"job": {"id": 21, "code": "JOB-CAFFE"}, "asset": None},
                       {"job": {"id": True, "code": "JOB-CAFFE", "name": "Commessa"}, "asset": None},
@@ -291,7 +292,8 @@ class TicketPuntoIntegrationTests(unittest.TestCase):
                          {"revision": existing["revision"], **fields}, admin, expected=503)
         detail, _headers = self.api("GET", f"/api/tickets/{existing['id']}", session=admin)
         self.assertEqual(detail["ticket"], existing)
-        self.assertEqual(len(detail["history"]), 1)
+        self.assertEqual(detail["history"], initial_detail["history"], "Rejected references must not append audit events")
+        self.assertEqual(sum(entry["action"] == "created" for entry in detail["history"]), 1)
         body, _headers = self.api("GET", "/api/tickets", session=admin)
         self.assertEqual(body["total"], 1)
 

@@ -1,6 +1,6 @@
 /* Session-local delegation to Punto; no grant or permissions enter the main DB. */
 #define PUNTO_VISIBLE_SQL "((t.job_id IS NULL AND (t.asset_id IS NULL OR (SELECT connected FROM punto_access)=1)) OR ((SELECT connected FROM punto_access)=1 AND ((SELECT all_jobs FROM punto_access)=1 OR EXISTS(SELECT 1 FROM punto_visible_jobs p WHERE p.job_id=t.job_id))))"
-typedef struct { bool connected, all_jobs, calendar_access; sqlite3_int64 expires_at, user_id; char grant[65], state[65], user_name[481]; } PuntoScope;
+typedef struct { bool connected, all_jobs, calendar_access, time_access; sqlite3_int64 expires_at, user_id; char grant[65], state[65], user_name[481]; } PuntoScope;
 static bool url_decode(const char *raw, char *out, size_t cap, bool plus);
 static bool punto_hex(const char *s) {
     if (!s || strlen(s) != 64) return false;
@@ -43,6 +43,11 @@ static bool punto_parse_scope(json_object *o, const char *expected, PuntoScope *
     if (json_object_object_get_ex(o,"calendar_access",&calendar)) {
         if (!calendar || !json_object_is_type(calendar,json_type_boolean)) return false;
         scope->calendar_access=json_object_get_boolean(calendar)!=0;
+    }
+    json_object *time_capability=NULL;
+    if (json_object_object_get_ex(o,"time_access",&time_capability)) {
+        if (!time_capability || !json_object_is_type(time_capability,json_type_boolean)) return false;
+        scope->time_access=json_object_get_boolean(time_capability)!=0;
     }
     scope->all_jobs = json_object_get_boolean(all) != 0;
     bounded_copy(scope->state, sizeof(scope->state), state);
@@ -137,6 +142,7 @@ static json_object *punto_status_json(PuntoScope *scope) {
     else json_object_object_add(o, "expires_at", NULL);
     add_string(o, "origin", punto_client_origin());
     json_object_object_add(o,"calendar_access",json_object_new_boolean(scope->calendar_access));
+    json_object_object_add(o,"time_access",json_object_new_boolean(scope->time_access));
     if (scope->connected) add_int(o,"user_id",scope->user_id); else json_object_object_add(o,"user_id",NULL);
     return o;
 }
@@ -157,24 +163,26 @@ static bool punto_empty_body(Request *r) {
 static void punto_start(Request *r, Auth *a) {
     json_object *input=parse_json(r);
     if (!input) return;
-    const char *const keys[]={"calendar",NULL}; json_object *calendar=NULL;
-    bool wants_calendar=false;
+    const char *const keys[]={"calendar","time",NULL}; json_object *calendar=NULL,*time_capability=NULL;
+    bool wants_calendar=false,wants_time=false;
     if (!allowed_keys(input,keys) || (json_object_object_get_ex(input,"calendar",&calendar) &&
-        (!calendar || !json_object_is_type(calendar,json_type_boolean)))) {
+        (!calendar || !json_object_is_type(calendar,json_type_boolean))) ||
+        (json_object_object_get_ex(input,"time",&time_capability) && (!time_capability || !json_object_is_type(time_capability,json_type_boolean)))) {
         json_object_put(input); error_response(r,400,"Dati del collegamento non validi."); return;
     }
     if (calendar) wants_calendar=json_object_get_boolean(calendar)!=0;
+    if (time_capability) wants_time=json_object_get_boolean(time_capability)!=0;
     json_object_put(input);
     if (!punto_client_configured()) { error_response(r, 503, "Il collegamento a Punto non è configurato."); return; }
     char state[65], url[640];
     if (!random_hex(state, 32)) { db_error(r); return; }
-    sqlite3_stmt *st = prepare("INSERT INTO punto_connections(token_hash,pending_state,pending_until,pending_calendar) VALUES(?1,?2,?3,?4) ON CONFLICT(token_hash) DO UPDATE SET pending_state=excluded.pending_state,pending_until=excluded.pending_until,pending_calendar=excluded.pending_calendar");
+    sqlite3_stmt *st = prepare("INSERT INTO punto_connections(token_hash,pending_state,pending_until,pending_calendar,pending_time) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(token_hash) DO UPDATE SET pending_state=excluded.pending_state,pending_until=excluded.pending_until,pending_calendar=excluded.pending_calendar,pending_time=excluded.pending_time");
     if (!st) { db_error(r); return; }
     bind_text(st, 1, a->token_hash); bind_text(st, 2, state); sqlite3_bind_int64(st, 3, (sqlite3_int64)time(NULL) + 600);
-    sqlite3_bind_int(st,4,wants_calendar);
+    sqlite3_bind_int(st,4,wants_calendar); sqlite3_bind_int(st,5,wants_time);
     bool ok = sqlite3_step(st) == SQLITE_DONE; sqlite3_finalize(st);
     if (!ok) { db_error(r); return; }
-    snprintf(url, sizeof(url), "%s/#ticket-connect?state=%s%s", punto_client_origin(), state,wants_calendar?"&calendar=1":"");
+    snprintf(url, sizeof(url), "%s/#ticket-connect?state=%s%s%s", punto_client_origin(), state,wants_calendar?"&calendar=1":"",wants_time?"&time=1":"");
     json_object *o = json_object_new_object(); add_string(o, "state", state); add_string(o, "url", url); send_json(r, 200, o);
 }
 static void punto_connect(Request *r, Auth *a) {
@@ -185,18 +193,19 @@ static void punto_connect(Request *r, Auth *a) {
     if (!allowed_keys(input, keys) || !get_string(input, "state", &state, 64, true, true) || !get_string(input, "grant", &grant, 64, true, true) || !punto_hex(state) || !punto_hex(grant)) {
         json_object_put(input); error_response(r, 400, "Collegamento non valido. Avvia nuovamente il collegamento da Ticket."); return;
     }
-    sqlite3_stmt *st = prepare("SELECT pending_state,pending_until,pending_calendar FROM punto_connections WHERE token_hash=?1");
+    sqlite3_stmt *st = prepare("SELECT pending_state,pending_until,pending_calendar,pending_time FROM punto_connections WHERE token_hash=?1");
     if (!st) { json_object_put(input); db_error(r); return; }
     bind_text(st, 1, a->token_hash);
     int rc = sqlite3_step(st);
     bool pending = rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL && constant_equal(column_text(st, 0), state) && sqlite3_column_int64(st, 1) > (sqlite3_int64)time(NULL);
     bool requested_calendar=rc==SQLITE_ROW && sqlite3_column_int(st,2)!=0;
+    bool requested_time=rc==SQLITE_ROW && sqlite3_column_int(st,3)!=0;
     sqlite3_finalize(st);
     if (!pending) { json_object_put(input); error_response(r, 400, "Il collegamento è scaduto o appartiene a un'altra sessione. Ricomincia da Ticket."); return; }
     json_object *response = NULL, *ids = NULL;
     int status = punto_client_get(grant, "scope", NULL, &response);
     PuntoScope scope = {0};
-    bool valid = status == 200 && punto_parse_scope(response, state, &scope, &ids) && scope.expires_at > (sqlite3_int64)time(NULL) && scope.calendar_access==requested_calendar;
+    bool valid = status == 200 && punto_parse_scope(response, state, &scope, &ids) && scope.expires_at > (sqlite3_int64)time(NULL) && scope.calendar_access==requested_calendar && scope.time_access==requested_time;
     if (!valid) {
         if (response) json_object_put(response);
         json_object_put(input);

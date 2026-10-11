@@ -1,0 +1,24 @@
+# Optional outbound replies through Punto's existing private SMTP add-on.
+# Enable only when email delivery is configured; drafts work without this file.
+# Add after compose.yaml and compose.tickets.yaml.
+services:
+  mail:
+    environment:
+      MAIL_ALLOWED_CLIENT: 172.30.60.10,172.30.60.12
+  tickets:
+    environment:
+      MAIL_API_URL: https://mail-api:8090
+      MAIL_API_TOKEN_FILE: /run/secrets/mail_api_token
+      MAIL_API_CA_FILE: /etc/punto/tls/ca.crt
+      MAIL_API_NAMESPACE: "${TICKETS_MAIL_NAMESPACE:-punto-tickets-v1}"
+    secrets:
+      - mail_api_token
+    volumes:
+      - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
+    networks:
+      mail_api:
+        ipv4_address: 172.30.60.12
+        interface_name: mail_api
+    depends_on:
+      mail:
+        condition: service_healthy

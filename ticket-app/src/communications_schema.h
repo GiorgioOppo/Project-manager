@@ -1,0 +1,13 @@
+#ifndef TICKETS_COMMUNICATIONS_SCHEMA_H
+#define TICKETS_COMMUNICATIONS_SCHEMA_H
+#define COMMUNICATIONS_SCHEMA_SQL_MESSAGES \
+    "CREATE TABLE IF NOT EXISTS ticket_messages(id INTEGER PRIMARY KEY,ticket_id INTEGER NOT NULL REFERENCES tickets(id),author_id INTEGER NOT NULL REFERENCES users(id),to_email TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'draft' CHECK(state IN('draft','sending','sent','unknown','failed')),message_id TEXT NOT NULL UNIQUE,in_reply_to TEXT NOT NULL DEFAULT '',refs TEXT NOT NULL DEFAULT '',delivery_key TEXT NOT NULL UNIQUE,namespace TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,sent_at INTEGER,error TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),updated_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));" \
+    "CREATE INDEX IF NOT EXISTS ticket_messages_ticket_idx ON ticket_messages(ticket_id,id);" \
+    "UPDATE ticket_messages SET state='unknown',error='Invio interrotto: verifica la consegna prima di procedere.' WHERE state='sending';"
+#define COMMUNICATIONS_SCHEMA_SQL_TIME \
+    "CREATE TABLE IF NOT EXISTS ticket_time_entries(id INTEGER PRIMARY KEY,ticket_id INTEGER NOT NULL REFERENCES tickets(id),author_id INTEGER NOT NULL REFERENCES users(id),owner_user_id INTEGER NOT NULL,origin TEXT NOT NULL,job_id INTEGER NOT NULL,idempotency_key TEXT NOT NULL,request_key TEXT NOT NULL UNIQUE,date TEXT NOT NULL,minutes INTEGER NOT NULL CHECK(minutes BETWEEN 1 AND 1440),description TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN('pending','applied','unknown','failed')),punto_entry_id INTEGER,error TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),UNIQUE(ticket_id,idempotency_key));" \
+    "UPDATE ticket_time_entries SET state='unknown',error='Esito da verificare in Punto.' WHERE state='pending';"
+#define COMMUNICATIONS_SCHEMA_SQL_TEMPLATES \
+    "CREATE TABLE IF NOT EXISTS response_templates(id INTEGER PRIMARY KEY,title TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),revision INTEGER NOT NULL DEFAULT 1,updated_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));" \
+    "CREATE TABLE IF NOT EXISTS ticket_solutions(id INTEGER PRIMARY KEY,ticket_id INTEGER NOT NULL UNIQUE REFERENCES tickets(id),author_id INTEGER NOT NULL REFERENCES users(id),title TEXT NOT NULL,body TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')));"
+#endif

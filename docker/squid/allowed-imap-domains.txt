@@ -1,0 +1,4 @@
+# No real IMAP destination is enabled until the mailbox is configured.
+# Replace with exact public IMAP hostnames, one per line: no leading dot,
+# wildcard, scheme, path, IP literal or port. Only TLS on port 993 is allowed.
+imap-not-configured.invalid

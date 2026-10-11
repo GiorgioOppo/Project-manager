@@ -43,6 +43,7 @@ typedef struct {
 
 typedef struct {
     char key[129], to[255], subject[251], body[MAIL_BODY_LIMIT + 1];
+    char message_id[256], in_reply_to[256], references[1025];
 } Email;
 
 static Config config;
@@ -311,6 +312,27 @@ static bool valid_utf8(const char *text) {
     return true;
 }
 
+static bool thread_ids(const char *value, bool multiple) {
+    if (!*value) return true;
+    size_t count = 0;
+    const char *p = value;
+    while (*p) {
+        if (*p++ != '<') return false;
+        const char *start = p;
+        bool at = false;
+        while (*p && *p != '>') {
+            if ((unsigned char)*p <= 32 || (unsigned char)*p >= 127 || strchr("<()\\\"", *p)) return false;
+            if (*p == '@') { if (at || p == start || p[1] == '>') return false; at = true; }
+            p++;
+        }
+        if (*p != '>' || !at || (size_t)(p - start) > 253 || ++count > 32) return false;
+        p++;
+        if (!*p) return true;
+        if (!multiple || *p++ != ' ' || !*p) return false;
+    }
+    return false;
+}
+
 static bool parse_email(const Request *request, Email *email) {
     memset(email, 0, sizeof(*email));
     unsigned int present = 0;
@@ -328,12 +350,16 @@ static bool parse_email(const Request *request, Email *email) {
         else if (!strcmp(name, "to")) { target = email->to; capacity = sizeof(email->to); bit = 2; }
         else if (!strcmp(name, "subject")) { target = email->subject; capacity = sizeof(email->subject); bit = 4; }
         else if (!strcmp(name, "body")) { target = email->body; capacity = sizeof(email->body); bit = 8; }
+        else if (!strcmp(name, "message_id")) { target = email->message_id; capacity = sizeof(email->message_id); bit = 16; }
+        else if (!strcmp(name, "in_reply_to")) { target = email->in_reply_to; capacity = sizeof(email->in_reply_to); bit = 32; }
+        else if (!strcmp(name, "references")) { target = email->references; capacity = sizeof(email->references); bit = 64; }
         else return false;
         if ((present & bit) || !decode(equals + 1, (size_t)(end - equals - 1), target, capacity)) return false;
         present |= bit;
         part = *end ? end + 1 : end;
     }
-    if (present != 15 || !*email->key || !*email->subject || !*email->body || !valid_email(email->to)) return false;
+    if ((present & 15) != 15 || !*email->key || !*email->subject || !*email->body || !valid_email(email->to) ||
+        !thread_ids(email->message_id, false) || !thread_ids(email->in_reply_to, false) || !thread_ids(email->references, true)) return false;
     for (const unsigned char *p = (const unsigned char *)email->key; *p; p++)
         if (!(isalnum(*p) || strchr("_.:-", *p))) return false;
     for (const unsigned char *p = (const unsigned char *)email->subject; *p; p++)
@@ -353,6 +379,17 @@ static bool payload_hash(const Email *email, char output[65]) {
         int written = snprintf(length, sizeof(length), "%zu:", strlen(parts[i]));
         ok = written > 0 && EVP_DigestUpdate(context, length, (size_t)written) == 1 &&
              EVP_DigestUpdate(context, parts[i], strlen(parts[i])) == 1;
+    }
+    /* Keep existing, unthreaded ledger hashes stable across upgrades. */
+    if (*email->message_id || *email->in_reply_to || *email->references) {
+        const char *headers[] = {email->message_id, email->in_reply_to, email->references};
+        ok = ok && EVP_DigestUpdate(context, "thread-v1:", 10) == 1;
+        for (size_t i = 0; ok && i < 3; i++) {
+            char length[32];
+            int written = snprintf(length, sizeof(length), "%zu:", strlen(headers[i]));
+            ok = written > 0 && EVP_DigestUpdate(context, length, (size_t)written) == 1 &&
+                 EVP_DigestUpdate(context, headers[i], strlen(headers[i])) == 1;
+        }
     }
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int length = 0;
@@ -437,7 +474,7 @@ static size_t read_upload(char *buffer, size_t size, size_t count, void *data) {
 static char *mime_message(const Email *email) {
     unsigned char encoded_body[4 * ((sizeof(email->body) + 2) / 3) + 1];
     int body_length = EVP_EncodeBlock(encoded_body, (const unsigned char *)email->body, (int)strlen(email->body));
-    size_t capacity = sizeof(email->subject) * 2 + (size_t)body_length + 4096;
+    size_t capacity = sizeof(email->subject) * 2 + (size_t)body_length + 6144;
     char *message = malloc(capacity);
     if (!message) return NULL;
     time_t now = time(NULL);
@@ -458,6 +495,18 @@ static char *mime_message(const Email *email) {
         int wrote = snprintf(message + used, capacity - used, "%s=?UTF-8?B?%.*s?=", offset ? "\r\n " : "", encoded_length, encoded);
         used += (size_t)wrote;
         offset += length;
+    }
+    if (*email->message_id) used += (size_t)snprintf(message + used, capacity - used, "\r\nMessage-ID: %s", email->message_id);
+    if (*email->in_reply_to) used += (size_t)snprintf(message + used, capacity - used, "\r\nIn-Reply-To: %s", email->in_reply_to);
+    if (*email->references) {
+        used += (size_t)snprintf(message + used, capacity - used, "\r\nReferences:");
+        const char *p = email->references;
+        while (*p) {
+            const char *end = strchr(p, ' ');
+            size_t n = end ? (size_t)(end - p) : strlen(p);
+            used += (size_t)snprintf(message + used, capacity - used, "\r\n %.*s", (int)n, p);
+            p += n; if (*p) p++;
+        }
     }
     int wrote = snprintf(message + used, capacity - used, "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n"
         "Content-Transfer-Encoding: base64\r\n\r\n");

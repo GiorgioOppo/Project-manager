@@ -510,6 +510,7 @@ class TicketCalendarTests(unittest.TestCase):
         session = self.login()
         self.connect(session)
         ticket = self.create_ticket(session, job_id=21, asset_id=101)
+        original_detail, _ = self.api("GET", f"/api/tickets/{ticket['id']}", session=session)
         self.stop()
         with database(self.environment["TICKETS_DB_PATH"]) as db:
             db.execute("DROP INDEX tickets_schedule_idx")
@@ -525,11 +526,12 @@ class TicketCalendarTests(unittest.TestCase):
         self.assertEqual(migrated["title"], ticket["title"])
         self.assertEqual(migrated["job_id"], 21)
         self.assertEqual(migrated["asset_id"], 101)
-        self.assertEqual(len(detail["history"]), 1)
+        self.assertEqual(detail["history"], original_detail["history"], "Migration must preserve the complete existing audit")
+        self.assertEqual(sum(entry["action"] == "created" for entry in detail["history"]), 1)
         for key in ("scheduled_start", "scheduled_end", "scheduled_timezone"):
             self.assertIsNone(migrated[key])
         with database(self.environment["TICKETS_DB_PATH"]) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
 
 
 if __name__ == "__main__":

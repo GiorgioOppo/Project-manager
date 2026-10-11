@@ -1,4 +1,5 @@
 #include "ticket_bridge.h"
+#include "access_control.h"
 #include "organization.h"
 #include "inventory_client.h"
 #include "calendar_client.h"
@@ -16,6 +17,10 @@
 static Db *database;
 
 typedef struct { const char *name; char *value; } QueryField;
+typedef struct {
+    OrganizationAccess jobs;
+    bool all_jobs;
+} BridgeAccess;
 
 static void finish(WorkspaceResponse *response, int status, struct json_object *object) {
     response->status = status;
@@ -158,22 +163,54 @@ static const char *text(DbStmt *statement, int index) {
     return value ? (const char *)value : "";
 }
 
-static bool access_list(const Account *actor, OrganizationAccess *access) {
+static bool access_list(const Account *actor, BridgeAccess *access) {
+    AccessPolicy policy;
     char today[11];
     memset(access, 0, sizeof(*access));
-    return !strcmp(actor->role, "manager") ||
-        (today_date(today) && organization_access_list(database, actor->id, today, NULL, access));
+    if (access_policy_resolve(database, actor->id, NULL, &policy) != 1) return false;
+    access->all_jobs = policy.admin;
+    if (policy.admin) return true;
+    if (!today_date(today) || !organization_access_list(database, actor->id, today, NULL, &access->jobs)) return false;
+    if (!policy.manager) return true;
+
+    /* Match the live workspace list: an area manager sees explicitly granted
+       jobs plus those covered by a current management delegation. The account
+       role alone does not confer global access. */
+    DbStmt *statement = NULL;
+    if (!prepare(&statement, "SELECT id FROM jobs ORDER BY id LIMIT 10001")) return false;
+    int result, scanned = 0;
+    while ((result = db_step(statement)) == DB_ROW) {
+        if (++scanned > CATALOG_LIMIT) break;
+        DbInt id = db_column_int64(statement, 0);
+        int management = access_policy_can_manage_job(database, actor->id, id);
+        if (management < 0) { db_finalize(statement); return false; }
+        if (!management) continue;
+        size_t index = 0;
+        while (index < access->jobs.count && access->jobs.job_ids[index] != id) index++;
+        if (index == access->jobs.count) {
+            if (index == sizeof(access->jobs.job_ids) / sizeof(access->jobs.job_ids[0])) {
+                db_finalize(statement);
+                return false;
+            }
+            access->jobs.job_ids[index] = id;
+            access->jobs.count++;
+        }
+        access->jobs.permissions[index] = 3;
+    }
+    db_finalize(statement);
+    return scanned <= CATALOG_LIMIT && result == DB_DONE;
 }
 
-static bool allowed(const Account *actor, const OrganizationAccess *access, DbInt id) {
-    if (!strcmp(actor->role, "manager")) return true;
-    for (size_t i = 0; i < access->count; i++) if (access->job_ids[i] == id) return (access->permissions[i] & 1) != 0;
+static bool allowed(const BridgeAccess *access, DbInt id) {
+    if (access->all_jobs) return true;
+    for (size_t i = 0; i < access->jobs.count; i++)
+        if (access->jobs.job_ids[i] == id) return (access->jobs.permissions[i] & 1) != 0;
     return false;
 }
 
-static void scope(const Account *actor, const char *state, time_t expires, bool calendar_access,
+static void scope(const Account *actor, const char *state, time_t expires, bool calendar_access, bool time_access,
                   WorkspaceResponse *response) {
-    OrganizationAccess access;
+    BridgeAccess access;
     if (!access_list(actor, &access)) { unavailable(response); return; }
     struct json_object *object = json_object_new_object();
     struct json_object *user = json_object_new_object();
@@ -182,11 +219,12 @@ static void scope(const Account *actor, const char *state, time_t expires, bool 
     json_object_object_add(user, "id", json_object_new_int64(actor->id));
     json_object_object_add(user, "name", json_object_new_string(actor->name));
     json_object_object_add(object, "user", user);
-    json_object_object_add(object, "all_jobs", json_object_new_boolean(!strcmp(actor->role, "manager")));
-    for (size_t i = 0; i < access.count; i++) json_object_array_add(ids, json_object_new_int64(access.job_ids[i]));
+    json_object_object_add(object, "all_jobs", json_object_new_boolean(access.all_jobs));
+    for (size_t i = 0; i < access.jobs.count; i++) json_object_array_add(ids, json_object_new_int64(access.jobs.job_ids[i]));
     json_object_object_add(object, "job_ids", ids);
     json_object_object_add(object, "expires_at", json_object_new_int64((int64_t)expires));
     json_object_object_add(object, "calendar_access", json_object_new_boolean(calendar_access));
+    json_object_object_add(object, "time_access", json_object_new_boolean(time_access));
     finish(response, 200, object);
 }
 
@@ -217,7 +255,7 @@ static void jobs(const char *query, const Account *actor, WorkspaceResponse *res
         fail(response, 400, "Ricerca o paginazione non valida.");
         return;
     }
-    OrganizationAccess access;
+    BridgeAccess access;
     if (!access_list(actor, &access)) { free_query(fields, 3); unavailable(response); return; }
     DbStmt *statement = NULL;
     if (!prepare(&statement, "SELECT id,code,name,status FROM jobs ORDER BY code COLLATE NOCASE,id LIMIT 10001")) {
@@ -229,7 +267,7 @@ static void jobs(const char *query, const Account *actor, WorkspaceResponse *res
     int result, scanned = 0;
     while ((result = db_step(statement)) == DB_ROW) {
         if (++scanned > CATALOG_LIMIT) break;
-        if (!allowed(actor, &access, db_column_int64(statement, 0)) ||
+        if (!allowed(&access, db_column_int64(statement, 0)) ||
             (!contains_folded(text(statement, 1), search) && !contains_folded(text(statement, 2), search))) continue;
         if (total >= offset && total - offset < limit) json_object_array_add(items, job_row(statement, true));
         total++;
@@ -337,9 +375,9 @@ static void validate(const char *query, const Account *actor, WorkspaceResponse 
             else unavailable(response);
             return;
         }
-        OrganizationAccess access;
+        BridgeAccess access;
         if (!access_list(actor, &access)) { json_object_put(row); json_object_put(object); unavailable(response); return; }
-        if (!allowed(actor, &access, job_id)) {
+        if (!allowed(&access, job_id)) {
             json_object_put(row); json_object_put(object);
             fail(response, 403, "Non sei abilitato a questa commessa.");
             return;
@@ -364,13 +402,13 @@ static void validate(const char *query, const Account *actor, WorkspaceResponse 
 }
 
 void ticket_bridge_read(const char *resource, const char *query,
-                        const Account *actor, const char *state, time_t expires, bool calendar_access,
+                        const Account *actor, const char *state, time_t expires, bool calendar_access, bool time_access,
                         WorkspaceResponse *response) {
     if (!database || !actor || !state) { unavailable(response); return; }
     if (!query) query = "";
     if (!strcmp(resource, "scope")) {
         if (*query) fail(response, 400, "Parametri non consentiti.");
-        else scope(actor, state, expires, calendar_access, response);
+        else scope(actor, state, expires, calendar_access, time_access, response);
     } else if (!strcmp(resource, "jobs")) jobs(query, actor, response);
     else if (!strcmp(resource, "assets")) assets(query, actor, response);
     else if (!strcmp(resource, "validate")) validate(query, actor, response);
@@ -415,9 +453,9 @@ void ticket_bridge_calendar(const char *resource, const char *input,
                 if (found == DB_DONE) fail(response, 404, "Commessa non trovata."); else unavailable(response);
                 return;
             }
-            OrganizationAccess access;
+            BridgeAccess access;
             if (!access_list(actor, &access)) { free_query(fields, 7); unavailable(response); return; }
-            if (!allowed(actor, &access, job)) {
+            if (!allowed(&access, job)) {
                 free_query(fields, 7); fail(response, 403, "Non sei abilitato a questa commessa."); return;
             }
         }
@@ -445,4 +483,130 @@ void ticket_bridge_calendar(const char *resource, const char *input,
     response->body = received.body;
     received.body = NULL;
     calendar_response_free(&received);
+}
+
+/* Hours are recorded as the live delegated Punto actor. Reuse the canonical
+   batch path for date-specific ACL, closed periods, audit and idempotency. */
+static bool ticket_time_key(const char *key) {
+    size_t n = key ? strlen(key) : 0;
+    if (n < 8 || n > 100) return false;
+    for (size_t i=0;i<n;i++) if (!isalnum((unsigned char)key[i]) && key[i]!='-' && key[i]!='_') return false;
+    return true;
+}
+static char *ticket_time_form(const char *key, const char *entries) {
+    size_t n=strlen(entries), k=strlen(key);
+    if(n>16000 || k>100) return NULL;
+    char *out=malloc(3*n+k+64);
+    if(!out) return NULL;
+    int head=snprintf(out,3*n+k+64,"request_key=ticket-%s&entries=",key);
+    char *p=out+head; const char hexes[]="0123456789ABCDEF";
+    for(const unsigned char *s=(const unsigned char*)entries;*s;s++) {
+        if(*s<128 && (isalnum(*s)||strchr("-_.~",*s))) *p++=(char)*s;
+        else { *p++='%'; *p++=hexes[*s>>4]; *p++=hexes[*s&15]; }
+    }
+    *p=0; return out;
+}
+void ticket_bridge_time(const char *resource,const char *input,const Account *actor,WorkspaceResponse *response) {
+    if(!database||!actor) {unavailable(response);return;}
+    if(!input)input="";
+    if(!strcmp(resource,"status")) {
+        if(*input){fail(response,400,"Parametri non consentiti.");return;}
+        struct json_object *o=json_object_new_object();
+        json_object_object_add(o,"enabled",json_object_new_boolean(true));
+        json_object_object_add(o,"user_id",json_object_new_int64(actor->id));
+        json_object_object_add(o,"actor_name",json_object_new_string(actor->name));
+        finish(response,200,o);return;
+    }
+    if(!strcmp(resource,"create")) {
+        QueryField fields[]={{"request_key",NULL},{"entries",NULL}};
+        if(!parse_fields(input,fields,2,20000)||!ticket_time_key(fields[0].value)||!fields[1].value) {
+            free_query(fields,2);fail(response,400,"Registrazione ore non valida.");return;
+        }
+        struct json_tokener *tok=json_tokener_new();
+        if(!tok){free_query(fields,2);unavailable(response);return;}
+        json_tokener_set_flags(tok,JSON_TOKENER_STRICT|JSON_TOKENER_VALIDATE_UTF8);
+        struct json_object *rows=json_tokener_parse_ex(tok,fields[1].value,(int)strlen(fields[1].value));
+        size_t end=json_tokener_get_parse_end(tok),length=strlen(fields[1].value);
+        while(end<length && isspace((unsigned char)fields[1].value[end]))end++;
+        bool valid=json_tokener_get_error(tok)==json_tokener_success&&end==length&&rows&&
+            json_object_is_type(rows,json_type_array)&&json_object_array_length(rows)==1;
+        json_tokener_free(tok);
+        struct json_object *row=valid?json_object_array_get_idx(rows,0):NULL,*job_value=NULL;
+        valid=valid&&row&&json_object_is_type(row,json_type_object)&&json_object_object_get_ex(row,"job_id",&job_value)&&
+            job_value&&json_object_is_type(job_value,json_type_int)&&json_object_get_int64(job_value)>0;
+        DbInt job=valid?json_object_get_int64(job_value):0;
+        if(rows)json_object_put(rows);
+        char *form=valid?ticket_time_form(fields[0].value,fields[1].value):NULL;
+        free_query(fields,2);
+        if(!valid){fail(response,400,"Conferma una sola registrazione di ore effettive.");return;}
+        if(!form){unavailable(response);return;}
+        BridgeAccess access;
+        if(!access_list(actor,&access)){free(form);unavailable(response);return;}
+        if(!allowed(&access,job)){free(form);fail(response,403,"Commessa non autorizzata.");return;}
+        bool handled=workspace_handle("POST","/api/time-entries/batch","",form,actor->id,actor->email,actor->role,response);
+        free(form);if(!handled)unavailable(response);return;
+    }
+    if(strcmp(resource,"entries")){fail(response,404,"Risorsa non trovata.");return;}
+    QueryField fields[]={{"job_id",NULL},{"request_key",NULL}};
+    DbInt job=0;
+    if(!parse_query(input,fields,2)||!positive(fields[0].value,INT64_MAX,false,&job)||
+       (fields[1].value&&!ticket_time_key(fields[1].value))) {
+        free_query(fields,2);fail(response,400,"Parametri ore non validi.");return;
+    }
+    BridgeAccess access;
+    if(!access_list(actor,&access)){free_query(fields,2);unavailable(response);return;}
+    if(!allowed(&access,job)){free_query(fields,2);fail(response,403,"Commessa non autorizzata.");return;}
+    DbStmt *st=NULL;struct json_object *wanted=NULL;
+    bool found=false;
+    if(fields[1].value) {
+        char key[112];snprintf(key,sizeof(key),"ticket-%s",fields[1].value);
+        if(!prepare(&st,"SELECT ids_json FROM time_entry_batches WHERE user_id=? AND request_key=?")||
+            db_bind_int64(st,1,actor->id)!=DB_OK||db_bind_text(st,2,key,-1,DB_TRANSIENT)!=DB_OK)goto failure;
+        int result=db_step(st);
+        if(result==DB_ROW){wanted=json_tokener_parse(text(st,0));found=true;}
+        db_finalize(st);st=NULL;
+        if((result!=DB_ROW&&result!=DB_DONE)||(found&&(!wanted||!json_object_is_type(wanted,json_type_array)||json_object_array_length(wanted)>100)))goto failure;
+    }
+    struct json_object *o=json_object_new_object(),*items=json_object_new_array(),*ids=json_object_new_array();
+    json_object_object_add(o,"items",items);json_object_object_add(o,"ids",ids);
+    json_object_object_add(o,"found",json_object_new_boolean(found));
+    if(wanted) {
+        for(size_t i=0;i<json_object_array_length(wanted);i++) {
+            struct json_object *id=json_object_array_get_idx(wanted,i);
+            if(!id||!json_object_is_type(id,json_type_int)||json_object_get_int64(id)<1){json_object_put(o);goto failure;}
+            json_object_array_add(ids,json_object_get(id));
+        }
+    }
+    char sql[4600]="SELECT id,job_id,date,minutes,note FROM time_entries WHERE user_id=? AND job_id=?";
+    if(fields[1].value) {
+        strcat(sql," AND id IN (0");
+        if(wanted)for(size_t i=0;i<json_object_array_length(wanted);i++) {
+            char number[32];snprintf(number,sizeof(number),",%lld",(long long)json_object_get_int64(json_object_array_get_idx(wanted,i)));
+            strcat(sql,number);
+        }
+        strcat(sql,")");
+    }
+    strcat(sql," ORDER BY date DESC,id DESC LIMIT 201");
+    if(!prepare(&st,sql)||
+       db_bind_int64(st,1,actor->id)!=DB_OK||db_bind_int64(st,2,job)!=DB_OK){json_object_put(o);goto failure;}
+    int result,count=0;
+    while((result=db_step(st))==DB_ROW) {
+        DbInt id=db_column_int64(st,0);bool matches=!fields[1].value;
+        if(wanted)for(size_t i=0;i<json_object_array_length(wanted);i++)if(json_object_get_int64(json_object_array_get_idx(wanted,i))==id)matches=true;
+        if(!matches)continue;
+        if(++count>200)break;
+        struct json_object *row=json_object_new_object();
+        json_object_object_add(row,"id",json_object_new_int64(id));
+        json_object_object_add(row,"job_id",json_object_new_int64(db_column_int64(st,1)));
+        json_object_object_add(row,"date",json_object_new_string(text(st,2)));
+        json_object_object_add(row,"minutes",json_object_new_int64(db_column_int64(st,3)));
+        json_object_object_add(row,"note",json_object_new_string(text(st,4)));
+        json_object_array_add(items,row);
+    }
+    db_finalize(st);st=NULL;
+    if(result!=DB_DONE&&count<=200){json_object_put(o);goto failure;}
+    if(wanted)json_object_put(wanted);
+    free_query(fields,2);finish(response,200,o);return;
+failure:
+    db_finalize(st);if(wanted)json_object_put(wanted);free_query(fields,2);unavailable(response);
 }

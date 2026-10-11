@@ -24,16 +24,41 @@ Standalone web app alongside Punto. HTTP server in C11, dedicated SQLite store, 
 - References to real projects and assets, dedicated filters and links in both directions.
 - Managers and operators with personal accounts. The manager manages Ticket accounts; linked tickets follow the Punto session's access grants, including for the Ticket administrator.
 - Revision checking: a concurrent change returns a conflict and requires the ticket to be reloaded.
+- IMAPS reception in a separate C process, with mailboxes and authorized senders managed by administrators.
+- **RAW messages** inbox, original `.eml` files, text previews, attachments and quarantine.
+- Ownership, reasoned dismissal, manual conversion or linking to an existing ticket, with duplicate protection and history.
 
-The requester is a descriptive field, not an external account. This version is an internal queue: it does not include a customer portal, attachments, email notifications or SLAs. Tickets are closed without deleting history. The catalog connection uses a read-only delegation from the Punto session; company OIDC sign-in remains a separate configuration.
+The requester is a descriptive field, not an external account. The internal queue includes RAW intake, customer conversations, internal notes, SLAs and actual hours linked to Punto. A customer portal remains outside this app. Tickets are closed without deleting history. The catalog connection uses a read-only delegation from the Punto session; company OIDC sign-in remains a separate configuration.
 
 The initial board shows open work in the **Open**, **In progress** and **Pending** columns. The **All** queue also includes resolved and closed tickets. Each column loads twenty tickets and allows more to be shown; counts include all filtered results, including those not yet loaded. Open a card to edit status, priority, assignee and due date. Queue counters represent all tickets accessible to the session, while the view total and column counts follow the selected filters.
 
 Operational queues exclude resolved and closed tickets. **Overdue** contains due dates before today; **Due soon** includes today and the following seven days. The interface uses the date in **Europe/Rome**. Ticket links still require an authenticated account.
 
+## Operator workflows (items 10–20)
+
+The **Operator** workspace places the list beside the detail, supports next/previous navigation and saves per-operator drafts on the server with revision checks. Colleague presence is temporary. Shared views store filters, including **Needs reply**, **Waiting for customer**, **SLA today**, **Unscheduled interventions** and **Overdue follow-ups**; every result and dashboard metric still uses the live Punto permissions.
+
+Impact and urgency propose priority; an override requires a reason. Rules suggest category, responsible group and project from mailbox, sender and content, while RAW conversion remains manual. SLA agreements can target a project and priority, with business weekdays, daily hours and an IANA timezone (default Monday–Friday 09:00–18:00 Europe/Rome). Deadlines account for non-working hours, daylight-saving changes and pre-conversion RAW time. Only a sent customer reply satisfies first response; internal notes do not. Waiting requires a reason and follow-up and pauses resolution time. Real holidays and contractual agreements are not preloaded.
+
+Bulk actions require a preview and confirmation, then recheck revisions and permissions and record history. The operational dashboard includes RAW backlog, unassigned work, SLA deadlines, forgotten follow-ups, group workload, timing and reopenings.
+
+### Customer conversations and delivery
+
+Customer replies have explicit recipients, subjects, drafts and delivery states, separate from internal notes. Linked RAW emails retain their originals. Editable response templates and solutions derived from resolved tickets remain reusable; ticket-derived solutions follow their source ticket permissions.
+
+**The real mailbox is deliberately unconfigured.** Drafts work without SMTP and delivery remains unavailable. Outbound delivery requires `MAIL_API_URL`, `MAIL_API_TOKEN_FILE`, `MAIL_API_CA_FILE` and a stable dedicated `MAIL_API_NAMESPACE`, using verified TLS to Punto’s existing C mail add-on. The optional [compose.tickets-mail.yaml](../compose.tickets-mail.yaml), added after the private base and Ticket overlays, connects only the private mail API and does not configure SMTP or a real mailbox. Rebuild Ticket and the mail add-on together before enabling replies.
+
+Confirmed replies use stable delivery keys and Message-ID, with In-Reply-To and References when available. The add-on ledger prevents duplicate delivery across restarts. Interrupted or ambiguous delivery stays **unknown** for operator verification and is never automatically resent. Changing service or namespace requires checking drafts before delivery.
+
+### Confirmed project work hours
+
+Hours require a separate explicit Punto delegation. The form shows the linked Punto actor; the caller cannot select an arbitrary identity. The operator confirms date, minutes and description. Calendar plans suggest context and never automatically become actual hours.
+
+The canonical Punto timesheet flow enforces date-specific project access, closed projects/periods, daily limits and audit. Persistent idempotency keys recover interrupted outcomes without duplicate entries. Recording hours is unavailable until the current session has the hours capability.
+
 ## Native startup
 
-Dependencies: C11 compiler, `make`, `pkg-config`, SQLite, OpenSSL, json-c and libcurl. On macOS they can be installed with `brew install pkg-config openssl@3 json-c sqlite curl`; on Debian with `apt install build-essential pkg-config libssl-dev libsqlite3-dev libjson-c-dev libcurl4-openssl-dev`.
+Dependencies: C11 compiler, `make`, `pkg-config`, SQLite, OpenSSL, json-c, libcurl and GMime 3. On macOS they can be installed with `brew install pkg-config openssl@3 json-c sqlite curl gmime`; on Debian with `apt install build-essential pkg-config libssl-dev libsqlite3-dev libjson-c-dev libcurl4-openssl-dev libgmime-3.0-dev`. The build produces the HTTP app and `build/punto-ticket-receiver`.
 
 From the repository root:
 
@@ -115,7 +140,7 @@ For a native test: Punto at `http://127.0.0.1:8080` with `TICKETS_APP_ORIGIN=htt
 2. On returning to Ticket, the panel shows the connected Punto account's name. The ticket form lets you search for and select a project and/or asset. No ownership relationship is created between the project and asset.
 3. **Ticket** and **+ Ticket** in the project row, or **Linked tickets** and **New ticket** in the asset record, open the filtered queue or a form with the context already set. In ticket details, references link back to the project or asset.
 
-Without a connected Punto session, only tickets without references are visible. With the connection active, tickets for assets and projects viewable by the Punto account are visible. Permissions are checked on the server on every request, including details, comments, changes and counters. Accounts are not associated by email or ID. The delegation is read-only, lasts at most eight hours, remains in memory and is revoked by Punto session logout/expiry or by either service restarting; repeat **Connect Punto**. **Disconnect** removes it from the current Ticket session.
+Without a connected Punto session, only tickets without references are visible. With the connection active, tickets for assets and projects viewable by the Punto account are visible. Permissions are checked on the server on every request, including details, comments, changes and counters. Accounts are not associated by email or ID. Catalog delegation is read-only; calendar and hours each require separate explicit consent. Delegation lasts at most eight hours, remains in memory and is revoked by Punto session logout/expiry or by either service restarting; repeat **Connect Punto**. **Disconnect** removes it from the current Ticket session.
 
 The server resolves IDs and names from Punto's catalogs through its read APIs; it does not access the main databases or receive the inventory's private token. Codes and names are retained in the ticket as historical references. Editing other fields does not replace these references. If Punto is unavailable, reading linked tickets fails without broadening access; unlinked tickets remain usable. An unavailable asset does not prevent retaining a previously saved link.
 
@@ -140,7 +165,55 @@ Local changes require another explicit synchronization. Changes made directly in
 
 Punto lists personal Google events, with pagination and separate recurring series; it does not automatically expand every occurrence. The integration does not generate worked hours, invitations or participant notifications. Before disconnecting Google, resolve pending operations: disconnecting deletes the local cache and queue, while events already created may remain in Google.
 
-The update migrates SQLite to version 3, preserving existing tickets and references and adding scheduling and synchronization metadata. Back up before upgrading. Session delegations remain temporary and are not included in the backup; Punto must be reconnected after a restart. The Calendar volume and its encryption key require a separate backup from the Ticket store.
+The current SQLite schema is version 5 and preserves tickets, references, scheduling and synchronization metadata, alongside RAW, operations and communications. The historical version 3 migration introduced scheduling and calendar data; subsequent upgrades preserve them. Back up before upgrading. Session delegations remain temporary and are not included in the backup; Punto must be reconnected after a restart. The Calendar volume and its encryption key require a separate backup from the Ticket store.
+
+## Incoming email and RAW messages
+
+The workflow is **dedicated IMAP mailbox → sender verification → RAW messages → operator review → new ticket or link to an existing ticket**. Receiving email does not automatically create tickets or send replies. Real reception remains disabled until a mailbox and the receiver process are configured and enabled.
+
+In **RAW messages**, administrators open **Mailboxes and authorized senders** and enter the destination address, label, IMAPS host and port, username, folder, authentication method (`password` or `xoauth2`) and credential filename. Inactive mailboxes may be saved and completed later. Never enter passwords or tokens in app fields: the filename identifies a file inside `TICKETS_IMAP_SECRET_DIR`. The receiver reads it on the server; secrets are not returned by the API, stored in SQLite or logged. OAuth2 tokens need external renewal; the receiver does not perform consent or automatically refresh tokens.
+
+Each mailbox has an exact sender allowlist, optionally with expiry and project binding. Wildcards and implicit authorization of an entire domain are excluded. A mailbox or sender bound to a project restricts visibility and conversion to that project; the operator needs an authorized Punto session. Incoming authorization does not create a Ticket account.
+
+Configure the exact authentication server identifier and confirm trust only when the provider removes forged external `Authentication-Results` headers and adds its own result. The allowlist alone does not prevent a forged `From` field. Reception requires one authorized author and a valid DMARC result aligned with the author domain; domain checks alone do not authenticate an individual person. Missing, ambiguous, untrusted or failed results and unauthorized senders produce administrator-only quarantine that cannot be converted. Provider setup must respect the trust boundary described in [RFC 8601](https://www.rfc-editor.org/rfc/rfc8601.html).
+
+The receiver is a separate process with no HTTP listener or SMTP server. It uses IMAPS with certificate and hostname verification and does not delete remote messages. Poll status, UID cursor and IMAP generation are persisted. Downloads and restarts do not create another RAW origin; `Message-ID` alone is not considered proof of uniqueness.
+
+### Starting the receiver
+
+Prepare a protected directory containing credential files with the names entered in mailbox settings. In Docker these files must be readable by UID `10006`; avoid access by other users and keep them out of the repository. Set `TICKETS_IMAP_SECRETS_PATH` to the absolute directory path. The overlay mounts it read-only and reuses the installation's `tickets_data` volume.
+
+For standalone Ticket, from the repository root:
+
+```sh
+docker compose --env-file ticket-app/.env \
+  -f ticket-app/compose.yaml -f ticket-app/compose.inbound.yaml \
+  up --build -d tickets tickets-receiver
+```
+
+For the private Punto stack, first replace the placeholder in `docker/squid/allowed-imap-domains.txt` with the exact authorized public IMAP hostname. The proxy permits receiver `172.30.40.13` only to that list on port `993`, retaining blocks on private destinations, IP literals and other ports. Apply the proxy configuration when enabling reception:
+
+```sh
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.tickets-inbound.yaml \
+  up --build -d proxy-egress tickets tickets-receiver
+```
+
+For native operation, start the app first to migrate storage, then run the receiver from `ticket-app` with the same `TICKETS_DB_PATH` and the protected `TICKETS_IMAP_SECRET_DIR`. `TICKETS_IMAP_POLL_SECONDS` defaults to 30; `TICKETS_IMAP_CA_FILE` supports a verified private CA. Optional `TICKETS_IMAP_PROXY_URL` selects an explicit HTTP proxy for TLS tunnels. `--once` performs one poll; local `--import-file` imports are unverified and quarantined, never a bypass of provider authentication.
+
+### Operator workflow
+
+States are **New**, **Under review**, **Converted**, **Linked**, **Dismissed**, and administrator-only **Quarantine**. Open a message for its text preview, verification results, attachments and history. **Take ownership** reserves it for the operator; **Release** makes it available again. Dismissal requires a reason and preserves the original.
+
+**Convert to ticket** proposes title, description and requester, leaving priority, assignee, due date, project, asset and selected attachments to the operator. **Link to ticket** searches existing requests and requires confirmation. Ticket creation or linking, selected attachments and history are committed together. Retries and concurrent conversions cannot create a second ticket. Permissions and current sender authorization are checked again at confirmation.
+
+The immutable original is downloadable as `.eml`. The app displays text without executing incoming HTML or loading remote images. Limits: 10 MiB original, at most 20 attachments, 5 MiB per attachment and 10 MiB decoded total. Downloads are authenticated and forced as attachments. No antivirus is included; an available file is not certified harmless. The parser also limits MIME structure to 128 parts and 16 levels and text bodies to 64 KiB; parsing errors and limit violations go to quarantine with the original preserved within its size limit. If the original exceeds 10 MiB, the receiver interrupts the download and records a mailbox error without advancing past that UID: move or reduce the message at the provider before reception for that mailbox can resume. Other mailboxes continue to be processed.
+
+Unbound messages are shared with the internal team; project-bound messages follow Punto permissions. Converted or linked RAW messages also require access to their destination ticket. Selected files are available from the ticket; unselected files remain with the original. Originals and history currently have no automatic expiry: size and protect storage and define operational retention before real use.
+
+Customer correspondence requires current access to every linked RAW source because replies may quote their contents. If any source becomes private or access is revoked, conversation, draft and send endpoints return 404. Shared local tickets and internal notes remain available; tickets without RAW sources follow their own permissions.
+
+SQLite upgrades to version 5 without removing existing tickets or links. App and receiver must use the same store and schema version. Stop `tickets-receiver` too for an offline backup; the database contains original emails and attachments, while credential files require separate safekeeping.
 
 ## Configuration
 
@@ -181,6 +254,28 @@ The native server speaks HTTP. Public TLS is terminated by the reverse proxy. Fo
 
 ## API
 
+Added operator endpoints use JSON, session authentication and CSRF like other Ticket endpoints:
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /api/operations/suggest`, `GET /api/raw/messages/:id/suggestions` | Classification suggestions; no automatic conversion |
+| `GET/POST /api/operations/rules`, `PUT /api/operations/rules/:id` | Revisioned rules; administrator writes |
+| `GET/POST /api/operations/sla-policies`, `PUT /api/operations/sla-policies/:id` | SLA agreements and business hours |
+| `GET/POST /api/operations/views`, `PUT /api/operations/views/:id` | Shared views; owner or administrator updates |
+| `GET/POST /api/tickets/:id/presence`, `PUT /api/tickets/:id/draft`, `POST /api/tickets/:id/draft/discard` | Temporary presence and revisioned personal drafts |
+| `POST /api/tickets/bulk/preview`, `POST /api/tickets/bulk/apply` | Session-bound expiring preview, confirmation and replay |
+| `GET /api/reports/operations` | Dashboard scoped by current permissions |
+| `GET /api/tickets/:id/conversation`, `POST /api/tickets/:id/messages`, `PUT /api/tickets/:id/messages/:message` | Conversation and customer drafts |
+| `POST /api/tickets/:id/messages/:message/send` | Explicit delivery of the confirmed revision; configured SMTP required |
+| `GET/POST /api/tickets/:id/time` | Proposed context and confirmed work hours with persistent keys |
+| `GET/POST /api/response-templates`, `PUT /api/response-templates/:id` | Revisioned response templates |
+| `GET /api/solutions`, `POST /api/tickets/:id/solution` | Resolved-ticket solutions following source permissions |
+
+The Punto bridge adds explicit `time=1` delegation consent and `scope.time_access`. Bearer routes `GET /api/integrations/tickets/time/status`, `GET .../time/entries?job_id=N&request_key=K` and `POST .../time/create` are separate from calendar delegation. Creation accepts form fields `request_key` and JSON `entries` containing one row (`job_id,date,minutes,note`), rejects caller-selected identities and checks live project ACL on replays. Keys are namespaced with `ticket-` in the canonical timesheet ledger.
+
+Ticket time history belongs to the currently connected Punto account: it requires live time consent, the same Punto origin and current access to each entry’s project. Reading a ticket does not grant access to other accounts’ hours. Only the original Ticket author can resume a pending or uncertain attempt with its original key, for the same Punto account and project; this requires another confirmation and does not automatically create a new entry.
+
+
 APIs return JSON. Errors have the form `{"ok":false,"error":"messaggio"}`. Sign-in and creation use `POST`; updates use `PUT`. For authenticated mutations, send `Content-Type: application/json`, the session cookie and `X-CSRF-Token`.
 
 | Method and path | Content / result |
@@ -204,9 +299,22 @@ APIs return JSON. Errors have the form `{"ok":false,"error":"messaggio"}`. Sign-
 | `GET /api/integrations/punto/validate` | `job_id` and/or `asset_id` → canonical `{job,asset}` |
 | `GET /api/tickets` | `{items,total,stats,queues,reference_date}`; parameters `search`, `status`, `priority`, `assignee_id`, `job_id`, `asset_id`, `queue`, `sort`, `today`, `limit`, `offset` |
 | `POST /api/tickets` | `{title,description,requester,priority,assignee_id,due_date,job_id,asset_id}` → `{ticket}` |
-| `GET /api/tickets/:id` | `{ticket,comments,history}` |
+| `GET /api/tickets/:id` | `{ticket,comments,history,raw_sources,attachments}` |
 | `PUT /api/tickets/:id` | Ticket fields, optional `status` and required `revision` → `{ticket}` |
 | `POST /api/tickets/:id/comments` | `{body}` → `{comment}` |
+| `GET /api/raw/messages` | Queue `{items,total,stats,mailboxes}`; filters `state`, `search`, `mailbox_id`, `limit`, `offset` |
+| `GET /api/raw/messages/:id` | `{raw,attachments,history,eml_url}` with permission checks |
+| `GET /api/raw/messages/:id/eml` | Immutable original, authenticated download |
+| `GET /api/raw/messages/:id/attachments/:aid` | RAW attachment, authenticated download |
+| `POST /api/raw/messages/:id/claim` | `{revision}` → claim message |
+| `POST /api/raw/messages/:id/release` | `{revision}` → return to queue |
+| `POST /api/raw/messages/:id/discard` | `{revision,reason}` → discard with reason |
+| `POST /api/raw/messages/:id/convert` | `{revision,ticket,attachment_ids}` → `{ticket,raw,replayed}` |
+| `POST /api/raw/messages/:id/link` | `{revision,ticket_id,attachment_ids}` → `{ticket,raw,replayed}` |
+| `GET /api/tickets/:id/attachments/:aid` | Selected attachments only, with ticket and RAW permissions |
+| `GET /api/raw/mailboxes`, `GET /api/raw/senders` | Admin configuration lists; senders filterable by `mailbox_id` |
+| `POST /api/raw/mailboxes`, `POST /api/raw/senders` | Admin configuration creation without secrets |
+| `PUT /api/raw/mailboxes/:id`, `PUT /api/raw/senders/:id` | Admin update with required `revision` |
 
 Roles: `admin`, `agent`. Statuses: `open`, `in_progress`, `waiting`, `resolved`, `closed`. Priorities: `low`, `normal`, `high`, `urgent`. The due date is a valid `YYYY-MM-DD` date or `null`; the assignee is an active account's ID or `null`. The `assignee_id=unassigned` filter selects unassigned tickets. The `stats` and `queues` counters refer to all tickets visible to the account, regardless of filters. The revision protects ticket updates; a comment updates the last activity date without changing the revision.
 
@@ -218,14 +326,18 @@ Punto exposes `POST /api/integrations/tickets/grant` to its authenticated sessio
 
 `sort` accepts `updated` (default, newest first), `priority` (urgent, high, normal, low, then due date) and `due` (nearest due dates, then priority). Missing due dates follow present ones; descending update time and ID break ties. `limit` ranges from 1 to 100, `offset` from 0 to 1,000,000. Unknown, duplicate or invalid parameters return `400`.
 
+The additional `operations_queue` filter accepts `all`, `needs_reply`, `waiting_customer`, `sla_today`, `unscheduled` and `follow_up_due`. It combines with other filters and is stored in shared views. Operational queues include active tickets only; **SLA today** uses each ticket agreement's timezone. Internal notes and drafts do not count as customer replies.
+
 ## Verification and backup
 
 ```sh
 make test-tickets
 ```
 
-Tests compile the servers and use temporary databases, synthetic credentials and loopback ports, without writing to Punto's data. They cover workflows, permissions, comments, history, revisions, persistence, operational queues, due dates, sorting, HTTP checks, schema migration and catalog connections with permission revocation and source unavailability.
+Tests compile the servers and use temporary databases, synthetic credentials and loopback ports, without writing to Punto's data. They cover workflows, permissions, comments, history, revisions, persistence, operational queues, due dates, sorting, HTTP checks, schema migration and catalog connections with permission revocation and source unavailability. RAW tests cover claiming, concurrent conversion, linking, attachment selection and current ACLs. Receiver tests use real synthetic IMAPS TLS servers, including interrupted fetches, UIDs, MIME, authentication, password/XOAUTH2 and CONNECT tunnels. No real mailbox is required.
 
 The `tests/test_tickets_oidc.py` suite uses a local OIDC provider with real RSA signatures; it requires no external Keycloak. It checks explicit account linking, local roles, CSRF, session duration and revocation, callback reuse, `oidc` mode, disabled accounts, unknown subjects and invalid signatures.
 
-For the simplest backup, stop only `tickets`, copy the entire data directory or dedicated volume, then restart it. For hot backups, use the SQLite Backup API or SQLite's `.backup` command: copying only the `.db` file while the process writes can lose data in the WAL. Retain backups in a protected location because they contain tickets, comments and accounts.
+The operational suites cover the priority matrix and override reasons, waits and follow-ups, business hours and daylight-saving changes, SLA snapshots, permission-filtered rules, drafts and presence, bulk previews and revisions, reports, templates and solutions. Correspondence tests use a synthetic HTTPS service to verify threading, revisions, uncertain outcomes and deduplication. The time bridge is also tested against real Punto with a temporary database, revoked permissions, separate calendar consent and idempotent recovery; no test needs a real mailbox. To verify the addon's SMTP headers too, run `python3 -m unittest discover -s tests -p 'test_mail_addon.py' -v`.
+
+For the simplest backup, stop `tickets` and `tickets-receiver` if enabled, copy the entire data directory or dedicated volume, then restart the services. For hot backups, use the SQLite Backup API or SQLite's `.backup` command: copying only the `.db` file while the process writes can lose data in the WAL. Retain backups in a protected location because they contain tickets, comments, accounts, original emails and attachments.

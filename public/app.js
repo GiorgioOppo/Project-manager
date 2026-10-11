@@ -90,7 +90,7 @@
 
   function redirectToLogin() {
     const hash = window.location.hash;
-    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash) || /^#time-draft\?/.test(hash) || hash === "#calendar") ? hash : "";
+    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?(?:&time=1)?$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash) || /^#time-draft\?/.test(hash) || hash === "#calendar") ? hash : "";
     window.location.replace(window.PuntoI18n ? window.PuntoI18n.url("/" + retained) : "/" + retained);
   }
 
@@ -155,18 +155,18 @@
     return link;
   }
 
-  async function connectTicketSession(connectionState, calendarAccess = false) {
+  async function connectTicketSession(connectionState, calendarAccess = false, timeAccess = false) {
     if (state.ticketConnecting) return;
     if (!state.session?.tickets?.configured) { showNotice(t("Il collegamento a Ticket non è configurato su Punto."), true); return; }
     state.ticketConnecting = true;
     showNotice(t("Collegamento della sessione Punto a Ticket…"));
     try {
-      const data = await post("/api/integrations/tickets/grant", { state: connectionState, ...(calendarAccess ? { calendar: "1" } : {}) });
+      const data = await post("/api/integrations/tickets/grant", { state: connectionState, ...(calendarAccess ? { calendar: "1" } : {}), ...(timeAccess ? { time: "1" } : {}) });
       const target = new URL(data.url);
       if (target.origin !== new URL(state.session.tickets.origin).origin || target.pathname !== "/" || !/^#punto_grant=[a-f0-9]{64}&state=[a-f0-9]{64}$/.test(target.hash)) throw new Error(t("Il collegamento restituito non è valido."));
       window.location.assign(window.PuntoI18n ? window.PuntoI18n.url(target.href) : target.href);
     } catch (error) {
-      if (calendarAccess && $("ticket-calendar-consent").open) { $("ticket-calendar-consent-error").textContent = error.message; $("ticket-calendar-consent-error").hidden = false; }
+      if ((calendarAccess || timeAccess) && $("ticket-calendar-consent").open) { $("ticket-calendar-consent-error").textContent = error.message; $("ticket-calendar-consent-error").hidden = false; }
       else showNotice(error.message + t(" Torna a Ticket e ripeti Collega Punto."), true);
     }
     finally { state.ticketConnecting = false; }
@@ -798,11 +798,15 @@
     const hash = window.location.hash.slice(1);
     state.routeHash = window.location.hash;
     if (hash === "main-content") return;
-    const connection = /^ticket-connect\?state=([a-f0-9]{64})(&calendar=1)?$/.exec(hash);
+    const connection = /^ticket-connect\?state=([a-f0-9]{64})(&calendar=1)?(&time=1)?$/.exec(hash);
     if (connection) {
       selectTab(connection[2] ? "calendar" : "jobs", false, false);
-      if (connection[2]) {
+      if (connection[2] || connection[3]) {
         calendar.consentState = connection[1];
+        calendar.consentCalendar = Boolean(connection[2]); calendar.consentTime = Boolean(connection[3]);
+        $("ticket-calendar-consent-title").textContent = t(connection[2] && connection[3] ? "Collega calendario e ore a Ticket" : connection[3] ? "Collega le ore a Ticket" : "Collega il calendario a Ticket");
+        $("ticket-time-consent-description").hidden = !connection[3];
+        $("ticket-calendar-consent-description").hidden = !connection[2];
         $("ticket-calendar-consent-account").textContent = t("Account Punto: {0}", [state.session.name || state.session.email]);
         $("ticket-calendar-consent-error").hidden = true;
         if (!$("ticket-calendar-consent").open) $("ticket-calendar-consent").showModal();
@@ -6788,8 +6792,8 @@
   $("calendar-next").addEventListener("click", () => changeCalendarWeek(7));
   $("calendar-today").addEventListener("click", () => changeCalendarWeek(0, localDate(new Date())));
   $("calendar-date").addEventListener("change", () => { if (validDate($("calendar-date").value)) changeCalendarWeek(0, $("calendar-date").value); });
-  $("ticket-calendar-consent-allow").addEventListener("click", async () => { if (!calendar.consentState || state.ticketConnecting) return; $("ticket-calendar-consent-allow").disabled = true; busyDialogs.add("ticket-calendar-consent"); try { await connectTicketSession(calendar.consentState, true); } finally { busyDialogs.delete("ticket-calendar-consent"); $("ticket-calendar-consent-allow").disabled = false; } });
-  $("ticket-calendar-consent").addEventListener("close", () => { calendar.consentState = null; if (location.hash.startsWith("#ticket-connect")) { history.replaceState(null, "", "#calendar"); state.routeHash = location.hash; } });
+  $("ticket-calendar-consent-allow").addEventListener("click", async () => { if (!calendar.consentState || state.ticketConnecting) return; $("ticket-calendar-consent-allow").disabled = true; busyDialogs.add("ticket-calendar-consent"); try { await connectTicketSession(calendar.consentState, calendar.consentCalendar, calendar.consentTime); } finally { busyDialogs.delete("ticket-calendar-consent"); $("ticket-calendar-consent-allow").disabled = false; } });
+  $("ticket-calendar-consent").addEventListener("close", () => { calendar.consentState = null; calendar.consentCalendar = false; calendar.consentTime = false; if (location.hash.startsWith("#ticket-connect")) { history.replaceState(null, "", "#calendar"); state.routeHash = location.hash; } });
   window.setInterval(() => { if (state.session?.authenticated && state.activeTab === "calendar" && calendar.status?.connected && !document.hidden && !calendar.loading && !calendar.busy) refreshCalendar(); }, 10000);
   $("notice-close").addEventListener("click", () => { $("notice").hidden = true; clearTimeout(noticeTimer); });
   $("retry-load").addEventListener("click", refreshAll);
@@ -6813,7 +6817,7 @@
       try {
         const pending = JSON.parse(sessionStorage.getItem("punto.ticket.return") || "null");
         sessionStorage.removeItem("punto.ticket.return");
-        if (!location.hash && pending && Date.now() - pending.at < 600000 && (/^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(pending.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(pending.hash) || pending.hash === "#calendar")) history.replaceState(null, "", location.pathname + pending.hash);
+        if (!location.hash && pending && Date.now() - pending.at < 600000 && (/^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?(?:&time=1)?$/.test(pending.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(pending.hash) || pending.hash === "#calendar")) history.replaceState(null, "", location.pathname + pending.hash);
       } catch { /* Il ripristino del collegamento è facoltativo. */ }
       const calendarCallback = new URL(location.href);
       if (calendarCallback.searchParams.has("calendar")) {

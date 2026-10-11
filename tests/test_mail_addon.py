@@ -340,6 +340,37 @@ class MailAddonTests(unittest.TestCase):
         self.assertEqual((status, data["error"]), (409, "idempotency_conflict"))
         self.assertEqual(len(self.smtp.messages), 1)
 
+    def test_thread_headers_survive_smtp_and_participate_in_idempotency(self):
+        self.sinks()
+        self.start(configured=True)
+        fields = self.fields()
+        fields.update(message_id="<reply-1@tickets.example.test>",
+                      in_reply_to="<request-1@example.test>",
+                      references="<root@example.test> <request-1@example.test>")
+        status, result = self.api(fields=fields)
+        self.assertEqual(status, 200, result)
+        message = BytesParser(policy=policy.default).parsebytes(self.smtp.messages[0])
+        self.assertEqual(str(message["Message-ID"]), fields["message_id"])
+        self.assertEqual(str(message["In-Reply-To"]), fields["in_reply_to"])
+        self.assertEqual(" ".join(str(message["References"]).split()), fields["references"])
+        self.start(configured=True)
+        self.assertIs(self.api(fields=fields)[1]["replayed"], True)
+        status, result = self.api(fields={**fields, "in_reply_to": "<different@example.test>"})
+        self.assertEqual((status, result["error"]), (409, "idempotency_conflict"))
+        self.assertEqual(len(self.smtp.messages), 1)
+
+    def test_thread_header_injection_and_ambiguous_ids_are_rejected(self):
+        self.sinks()
+        self.start(configured=True)
+        for key, value in (("message_id", "<one@example.test>\r\nBcc: attacker@example.test"),
+                           ("in_reply_to", "<one@example.test> <two@example.test>"),
+                           ("references", "<one@example.test>\nInjected: x"),
+                           ("message_id", "<missing-domain>"),
+                           ("references", "<one@example.test> ")):
+            with self.subTest(key=key, value=value):
+                self.assertEqual(self.api(fields={**self.fields(), key: value})[0], 400)
+        self.assertEqual(self.smtp.messages, [])
+
     def test_ambiguous_delivery_is_never_resent(self):
         self.sinks(drop_ack=True)
         self.start(configured=True)

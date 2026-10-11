@@ -8,6 +8,7 @@ static void ticket_agenda(Request *r,Auth *a) {
     json_object *o=json_object_new_object(),*items=json_object_new_array();
     json_object_object_add(o,"items",items); add_int(o,"from",f.agenda_from); add_int(o,"to",f.agenda_to);
     if (!exec_sql("BEGIN")) goto fail;
+    if (!operations_prepare_filter(r,&f,a)) { exec_sql("ROLLBACK"); json_object_put(o); return; }
     sqlite3_stmt *st=prepare("SELECT count(*) FROM tickets t " FILTER_SQL "AND t.scheduled_start<?15 AND t.scheduled_end>?14");
     if (!st) goto rollback;
     bind_filters(st,&f,a); sqlite3_bind_int64(st,14,f.agenda_from); sqlite3_bind_int64(st,15,f.agenda_to);

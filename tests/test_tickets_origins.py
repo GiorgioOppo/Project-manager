@@ -185,7 +185,9 @@ class TicketOriginTests(unittest.TestCase):
         status, _body, headers = self.request("GET", "/auth/login",
                                              headers=self.origin_headers(HTTP_ORIGIN))
         self.assertEqual(status, 403)
-        self.assertNotIn("set-cookie", headers)
+        # The SSO error page expires the transaction cookie without issuing a session.
+        self.assertIn("Max-Age=0", headers.get("set-cookie", ""))
+        self.assertNotIn("tickets_session=", headers["set-cookie"])
         status, _body, headers = self.request("GET", "/auth/login",
                                              headers=self.origin_headers(HTTPS_ORIGIN))
         self.assertEqual(status, 303)

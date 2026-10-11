@@ -1,0 +1,47 @@
+# Optional IMAPS receiver for the private Punto stack. Requires compose.tickets.yaml.
+# Credentials live only in the existing host directory TICKETS_IMAP_SECRETS_PATH.
+services:
+  tickets-receiver:
+    image: "punto/tickets:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: ticket-app/Dockerfile
+    entrypoint: ["/usr/local/bin/punto-ticket-receiver"]
+    environment:
+      TICKETS_DB_PATH: /var/lib/punto-tickets/tickets.db
+      TICKETS_IMAP_SECRET_DIR: /run/ticket-mail
+      TICKETS_IMAP_POLL_SECONDS: "${TICKETS_IMAP_POLL_SECONDS:-30}"
+      TICKETS_IMAP_PROXY_URL: http://squid:3128
+    depends_on:
+      tickets:
+        condition: service_healthy
+      proxy-egress:
+        condition: service_healthy
+    volumes:
+      - tickets_data:/var/lib/punto-tickets
+      - type: bind
+        source: "${TICKETS_IMAP_SECRETS_PATH:?Imposta una directory esistente con i file credenziali IMAP}"
+        target: /run/ticket-mail
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      app_egress:
+        ipv4_address: 172.30.40.13
+        interface_name: app_egress

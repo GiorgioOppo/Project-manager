@@ -30,6 +30,19 @@ const catalog = (language) => language === "it" ? {} : JSON.parse(fs.readFileSyn
       await page.locator("#password").fill(credentials.password);
       await page.locator("#login-submit").click();
       await page.locator("#workspace").waitFor({ state: "visible" });
+      if (language === "it") {
+        // The navigation fixture exercises Sales/Finance pages as well as
+        // administration; space administration alone does not grant them.
+        const session = await (await page.request.get(punto + "/api/session")).json();
+        assert.ok(Number.isInteger(session.user_id));
+        const profiles = await page.request.post(punto + `/api/users/${session.user_id}/access-groups`, {
+          form: { groups: '["sales","finance"]', reason: "Profili per la fixture isolata delle traduzioni" },
+          headers: { Origin: punto },
+        });
+        assert.equal(profiles.status(), 200, await profiles.text());
+        await page.reload();
+        await page.locator("#workspace").waitFor({ state: "visible" });
+      }
       assert.equal(await page.locator("#tab-jobs span").first().textContent(), expected("Commesse"));
       assert.equal(await page.locator("#language-select").inputValue(), language);
       await page.setViewportSize({ width: 320, height: 780 });
@@ -92,10 +105,12 @@ const catalog = (language) => language === "it" ? {} : JSON.parse(fs.readFileSyn
       await ticketPage.setViewportSize({ width: 1280, height: 900 });
       await ticketPage.locator("#new-ticket").click();
       await ticketPage.locator("#ticket-title").fill(userText);
+      await ticketPage.locator("#editor-impact").selectOption("high");
       await ticketPage.locator("#ticket-priority").selectOption("high");
       const created = ticketPage.waitForResponse((response) => response.url().endsWith("/api/tickets") && response.request().method() === "POST");
       await ticketPage.locator("#save-ticket").click();
-      assert.equal((await created).status(), 201);
+      const createdResponse = await created;
+      assert.equal(createdResponse.status(), 201, await createdResponse.text());
       await ticketPage.locator("#ticket-editor").waitFor({ state: "hidden" });
       await ticketPage.waitForFunction((value) => document.getElementById("detail-title").textContent === value, userText);
       assert.equal(await ticketPage.locator("#detail-title").textContent(), userText);

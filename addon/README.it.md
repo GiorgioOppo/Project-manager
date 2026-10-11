@@ -22,7 +22,7 @@ Le API `/v1/*` richiedono `Authorization: Bearer <token>` e una sorgente autoriz
 
 `smtp_configured` indica che la configurazione SMTP richiesta è presente; non esegue un collegamento di prova al fornitore.
 
-Il POST accetta `Content-Type: application/x-www-form-urlencoded`, anche con `charset=UTF-8`, e questi quattro campi obbligatori:
+Il POST accetta `Content-Type: application/x-www-form-urlencoded`, anche con `charset=UTF-8`, e i campi seguenti (i primi quattro sono obbligatori):
 
 | Campo | Contenuto |
 | --- | --- |
@@ -30,8 +30,13 @@ Il POST accetta `Content-Type: application/x-www-form-urlencoded`, anche con `ch
 | `to` | Un singolo indirizzo email, fino a 254 byte |
 | `subject` | Testo UTF-8 non vuoto, fino a 250 byte, senza caratteri di controllo |
 | `body` | Testo UTF-8 non vuoto, fino a 8192 byte; sono ammessi ritorni a capo e tabulazioni |
+| `message_id` | Facoltativo, un ID canonico `<id@dominio>` fino a 255 byte |
+| `in_reply_to` | Facoltativo, un ID canonico della richiesta fino a 255 byte |
+| `references` | Facoltativo, ID canonici separati da uno spazio, fino a 1024 byte e 32 ID |
 
 Campi sconosciuti, duplicati, indirizzi multipli e contenuti non validi vengono rifiutati. Il corpo HTTP codificato non può superare 32768 byte. Il servizio genera messaggi `text/plain`; allegati, HTML e invii multipli nella stessa richiesta non sono implementati.
+
+Le intestazioni della conversazione non accettano ritorni a capo o sintassi ambigue e partecipano all’hash di idempotenza. Gli hash delle richieste preesistenti senza queste intestazioni restano compatibili; riusare una chiave cambiando il thread restituisce un conflitto.
 
 | HTTP | Risposta significativa | Comportamento dell’app |
 | --- | --- | --- |

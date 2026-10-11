@@ -270,7 +270,8 @@ class TicketApplicationTests(unittest.TestCase):
         initial_revision = ticket["revision"]
         for state in ("in_progress", "waiting", "resolved", "closed", "open"):
             previous_revision = ticket["revision"]
-            ticket = self.update_ticket(admin, ticket, status=state, title=ticket["title"])
+            waiting_fields = {"waiting_reason": "customer", "follow_up_at": 2000000000} if state == "waiting" else {}
+            ticket = self.update_ticket(admin, ticket, status=state, title=ticket["title"], **waiting_fields)
             self.assertEqual(ticket["status"], state)
             self.assertGreater(ticket["revision"], previous_revision)
         self.assertGreater(ticket["revision"], initial_revision)
@@ -302,7 +303,7 @@ class TicketApplicationTests(unittest.TestCase):
         second = self.create_ticket(admin, title="Stampante sala sud", priority="low")
         second = self.update_ticket(admin, second, status="resolved")
         third = self.create_ticket(admin, title="Richiesta badge", requester="Alessia Test")
-        third = self.update_ticket(admin, third, status="waiting")
+        third = self.update_ticket(admin, third, status="waiting", waiting_reason="customer", follow_up_at=2000000000)
         filtered, _headers = self.api("GET", "/api/tickets?" + urlencode({"search": "univoca ZXQ"}), session=admin)
         self.assertEqual(filtered["total"], 1)
         self.assertEqual([row["id"] for row in filtered["items"]], [first["id"]])
@@ -334,7 +335,8 @@ class TicketApplicationTests(unittest.TestCase):
         tickets = {}
         for title, status, assignee_id, due_date, creator in definitions:
             ticket = self.create_ticket(creator, title=title, assignee_id=assignee_id, due_date=due_date)
-            tickets[title] = self.update_ticket(admin, ticket, status=status) if status != "open" else ticket
+            waiting_fields = {"waiting_reason": "supplier", "follow_up_at": 2000000000} if status == "waiting" else {}
+            tickets[title] = self.update_ticket(admin, ticket, status=status, **waiting_fields) if status != "open" else ticket
         expected = {
             "all": set(tickets),
             "active": {"mine_past", "created_by_me", "unassigned_today", "mine_day_seven", "other_day_eight", "unassigned_no_due"},
@@ -428,7 +430,7 @@ class TicketApplicationTests(unittest.TestCase):
         expected = {self.create_ticket(admin, title=f"Boardfixture {index:02d}", priority="high",
                                        assignee_id=agent["id"])["id"] for index in range(21)}
         waiting = self.create_ticket(admin, title="Boardfixture waiting", priority="high", assignee_id=agent["id"])
-        self.update_ticket(admin, waiting, status="waiting")
+        self.update_ticket(admin, waiting, status="waiting", waiting_reason="spare_part", follow_up_at=2000000000)
         resolved = self.create_ticket(admin, title="Boardfixture resolved", priority="high", assignee_id=agent["id"])
         self.update_ticket(admin, resolved, status="resolved")
         self.create_ticket(admin, title="Boardfixture other assignee", priority="high", assignee_id=admin["user"]["id"])
@@ -592,7 +594,7 @@ class TicketApplicationTests(unittest.TestCase):
     def test_tickets_comments_and_changed_credentials_survive_restart(self):
         admin = self.login()
         ticket = self.create_ticket(admin, title="Ticket persistente", due_date="2030-12-31")
-        ticket = self.update_ticket(admin, ticket, status="waiting")
+        ticket = self.update_ticket(admin, ticket, status="waiting", waiting_reason="authorization", follow_up_at=2000000000)
         self.api("POST", f"/api/tickets/{ticket['id']}/comments", {"body": "Persistenza verificabile"}, admin, expected=201)
         ticket = self.api("GET", f"/api/tickets/{ticket['id']}", session=admin)[0]["ticket"]
         self.api("PUT", f"/api/users/{admin['user']['id']}", {"password": REPLACEMENT_PASSWORD}, admin)
@@ -674,7 +676,7 @@ class TicketApplicationTests(unittest.TestCase):
                 self.assertIsNone(detail["ticket"][key], key)
             self.stop()
             with sqlite3.connect(legacy_path) as database:
-                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 3)
+                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
                 self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(database.execute("SELECT id,name,email,role,active,password_salt,password_hash,created_at FROM users").fetchone(), account)

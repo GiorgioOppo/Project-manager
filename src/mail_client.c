@@ -257,18 +257,29 @@ void mail_client_refresh(time_t now) {
 
 MailDelivery mail_client_send(const char *key, const char *to,
                               const char *subject, const char *body) {
+    return mail_client_send_threaded(key, to, subject, body, "", "", "");
+}
+
+MailDelivery mail_client_send_threaded(const char *key, const char *to,
+                                      const char *subject, const char *body,
+                                      const char *message_id, const char *in_reply_to,
+                                      const char *references) {
     if (!enabled || !smtp_configured) return MAIL_DELIVERY_UNCONFIGURED;
     if (!key || !to || !subject || !body || strlen(key) > 128 ||
-        strlen(to) > 254 || strlen(subject) > 1024 || strlen(body) > 32768)
+        strlen(to) > 254 || strlen(subject) > 1024 || strlen(body) > 32768 ||
+        !message_id || !in_reply_to || !references || strlen(message_id) > 255 ||
+        strlen(in_reply_to) > 255 || strlen(references) > 1024 ||
+        strpbrk(message_id, "\r\n") || strpbrk(in_reply_to, "\r\n") || strpbrk(references, "\r\n"))
         return MAIL_DELIVERY_FAILED;
     CURL *encoder = curl_easy_init();
     if (!encoder) return MAIL_DELIVERY_RETRY;
-    const char *values[] = {key, to, subject, body};
-    const char *names[] = {"idempotency_key", "to", "subject", "body"};
-    char *encoded[4] = {0};
+    const char *values[] = {key, to, subject, body, message_id, in_reply_to, references};
+    const char *names[] = {"idempotency_key", "to", "subject", "body", "message_id", "in_reply_to", "references"};
+    size_t count = (*message_id || *in_reply_to || *references) ? 7 : 4;
+    char *encoded[7] = {0};
     size_t needed = 1;
     bool okay = true;
-    for (size_t i = 0; i < 4; i++) {
+    for (size_t i = 0; i < count; i++) {
         encoded[i] = curl_easy_escape(encoder, values[i], 0);
         if (!encoded[i]) { okay = false; break; }
         needed += strlen(names[i]) + strlen(encoded[i]) + 2;
@@ -276,12 +287,12 @@ MailDelivery mail_client_send(const char *key, const char *to,
     char *form = okay ? malloc(needed) : NULL;
     if (form) {
         form[0] = '\0';
-        for (size_t i = 0; i < 4; i++) {
+        for (size_t i = 0; i < count; i++) {
             strcat(form, i ? "&" : ""); strcat(form, names[i]);
             strcat(form, "="); strcat(form, encoded[i]);
         }
     }
-    for (size_t i = 0; i < 4; i++) curl_free(encoded[i]);
+    for (size_t i = 0; i < count; i++) curl_free(encoded[i]);
     curl_easy_cleanup(encoder);
     if (!form) return MAIL_DELIVERY_RETRY;
     Response response = {0};

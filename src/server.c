@@ -77,6 +77,7 @@ typedef struct {
     time_t expires;
     DbInt user_id;
     bool calendar_access;
+    bool time_access;
     uint64_t order;
 } TicketGrant;
 
@@ -920,7 +921,7 @@ static bool ticket_grant_has_session(const TicketGrant *grant, time_t now) {
     return false;
 }
 
-static TicketGrant *new_ticket_grant(const Session *session, const char *state, bool calendar_access) {
+static TicketGrant *new_ticket_grant(const Session *session, const char *state, bool calendar_access, bool time_access) {
     time_t now = time(NULL);
     if (now == (time_t)-1 || session->expires <= now) return NULL;
     TicketGrant next = {0};
@@ -956,6 +957,7 @@ static TicketGrant *new_ticket_grant(const Session *session, const char *state, 
     memcpy(next.state, state, TOKEN_LENGTH + 1);
     next.user_id = session->user_id;
     next.calendar_access = calendar_access;
+    next.time_access = time_access;
     next.order = ++grant_order;
     next.expires = now + SHORT_SESSION;
     if (next.expires > session->expires) next.expires = session->expires;
@@ -997,12 +999,13 @@ static TicketGrant *find_ticket_grant(const char *authorization, Account *accoun
     return NULL;
 }
 
-static bool ticket_grant_form(const char *body, char state[TOKEN_LENGTH + 1], bool *calendar_access) {
+static bool ticket_grant_form(const char *body, char state[TOKEN_LENGTH + 1], bool *calendar_access, bool *time_access) {
     char copy[256];
     if (!body || strlen(body) >= sizeof(copy)) return false;
     strcpy(copy, body);
-    bool has_state = false, has_calendar = false;
+    bool has_state = false, has_calendar = false, has_time = false;
     *calendar_access = false;
+    *time_access = false;
     char *part = copy;
     while (*part) {
         char *end = strchr(part, '&');
@@ -1016,6 +1019,8 @@ static bool ticket_grant_form(const char *body, char state[TOKEN_LENGTH + 1], bo
             memcpy(state, value, TOKEN_LENGTH + 1); has_state = true;
         } else if (!strcmp(name, "calendar") && !has_calendar && !strcmp(value, "1")) {
             *calendar_access = true; has_calendar = true;
+        } else if (!strcmp(name, "time") && !has_time && !strcmp(value, "1")) {
+            *time_access = true; has_time = true;
         } else return false;
         if (!end) break;
         part = end + 1;
@@ -1030,6 +1035,10 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
     const char *resource = request->target + sizeof(prefix) - 1;
     bool grant_request = !strcmp(resource, "grant");
     bool calendar_request = !strncmp(resource, "calendar/", 9);
+    bool time_request = !strncmp(resource, "time/", 5);
+    const char *time_resource = time_request ? resource + 5 : "";
+    bool time_write = time_request && !strcmp(time_resource, "create");
+    bool time_read = time_request && (!strcmp(time_resource, "status") || !strcmp(time_resource, "entries"));
     const char *calendar_resource = calendar_request ? resource + 9 : "";
     bool calendar_write = calendar_request && (!strcmp(calendar_resource, "create") || !strcmp(calendar_resource, "update") ||
         !strcmp(calendar_resource, "delete") || !strcmp(calendar_resource, "events/create") ||
@@ -1038,10 +1047,10 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
         !strcmp(calendar_resource, "changes") || !strcmp(calendar_resource, "event") || !strcmp(calendar_resource, "change"));
     bool head = !strcmp(request->method, "HEAD");
     if (!grant_request && strcmp(resource, "scope") && strcmp(resource, "jobs") &&
-        strcmp(resource, "assets") && strcmp(resource, "validate") && !calendar_write && !calendar_read) {
+        strcmp(resource, "assets") && strcmp(resource, "validate") && !calendar_write && !calendar_read && !time_write && !time_read) {
         error_response_head(fd, 404, head); return true;
     }
-    if (strcmp(request->method, grant_request || calendar_write ? "POST" : "GET")) {
+    if (strcmp(request->method, grant_request || calendar_write || time_write ? "POST" : "GET")) {
         error_response_head(fd, 405, head); return true;
     }
     if (!tickets_configured) { error_response(fd, 503); return true; }
@@ -1061,11 +1070,11 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
             error_response(fd, 415); return true;
         }
         char state[TOKEN_LENGTH + 1];
-        bool calendar_access;
-        if (*query || !ticket_grant_form(request->body, state, &calendar_access)) {
+        bool calendar_access, time_access;
+        if (*query || !ticket_grant_form(request->body, state, &calendar_access, &time_access)) {
             error_response(fd, 400); return true;
         }
-        TicketGrant *grant = new_ticket_grant(session, state, calendar_access);
+        TicketGrant *grant = new_ticket_grant(session, state, calendar_access, time_access);
         if (!grant) { error_response(fd, 503); return true; }
         char destination[sizeof(tickets_app_origin.origin) + 2 * TOKEN_LENGTH + 64];
         snprintf(destination, sizeof(destination), "%s/#punto_grant=%s&state=%s",
@@ -1078,7 +1087,7 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
         erase(destination, sizeof(destination));
         return true;
     }
-    if (!calendar_write && request->content_length) { error_response(fd, 400); return true; }
+    if (!calendar_write && !time_write && request->content_length) { error_response(fd, 400); return true; }
     Account account;
     int status;
     TicketGrant *grant = find_ticket_grant(request->authorization, &account, &status);
@@ -1088,7 +1097,21 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
         return true;
     }
     WorkspaceResponse response = {0};
-    if (calendar_request) {
+    if (time_request) {
+        if (!grant->time_access) {
+            json(fd, 403, "{\"ok\":false,\"error\":\"Questo collegamento non autorizza la registrazione delle ore. Ricollega Ticket con il consenso ore.\"}", NULL);
+            return true;
+        }
+        if (time_write) {
+            const char type[] = "application/x-www-form-urlencoded";
+            if (strncmp(request->content_type, type, sizeof(type) - 1) ||
+                (request->content_type[sizeof(type) - 1] && request->content_type[sizeof(type) - 1] != ';')) {
+                error_response(fd, 415); return true;
+            }
+            if (*query) { error_response(fd, 400); return true; }
+        }
+        ticket_bridge_time(time_resource, time_write ? request->body : query, &account, &response);
+    } else if (calendar_request) {
         if (!grant->calendar_access) {
             json(fd, 403, "{\"ok\":false,\"error\":\"Questo collegamento non autorizza l'accesso al calendario. Ricollega Ticket con il consenso calendario.\"}", NULL);
             return true;
@@ -1102,7 +1125,7 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
             if (*query) { error_response(fd, 400); return true; }
         }
         ticket_bridge_calendar(calendar_resource, calendar_write ? request->body : query, &account, &response);
-    } else ticket_bridge_read(resource, query, &account, grant->state, grant->expires, grant->calendar_access, &response);
+    } else ticket_bridge_read(resource, query, &account, grant->state, grant->expires, grant->calendar_access, grant->time_access, &response);
     if (response.body) json(fd, response.status, response.body, NULL);
     else error_response(fd, 503);
     workspace_response_free(&response);
