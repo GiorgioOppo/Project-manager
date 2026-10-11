@@ -10,6 +10,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
@@ -21,11 +22,15 @@
 #include "procurement.h"
 #include "documents.h"
 #include "organization.h"
+#include "alerts.h"
+#include "calendar_client.h"
 
 #ifdef __APPLE__
 #include <Security/SecRandom.h>
+#include <CommonCrypto/CommonDigest.h>
 #else
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 #endif
 
 #define HEADER_LIMIT 16384
@@ -53,7 +58,7 @@ typedef struct {
 
 typedef struct {
     char method[12];
-    char target[1024];
+    char target[8192];
     char host[256];
     char origin[320];
     char content_type[128];
@@ -114,6 +119,7 @@ static const char *status_text(int status) {
     switch (status) {
         case 200: return "OK";
         case 201: return "Created";
+        case 202: return "Accepted";
         case 303: return "See Other";
         case 400: return "Bad Request";
         case 401: return "Unauthorized";
@@ -124,6 +130,7 @@ static const char *status_text(int status) {
         case 409: return "Conflict";
         case 413: return "Content Too Large";
         case 415: return "Unsupported Media Type";
+        case 422: return "Unprocessable Content";
         case 429: return "Too Many Requests";
         case 431: return "Request Header Fields Too Large";
         case 503: return "Service Unavailable";
@@ -329,7 +336,7 @@ static int read_request(int fd, char **allocation, size_t *capacity, Request *re
     if (!first_end) return 400;
     *first_end = '\0';
     char version[16], trailing;
-    if (sscanf(buffer, "%11s %1023s %15s %c", request->method, request->target,
+    if (sscanf(buffer, "%11s %8191s %15s %c", request->method, request->target,
                version, &trailing) != 3 || strcmp(version, "HTTP/1.1") != 0)
         return 400;
     if (request->target[0] != '/' || strchr(request->target, '#')) return 400;
@@ -642,6 +649,100 @@ static void session_response(int fd, const Session *session) {
     json(fd, 200, body, NULL);
 }
 
+static bool calendar_session_binding(const Session *session, char binding[65]) {
+    unsigned char digest[32];
+#ifdef __APPLE__
+    bool okay = CC_SHA256(session->token, TOKEN_LENGTH, digest) != NULL;
+#else
+    bool okay = SHA256((const unsigned char *)session->token, TOKEN_LENGTH, digest) != NULL;
+#endif
+    if (!okay) return false;
+    const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        binding[2 * i] = digits[digest[i] >> 4];
+        binding[2 * i + 1] = digits[digest[i] & 15];
+    }
+    binding[64] = '\0';
+    erase(digest, sizeof(digest));
+    return true;
+}
+
+static void calendar_callback_redirect(int fd, bool connected) {
+    respond(fd, 303, "text/plain; charset=utf-8", "", 0,
+        connected ? "Location: /app?calendar=connected\r\n" : "Location: /app?calendar=error\r\n", false);
+}
+
+static bool calendar_route(int fd, Request *request, const char *query) {
+    if (strncmp(request->target, "/api/calendar/", 14) != 0) return false;
+    static const struct { const char *path; CalendarOperation operation; bool get; } routes[] = {
+        {"status", CALENDAR_STATUS, true},
+        {"oauth/start", CALENDAR_OAUTH_START, false},
+        {"oauth/callback", CALENDAR_OAUTH_CALLBACK, true},
+        {"calendars", CALENDAR_CALENDARS, true},
+        {"selection", CALENDAR_SELECTION, false},
+        {"events", CALENDAR_EVENTS, true},
+        {"events/create", CALENDAR_EVENT_CREATE, false},
+        {"events/update", CALENDAR_EVENT_UPDATE, false},
+        {"events/delete", CALENDAR_EVENT_DELETE, false},
+        {"sync", CALENDAR_SYNC, false},
+        {"disconnect", CALENDAR_DISCONNECT, false},
+        {"changes", CALENDAR_CHANGES, true}
+    };
+    size_t index = 0;
+    while (index < sizeof(routes) / sizeof(routes[0]) &&
+           strcmp(request->target + 14, routes[index].path)) index++;
+    bool head = strcmp(request->method, "HEAD") == 0;
+    if (index == sizeof(routes) / sizeof(routes[0])) {
+        error_response_head(fd, 404, head); return true;
+    }
+    bool callback = routes[index].operation == CALENDAR_OAUTH_CALLBACK;
+    bool get = strcmp(request->method, "GET") == 0;
+    bool post = strcmp(request->method, "POST") == 0;
+    if ((routes[index].get && !get) || (!routes[index].get && !post)) {
+        error_response_head(fd, 405, head); return true;
+    }
+    Session *session = find_session(request->cookie);
+    Account account;
+    int found = session ? accounts_lookup(session->user_id, &account) : 0;
+    if (found <= 0) {
+        if (callback) calendar_callback_redirect(fd, false);
+        else if (found < 0) error_response(fd, 503);
+        else json(fd, 401, "{\"ok\":false,\"error\":\"Accedi per continuare.\"}", NULL);
+        return true;
+    }
+    if (post && !same_origin(request)) { error_response(fd, 403); return true; }
+    if (post) {
+        const char type[] = "application/x-www-form-urlencoded";
+        if (strncmp(request->content_type, type, sizeof(type) - 1) ||
+            (request->content_type[sizeof(type) - 1] && request->content_type[sizeof(type) - 1] != ';')) {
+            error_response(fd, 415); return true;
+        }
+    }
+    if ((get && request->content_length) ||
+        (*query && !callback && routes[index].operation != CALENDAR_EVENTS &&
+         routes[index].operation != CALENDAR_CALENDARS)) {
+        if (callback) calendar_callback_redirect(fd, false);
+        else error_response(fd, 400);
+        return true;
+    }
+    char binding[65] = {0};
+    if ((callback || routes[index].operation == CALENDAR_OAUTH_START) &&
+        !calendar_session_binding(session, binding)) {
+        if (callback) calendar_callback_redirect(fd, false);
+        else error_response(fd, 500);
+        return true;
+    }
+    CalendarResponse response = {0};
+    calendar_client_call(routes[index].operation, account.id,
+        get ? query : request->body, binding, &response);
+    erase(binding, sizeof(binding));
+    if (callback) calendar_callback_redirect(fd, response.status == 200);
+    else if (!response.body) error_response(fd, 500);
+    else json(fd, response.status, response.body, NULL);
+    calendar_response_free(&response);
+    return true;
+}
+
 static bool workspace_route(int fd, Request *request, const char *query) {
     const char *target = request->target;
     if (strcmp(target, "/api/jobs") != 0 && strncmp(target, "/api/jobs/", 10) != 0 &&
@@ -652,6 +753,10 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         strcmp(target, "/api/groups") != 0 && strncmp(target, "/api/groups/", 12) != 0 &&
         strcmp(target, "/api/job-roles") != 0 && strncmp(target, "/api/job-roles/", 15) != 0 &&
         strncmp(target, "/api/contract-documents/", 24) != 0 &&
+        strcmp(target, "/api/labor-rates") != 0 && strncmp(target, "/api/labor-rates/", 17) != 0 &&
+        strcmp(target, "/api/reports") != 0 &&
+        strcmp(target, "/api/alert-rules") != 0 && strncmp(target, "/api/alert-rules/", 17) != 0 &&
+        strcmp(target, "/api/notifications") != 0 && strncmp(target, "/api/notifications/", 19) != 0 &&
         strcmp(target, "/api/audit") != 0)
         return false;
     bool head = strcmp(request->method, "HEAD") == 0;
@@ -742,6 +847,8 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         }
     }
     if (!handled) handled = storage_handle(request->method, target, query, account.role, &response);
+    if (!handled) handled = alerts_handle(request->method, target, query, request->body,
+                                          account.id, account.role, &response);
     if (!handled) handled = workspace_handle(request->method, target, query, request->body,
                                              account.id, account.email, account.role, &response);
     if (!handled) {
@@ -774,6 +881,7 @@ static void route(int fd, Request *request) {
     }
     char *query = strchr(request->target, '?');
     if (query) *query++ = '\0';
+    if (calendar_route(fd, request, query ? query : "")) return;
     if (workspace_route(fd, request, query ? query : "")) return;
     const char *target = request->target;
     bool get = strcmp(request->method, "GET") == 0;
@@ -813,6 +921,7 @@ static void route(int fd, Request *request) {
         {"/login.js", "login.js", "text/javascript; charset=utf-8"},
         {"/app.js", "app.js", "text/javascript; charset=utf-8"},
         {"/workspace.css", "workspace.css", "text/css; charset=utf-8"},
+        {"/reports.css", "reports.css", "text/css; charset=utf-8"},
         {"/favicon.svg", "favicon.svg", "image/svg+xml"}
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
@@ -886,6 +995,13 @@ int main(void) {
         }
     }
 #endif
+    if (!calendar_client_open()) {
+        fprintf(stderr, "Configurazione del servizio calendario non valida. Controlla URL, token e certificato CA.\n");
+        return 1;
+    }
+    if (atexit(calendar_client_close) != 0) {
+        calendar_client_close(); return 1;
+    }
     if (!storage_preflight(database_path)) {
         fprintf(stderr, "Database non leggibile o creato da una versione più recente. Nessun aggiornamento eseguito.\n");
         return 1;
@@ -906,9 +1022,9 @@ int main(void) {
         fprintf(stderr, "Impossibile configurare gruppi, ruoli e abilitazioni. Controlla database e permessi.\n");
         organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
-    if (!procurement_open(database_path) || !documents_open(database_path)) {
-        fprintf(stderr, "Impossibile configurare contratti e archivio documentale. Controlla database e impostazioni documenti.\n");
-        documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+    if (!alerts_open(database_path) || !procurement_open(database_path) || !documents_open(database_path)) {
+        fprintf(stderr, "Impossibile configurare alert, contratti e archivio documentale. Controlla database e impostazioni dei servizi.\n");
+        alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
     snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
@@ -921,7 +1037,7 @@ int main(void) {
     (void)sigaction(SIGINT, &stop_action, NULL);
     (void)sigaction(SIGTERM, &stop_action, NULL);
     int server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server < 0) { perror("socket"); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
+    if (server < 0) { perror("socket"); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
     int reuse = 1;
     (void)setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     struct sockaddr_in address = {0};
@@ -929,11 +1045,21 @@ int main(void) {
     address.sin_port = htons((uint16_t)port);
     address.sin_addr = bind_address;
     if (bind(server, (struct sockaddr *)&address, sizeof(address)) < 0 || listen(server, 16) < 0) {
-        perror("Avvio server"); close(server); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+        perror("Avvio server"); close(server); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     printf("\n  punto · Project management\n  http://127.0.0.1:%ld\n  Utenti e dati: %s\n\n", public_port, database_path);
     fflush(stdout);
+    time_t last_alert_tick=0;
     while (!stopping) {
+        time_t now=time(NULL);
+        if (now!=(time_t)-1 && (last_alert_tick==0 || difftime(now,last_alert_tick)>=30.0 || now<last_alert_tick)) {
+            alerts_tick_at(now); last_alert_tick=now;
+        }
+        fd_set readable; FD_ZERO(&readable); FD_SET(server,&readable);
+        struct timeval scheduler_timeout={.tv_sec=30,.tv_usec=0};
+        int ready=select(server+1,&readable,NULL,NULL,&scheduler_timeout);
+        if (ready<0) { if (errno==EINTR) continue; perror("select"); break; }
+        if (ready==0) continue;
         int client = accept(server, NULL, NULL);
         if (client < 0) {
             if (errno == EINTR) continue;
@@ -954,6 +1080,8 @@ int main(void) {
         close(client);
     }
     close(server);
+    alerts_close();
+    calendar_client_close();
     documents_close();
     procurement_close();
     organization_close();

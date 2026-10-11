@@ -341,7 +341,8 @@ static bool access_query(Db *db, DbInt job_id, DbInt user_id, const char *today,
         "WHERE a.user_id=? AND (?=0 OR a.job_id=?) "
         "UNION ALL SELECT a.job_id,r.can_log_time,a.starts_on,a.ends_on "
         "FROM job_group_grants a JOIN job_roles r ON r.id=a.role_id "
-        "WHERE a.group_id IN (SELECT id FROM user_groups) AND (?=0 OR a.job_id=?)),"
+        "WHERE a.group_id IN (SELECT id FROM user_groups) AND (?=0 OR a.job_id=?) "
+        "UNION ALL SELECT j.id,1,NULL,NULL FROM jobs j WHERE j.is_common=1 AND (?=0 OR j.id=?)),"
         "effective AS (SELECT job_id,MAX(CASE WHEN "
         "(starts_on IS NULL OR starts_on<=?) AND (ends_on IS NULL OR ends_on>=?) "
         "THEN CASE WHEN can_log_time=1 AND "
@@ -356,9 +357,10 @@ static bool access_query(Db *db, DbInt job_id, DbInt user_id, const char *today,
         bind_id(statement, 1, user_id) && bind_id(statement, 2, user_id) &&
         bind_id(statement, 3, job_id) && bind_id(statement, 4, job_id) &&
         bind_id(statement, 5, job_id) && bind_id(statement, 6, job_id) &&
-        bind_text(statement, 7, today) && bind_text(statement, 8, today) &&
-        bind_text(statement, 9, work_date) && bind_text(statement, 10, work_date) &&
-        bind_id(statement, 11, user_id);
+        bind_id(statement, 7, job_id) && bind_id(statement, 8, job_id) &&
+        bind_text(statement, 9, today) && bind_text(statement, 10, today) &&
+        bind_text(statement, 11, work_date) && bind_text(statement, 12, work_date) &&
+        bind_id(statement, 13, user_id);
     int result = DB_ERROR;
     while (okay && (result = db_step(statement)) == DB_ROW) {
         DbInt id = db_column_int64(statement, 0);

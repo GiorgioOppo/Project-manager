@@ -1,0 +1,6 @@
+# Exact hosts for the future Google Calendar REST/OAuth integration.
+# No leading dot, wildcard, scheme, path or port.
+# HTTPS tunnels restrict hosts, not encrypted API paths or OAuth scopes.
+accounts.google.com
+oauth2.googleapis.com
+www.googleapis.com

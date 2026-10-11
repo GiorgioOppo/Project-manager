@@ -5,10 +5,18 @@
   const states = { planned: "Da avviare", active: "In corso", paused: "In pausa", completed: "Completata", cancelled: "Annullata" };
   const roles = { manager: "Gestore", worker: "Operatore" };
   const contractStates = { draft: "Bozza", active: "Attivo", expired: "Scaduto", closed: "Chiuso", cancelled: "Annullato" };
-  const tabs = ["jobs", "hours", "suppliers", "contracts", "users", "organization", "audit"];
-  const state = { session: null, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
-  Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
+  const tabs = ["jobs", "hours", "reports", "notifications", "alerts", "suppliers", "contracts", "users", "organization", "audit"];
+  const reportViews = { periodo: { api: "date", label: "Per periodo", title: "Il lavoro nel periodo" }, commesse: { api: "job", label: "Per commessa", title: "Il lavoro per commessa" }, utenti: { api: "user", label: "Per utente", title: "Il lavoro per utente" }, costi: { api: "cost", label: "Valore contratti", title: "Valori contrattuali e lavoro registrato" }, "costo-ore": { api: "labor_cost", label: "Costo delle ore", title: "Il costo stimato delle ore" } };
+  const state = { session: null, sessionRequest: 0, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
+  Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, deleteJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
   Object.assign(state, { organizationGroups: [], organizationRoles: [], organizationUsers: [], organizationReady: false, organizationLoading: false, organizationRequest: 0, selectedGroup: null, groupMembers: [], groupMembersReady: false, groupMembersRequest: 0, organizationBusy: false, organizationConfirm: null, assignmentGroups: [], assignmentRoles: [], groupGrants: [], editingGroupGrant: null, revokeGroupGrant: null });
+  Object.assign(state, { reportView: "periodo", reportFilters: defaultReportFilters(), reportToday: null, reportDefaultsPending: true, reportData: null, reportReady: false, reportLoading: false, reportRequest: 0 });
+  Object.assign(state, { laborRates: [], laborRateUsers: [], laborRatesReady: false, laborRatesLoading: false, laborRatesRequest: 0, editingLaborRate: null, routeHash: null });
+  Object.assign(state, { alertRules: [], alertUsers: [], alertRulesReady: false, alertRulesLoading: false, alertRulesRequest: 0, editingAlertRule: null, runningAlertRule: null, alertSmtpConfigured: false, notifications: [], notificationsReady: false, notificationsLoading: false, notificationsRequest: 0, notificationsUnread: 0, readingNotifications: new Set() });
+  const alertTypes = {
+    invalid_job: { label: "Commessa inesistente", description: "Controlla i tentativi rifiutati di registrare ore su commesse inesistenti o eliminate. Le ore di questi tentativi non sono state salvate." },
+    missing_hours: { label: "Ore giornaliere mancanti", description: "Controlla le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore reali dalla fine della giornata in Europe/Rome. Il monitoraggio parte dalla creazione della regola." }
+  };
   const busyDialogs = new Set();
   let noticeTimer;
 
@@ -63,6 +71,12 @@
     return element;
   }
 
+  function redirectToLogin() {
+    const hash = window.location.hash;
+    const retained = hash.length <= 2048 && /^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) ? hash : "";
+    window.location.replace("/" + retained);
+  }
+
   async function api(path, options = {}) {
     const controller = new AbortController();
     const { timeoutMs = 15000, ...fetchOptions } = options;
@@ -70,7 +84,7 @@
     try {
       const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...fetchOptions, signal: controller.signal });
       if (response.status === 401) {
-        window.location.replace("/");
+        redirectToLogin();
         throw new Error("La sessione è scaduta. Accedi di nuovo.");
       }
       let data;
@@ -82,6 +96,7 @@
         }
         throw new Error(data.error || (response.status === 403 ? "Il tuo account non è abilitato a questa operazione." : "Non siamo riusciti a completare l’operazione. Riprova."));
       }
+      if (fetchOptions.method && fetchOptions.method !== "GET" && /^\/api\/(?:time-entries|jobs|users|contracts|suppliers|groups|job-roles|labor-rates)(?:\/|$|\?)/.test(path)) invalidateReports();
       return data;
     } catch (error) {
       if (error.name === "AbortError") throw new Error("Il server sta impiegando troppo tempo. Controlla la connessione e riprova.");
@@ -122,12 +137,55 @@
 
   function availableTabs() {
     const permissions = { users: "manage_users", audit: "view_audit", suppliers: "manage_suppliers", contracts: "manage_contracts", organization: "manage_groups" };
-    return tabs.filter((tab) => !permissions[tab] || can(permissions[tab]));
+    return tabs.filter((tab) => (tab !== "alerts" || isAlertManager()) && (!permissions[tab] || can(permissions[tab])));
   }
 
   function applySession(session) {
-    if (!session.authenticated) { window.location.replace("/"); return false; }
+    if (!session.authenticated) { redirectToLogin(); return false; }
+    const authorizationChanged = state.session && (state.session.email !== session.email || state.session.role !== session.role || JSON.stringify(state.session.permissions) !== JSON.stringify(session.permissions));
+    if (authorizationChanged) {
+      // Responses started with the previous permissions must not restore its data.
+      state.refreshRequest++;
+      state.entriesRequest++;
+      resetAlertsAndNotifications();
+      state.jobs = [];
+      state.entries = [];
+      state.jobsReady = false;
+      state.entriesReady = false;
+      state.todayMinutes = null;
+      state.todayCount = null;
+      state.deleteEntry = null;
+      state.openEntryAfterJob = false;
+      ["jobs-body", "entries-body"].forEach((id) => $(id).replaceChildren());
+      ["jobs-table-wrap", "jobs-empty", "jobs-table-footer", "entries-table-wrap", "entries-empty"].forEach((id) => { $(id).hidden = true; });
+      ["jobs-loading", "entries-loading"].forEach((id) => { $(id).hidden = false; });
+      ["stat-active", "stat-today", "stat-jobs", "day-total"].forEach((id) => { $(id).textContent = "—"; });
+      $("stat-today").removeAttribute("aria-label");
+      ["nav-jobs-count", "jobs-count"].forEach((id) => { $(id).textContent = "0"; });
+      ["stat-today-caption", "day-entries-count", "jobs-visible-count"].forEach((id) => { $(id).textContent = ""; });
+      ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => { $(id).hidden = true; });
+      document.querySelectorAll(".work-dialog[open]").forEach((dialog) => dialog.close());
+      $("entry-form").reset();
+      $("entry-id").value = "";
+      invalidateReports(true);
+      state.laborRatesRequest++;
+      state.laborRates = [];
+      state.laborRateUsers = [];
+      state.laborRatesReady = false;
+      state.laborRatesLoading = false;
+      state.editingLaborRate = null;
+      $("report-rates-body").replaceChildren();
+      $("labor-rate-form").reset();
+      $("labor-rate-user").replaceChildren();
+      $("report-rates-table-wrap").hidden = true;
+      $("report-rates-empty").hidden = true;
+      $("report-rates-error").hidden = true;
+      $("report-rates-error-text").textContent = "";
+    }
     state.session = session;
+    if (!isReportManager()) state.reportFilters.userId = "";
+    if (!availableReportViews().includes(state.reportView)) state.reportView = "periodo";
+    renderReportControls();
     $("session-name").textContent = session.name || session.email;
     $("session-name").title = session.name || session.email;
     $("session-email").textContent = session.email;
@@ -141,6 +199,20 @@
     $("tab-users").hidden = !can("manage_users");
     $("tab-organization").hidden = !can("manage_groups");
     $("tab-audit").hidden = !can("view_audit");
+    $("tab-alerts").hidden = !isAlertManager();
+    if (!isAlertManager()) {
+      state.alertRulesRequest++;
+      state.alertRules = [];
+      state.alertUsers = [];
+      state.alertRulesReady = false;
+      state.alertRulesLoading = false;
+      state.editingAlertRule = null;
+      state.runningAlertRule = null;
+      $("alert-rules-list").replaceChildren();
+      $("alert-rule-users").replaceChildren();
+      $("alert-rule-emails").value = "";
+      if ($("alert-rule-dialog").open) $("alert-rule-dialog").close();
+    }
     $("new-user").hidden = !can("manage_users");
     document.querySelector(".jobs-table").classList.toggle("jobs-with-assignments", can("manage_assignments"));
     $("entries-actions-heading").hidden = !can("edit_time_entries");
@@ -150,6 +222,8 @@
     if (!can("manage_jobs")) {
       state.openEntryAfterJob = false;
       if ($("job-dialog").open) $("job-dialog").close();
+      if ($("job-delete-dialog").open) $("job-delete-dialog").close();
+      state.deleteJob = null;
     }
     if (!can("edit_time_entries")) {
       if ($("entry-dialog").open && $("entry-id").value) $("entry-dialog").close();
@@ -219,18 +293,27 @@
       if ($("documents-dialog").open) $("documents-dialog").close();
     }
     $("job-contract-field").hidden = !can("manage_contracts");
-    selectTab(availableTabs().includes(state.activeTab) ? state.activeTab : "jobs");
+    selectTab(availableTabs().includes(state.activeTab) ? state.activeTab : "jobs", false, false);
+    if (authorizationChanged && state.activeTab === "reports") writeReportRoute(true);
     renderJobs();
     renderEntries();
     return true;
   }
 
   async function refreshSession() {
-    return applySession(await api("/api/session"));
+    const request = ++state.sessionRequest;
+    const hadSession = state.session !== null;
+    const session = await api("/api/session");
+    if (request !== state.sessionRequest) return Boolean(state.session?.authenticated);
+    if (!applySession(session)) return false;
+    if (hadSession) await refreshAll();
+    return true;
   }
 
-  function selectTab(name, moveFocus = false) {
+  function selectTab(name, moveFocus = false, updateRoute = true) {
     if (!availableTabs().includes(name)) return;
+    const entering = state.activeTab !== name;
+    if (name !== "reports" && state.activeTab === "reports") state.reportRequest++;
     state.activeTab = name;
     tabs.forEach((tab) => {
       const selected = tab === name;
@@ -239,11 +322,411 @@
       $("tab-" + tab).tabIndex = selected ? 0 : -1;
       $("panel-" + tab).hidden = !selected;
     });
+    $("workspace-summary").hidden = ["reports", "alerts", "notifications"].includes(name);
+    const title = name === "reports" ? "Analisi · " + reportViews[state.reportView].label : $("tab-" + name).querySelector("span").textContent;
+    $("workspace-current-view").textContent = title;
+    document.title = title + " · punto";
+    if (updateRoute) {
+      if (name === "reports") writeReportRoute();
+      else if (window.location.hash !== "#" + name) window.history.pushState(null, "", "#" + name);
+      state.routeHash = window.location.hash;
+    }
     if (moveFocus) $("tab-" + name).focus();
+    if (name === "reports" && (entering || !state.reportReady && !state.reportLoading)) refreshReports();
+    if (name === "reports" && state.reportView === "costo-ore" && (entering || !state.laborRatesReady && !state.laborRatesLoading)) refreshLaborRates();
     if (name === "users" && !state.usersReady) refreshUsers();
     if (name === "organization" && !state.organizationReady && !state.organizationLoading) refreshOrganization();
     if (name === "audit" && !state.auditReady && !state.auditLoading) refreshAudit();
+    if (name === "alerts" && (entering || !state.alertRulesReady) && !state.alertRulesLoading) refreshAlertRules();
+    if (name === "notifications" && (entering || !state.notificationsReady) && !state.notificationsLoading) refreshNotifications();
     if (["suppliers", "contracts"].includes(name) && !state[name + "Ready"] && !state[name + "Loading"]) refreshRegistry(name);
+  }
+
+  function isReportManager() {
+    return state.session?.role === "manager";
+  }
+
+  function availableReportViews() {
+    return Object.keys(reportViews).filter((view) => !["costi", "costo-ore"].includes(view) || isReportManager() && can("manage_contracts"));
+  }
+
+  function defaultReportFilters(today = localDate(new Date())) {
+    return { from: today.slice(0, 7) + "-01", to: today, jobId: "", userId: "" };
+  }
+
+  function reportDayNumber(value) {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(0);
+    date.setUTCFullYear(year, month - 1, day);
+    date.setUTCHours(0, 0, 0, 0);
+    return date.getTime() / 86400000;
+  }
+
+  function reportFilterError(filters) {
+    if (!validDate(filters.from) || !validDate(filters.to)) return "Scegli una data iniziale e una data finale valide.";
+    if (filters.from > filters.to) return "La data finale deve essere uguale o successiva alla data iniziale.";
+    if (reportDayNumber(filters.to) - reportDayNumber(filters.from) + 1 > 366) return "Seleziona un periodo di massimo 366 giorni, comprese le date iniziale e finale.";
+    for (const id of [filters.jobId, filters.userId]) {
+      if (id && (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) return "Il collegamento contiene un filtro non valido. Azzera i filtri e riprova.";
+    }
+    return "";
+  }
+
+  function showReportError(message) {
+    $("report-error-text").textContent = message;
+    $("report-error").hidden = false;
+  }
+
+  function invalidateReports(clearFilters = false) {
+    state.reportRequest++;
+    state.reportData = null;
+    state.reportReady = false;
+    state.reportLoading = false;
+    if (clearFilters) { state.reportFilters.jobId = ""; state.reportFilters.userId = ""; }
+    $("report-results").hidden = true;
+    $("report-results").setAttribute("aria-busy", "false");
+    $("report-loading").hidden = true;
+    $("report-error").hidden = true;
+    $("report-body").replaceChildren();
+    $("report-head").replaceChildren();
+    ["report-total-hours", "report-total-entries", "report-total-jobs", "report-total-users", "report-known-value", "report-estimated-cost"].forEach((id) => { $(id).textContent = "—"; });
+    ["report-caption", "report-table-caption", "report-contract-count", "report-unpriced-count", "report-uncontracted-hours", "report-priced-hours", "report-unpriced-hours"].forEach((id) => { $(id).textContent = ""; });
+    renderReportControls();
+  }
+
+  function reportSelectOptions(id, items, selected, label, identify) {
+    const select = $(id);
+    const placeholder = node("option", "", label);
+    placeholder.value = "";
+    select.replaceChildren(placeholder);
+    for (const item of items) {
+      const option = node("option", "", identify(item));
+      option.value = String(item.id);
+      select.append(option);
+    }
+    if (selected && !items.some((item) => String(item.id) === selected)) {
+      const unavailable = node("option", "", `Filtro selezionato (#${selected}) · da verificare`);
+      unavailable.value = selected;
+      select.append(unavailable);
+    }
+    select.value = selected;
+  }
+
+  function renderReportControls() {
+    const manager = isReportManager();
+    $("report-user-field").hidden = !manager;
+    $("report-user").disabled = !manager;
+    $("report-tab-costi").hidden = !availableReportViews().includes("costi");
+    $("report-tab-costo-ore").hidden = !availableReportViews().includes("costo-ore");
+    for (const view of Object.keys(reportViews)) {
+      const selected = view === state.reportView;
+      $("report-tab-" + view).classList.toggle("is-active", selected);
+      $("report-tab-" + view).setAttribute("aria-selected", String(selected));
+      $("report-tab-" + view).tabIndex = selected ? 0 : -1;
+    }
+    $("report-view").setAttribute("aria-labelledby", "report-tab-" + state.reportView);
+    $("report-title").textContent = reportViews[state.reportView].title;
+    $("report-scope").textContent = manager ? "Vista dello spazio di lavoro: tutti gli utenti, oppure la persona selezionata. I totali riguardano soltanto i filtri applicati." : "Vista personale: soltanto le ore del tuo account, comprese quelle già registrate sulle commesse non più abilitate.";
+    $("report-cost-notice").hidden = state.reportView !== "costi";
+    $("report-labor-notice").hidden = state.reportView !== "costo-ore";
+    $("report-rates").hidden = state.reportView !== "costo-ore" || !manager;
+    document.querySelectorAll("[data-report-preset]").forEach((button) => { button.disabled = !state.reportToday; });
+    $("report-from").value = state.reportFilters.from;
+    $("report-to").value = state.reportFilters.to;
+    const options = state.reportData?.options || {};
+    reportSelectOptions("report-job", options.jobs || [], state.reportFilters.jobId, manager ? "Tutte le commesse" : "Tutte le tue commesse con ore", (job) => `${job.code} · ${job.name}`);
+    reportSelectOptions("report-user", manager ? options.users || [] : [], manager ? state.reportFilters.userId : "", "Tutti gli utenti", (user) => `${user.name || user.email}${user.active ? "" : " · Disattivato"}`);
+  }
+
+  function writeReportRoute(replace = false) {
+    const query = new URLSearchParams({ from: state.reportFilters.from, to: state.reportFilters.to });
+    if (state.reportFilters.jobId) query.set("job_id", state.reportFilters.jobId);
+    if (isReportManager() && state.reportFilters.userId) query.set("user_id", state.reportFilters.userId);
+    const hash = "#analisi/" + state.reportView + "?" + query.toString();
+    if (window.location.hash !== hash) window.history[replace ? "replaceState" : "pushState"](null, "", hash);
+    state.routeHash = window.location.hash;
+  }
+
+  function applyReportRoute() {
+    if (!state.session) return;
+    const hash = window.location.hash.slice(1);
+    state.routeHash = window.location.hash;
+    if (hash === "main-content") return;
+    if (!hash.startsWith("analisi")) {
+      const name = availableTabs().includes(hash) ? hash : "jobs";
+      selectTab(name, false, false);
+      return;
+    }
+    const [path, query = ""] = hash.split("?", 2);
+    const candidate = path.split("/")[1] || "periodo";
+    state.reportView = availableReportViews().includes(candidate) ? candidate : "periodo";
+    const params = new URLSearchParams(query);
+    const defaults = defaultReportFilters(state.reportToday || localDate(new Date()));
+    state.reportDefaultsPending = !params.has("from") && !params.has("to");
+    state.reportFilters = { from: params.get("from") ?? defaults.from, to: params.get("to") ?? defaults.to, jobId: params.get("job_id") || "", userId: isReportManager() ? params.get("user_id") || "" : "" };
+    invalidateReports();
+    renderReportControls();
+    selectTab("reports", false, false);
+    writeReportRoute(true);
+  }
+
+  function chooseReportView(view, moveFocus = false) {
+    if (!availableReportViews().includes(view)) return;
+    state.reportView = view;
+    renderReportControls();
+    writeReportRoute();
+    $("workspace-current-view").textContent = "Analisi · " + reportViews[view].label;
+    document.title = "Analisi · " + reportViews[view].label + " · punto";
+    if (moveFocus) $("report-tab-" + view).focus();
+    refreshReports();
+    if (view === "costo-ore") refreshLaborRates();
+  }
+
+  function readReportFilters() {
+    return { from: $("report-from").value, to: $("report-to").value, jobId: $("report-job").value, userId: isReportManager() ? $("report-user").value : "" };
+  }
+
+  function applyReportFilters(filters) {
+    const message = reportFilterError(filters);
+    if (message) { showReportError(message); return false; }
+    state.reportDefaultsPending = false;
+    state.reportFilters = filters;
+    writeReportRoute();
+    renderReportControls();
+    refreshReports();
+    return true;
+  }
+
+  function reportCell(value, numeric = false) {
+    return node("td", numeric ? "report-number" : "", value);
+  }
+
+  function reportDrilldown(label, accessibleLabel, handler) {
+    const button = node("button", "report-row-link", label);
+    button.type = "button";
+    button.setAttribute("aria-label", accessibleLabel);
+    button.addEventListener("click", handler);
+    return button;
+  }
+
+  function renderReportData() {
+    const data = state.reportData;
+    if (!data) return;
+    const summary = data.summary;
+    const cost = state.reportView === "costi";
+    const labor = state.reportView === "costo-ore";
+    $("report-total-hours").textContent = minutesLabel(summary.minutes);
+    $("report-total-entries").textContent = String(summary.entry_count);
+    $("report-total-jobs").textContent = String(summary.job_count);
+    $("report-total-users").textContent = String(summary.user_count);
+    const filters = state.reportFilters;
+    const labels = [filters.from === filters.to ? dateLabel(filters.from) : `${dateLabel(filters.from)} – ${dateLabel(filters.to)}`];
+    if (filters.jobId) labels.push($("report-job").selectedOptions[0]?.textContent || "Commessa selezionata");
+    if (isReportManager() && filters.userId) labels.push($("report-user").selectedOptions[0]?.textContent || "Utente selezionato");
+    labels.push(data.scope === "personal" ? "Le tue ore" : "Tutte le ore filtrate");
+    $("report-caption").textContent = labels.join(" · ");
+    $("report-cost-summary").hidden = !cost;
+    $("report-labor-summary").hidden = !labor;
+    if (cost) {
+      $("report-known-value").textContent = euroLabel(summary.known_value_cents);
+      $("report-contract-count").textContent = `${summary.contract_count} ${Number(summary.contract_count) === 1 ? "contratto distinto collegato" : "contratti distinti collegati"} alle ore filtrate. Ogni contratto viene contato una sola volta.`;
+      $("report-unpriced-count").textContent = Number(summary.unpriced_contract_count) > 0 ? `${summary.unpriced_contract_count} ${Number(summary.unpriced_contract_count) === 1 ? "contratto senza valore indicato" : "contratti senza valore indicato"}: importo sconosciuto, escluso dal totale noto.` : "Tutti i contratti elencati hanno un valore indicato.";
+      $("report-uncontracted-hours").textContent = `${minutesLabel(summary.uncontracted_minutes)} su commesse senza contratto. Queste ore sono comprese nei totali del periodo.`;
+    }
+    if (labor) {
+      const estimated = Number(summary.priced_minutes) > 0 ? euroLabel(summary.estimated_cost_cents) : "Non disponibile";
+      $("report-estimated-cost").textContent = estimated;
+      $("report-priced-hours").textContent = `${minutesLabel(summary.priced_minutes)} coperte da tariffa.`;
+      $("report-unpriced-hours").textContent = Number(summary.unpriced_minutes) > 0 ? `${minutesLabel(summary.unpriced_minutes)} senza tariffa valida: la stima è ${Number(summary.priced_minutes) > 0 ? "parziale" : "non disponibile"}. Le ore senza tariffa non vengono considerate a costo zero.` : "Tutte le ore filtrate sono coperte da tariffa.";
+    }
+    const headers = {
+      periodo: ["Giorno", "Ore", "Registrazioni", "Commesse", "Utenti"],
+      commesse: ["Commessa", "Cliente", "Stato", "Ore", "Registrazioni", "Utenti"],
+      utenti: ["Utente", "Accesso", "Ore", "Registrazioni", "Commesse"],
+      costi: ["Contratto", "Fornitore", "Validità contrattuale", "Valore contrattuale", "Stato", "Commesse con ore", "Ore nel periodo"],
+      "costo-ore": ["Utente", "Commessa", "Ore", "Registrazioni", "Copertura tariffa", "Costo stimato (EUR)"]
+    };
+    const heading = node("tr");
+    for (const label of headers[state.reportView]) {
+      const th = node("th", "", label);
+      th.scope = "col";
+      heading.append(th);
+    }
+    $("report-head").replaceChildren(heading);
+    $("report-body").replaceChildren();
+    const rows = cost ? [...new Map(data.rows.map((row) => [String(row.contract_id), row])).values()] : data.rows;
+    for (const item of rows) {
+      const row = node("tr");
+      if (state.reportView === "periodo") {
+        const day = reportCell();
+        day.append(reportDrilldown(dateLabel(item.date), `Vedi le commesse del ${dateLabel(item.date)}`, () => {
+          state.reportFilters = { ...state.reportFilters, from: item.date, to: item.date };
+          state.reportDefaultsPending = false;
+          chooseReportView("commesse");
+        }));
+        row.append(day, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.job_count), true), reportCell(String(item.user_count), true));
+      } else if (state.reportView === "commesse") {
+        const identity = reportCell();
+        identity.append(reportDrilldown(item.name, `Vedi il periodo per la commessa ${item.code}`, () => {
+          state.reportFilters.jobId = String(item.job_id);
+          chooseReportView("periodo");
+        }), node("span", "report-secondary", item.code));
+        const status = reportCell();
+        status.append(node("span", "status-badge status-" + (Object.hasOwn(states, item.status) ? item.status : "planned"), states[item.status] || item.status));
+        row.append(identity, reportCell(item.client || "—"), status, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.user_count), true));
+      } else if (state.reportView === "utenti") {
+        const identity = reportCell();
+        if (isReportManager()) identity.append(reportDrilldown(item.name || item.email, `Vedi le commesse di ${item.name || item.email}`, () => {
+          state.reportFilters.userId = String(item.user_id);
+          chooseReportView("commesse");
+        }));
+        else identity.append(node("strong", "", item.name || item.email));
+        identity.append(node("span", "report-secondary", item.email));
+        row.append(identity, reportCell(item.active ? "Attivo" : "Disattivato"), reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(String(item.job_count), true));
+      } else if (cost) {
+        const identity = reportCell();
+        identity.append(node("strong", "", item.title), node("span", "report-secondary", item.code));
+        const value = item.value_cents === null || item.value_cents === undefined ? "Non indicato" : euroLabel(item.value_cents);
+        row.append(identity, reportCell(item.supplier_name || "—"), reportCell(contractPeriod(item)), reportCell(value, true), reportCell(contractStates[item.status] || item.status), reportCell(String(item.job_count), true), reportCell(minutesLabel(item.minutes), true));
+      } else {
+        const identity = reportCell();
+        identity.append(node("strong", "", item.name || item.email), node("span", "report-secondary", item.email));
+        const job = reportCell();
+        job.append(node("strong", "", item.job_name), node("span", "report-secondary", item.code));
+        const coverage = Number(item.priced_minutes) > 0 ? `${minutesLabel(item.priced_minutes)} coperte${Number(item.unpriced_minutes) > 0 ? " · " + minutesLabel(item.unpriced_minutes) + " scoperte" : ""}` : "Nessuna tariffa valida";
+        const amount = Number(item.priced_minutes) > 0 && item.cost_cents !== null ? euroLabel(item.cost_cents) + (Number(item.unpriced_minutes) > 0 ? " · Parziale" : "") : "Non disponibile";
+        row.append(identity, job, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(coverage), reportCell(amount, true));
+      }
+      $("report-body").append(row);
+    }
+    $("report-table-caption").textContent = `${reportViews[state.reportView].title}. ${$("report-caption").textContent}`;
+    $("report-table-wrap").hidden = rows.length === 0;
+    $("report-empty").hidden = rows.length !== 0;
+    $("report-empty-text").textContent = cost && Number(summary.uncontracted_minutes) > 0 ? "Le ore filtrate appartengono a commesse senza contratto: non è disponibile un valore contrattuale da mostrare." : "Non ci sono registrazioni per questi filtri. Prova un altro periodo oppure azzera i filtri.";
+    $("report-results").hidden = false;
+  }
+
+  async function refreshReports() {
+    if (state.activeTab !== "reports" || !availableReportViews().includes(state.reportView)) return;
+    const request = ++state.reportRequest;
+    const view = state.reportView;
+    const filters = { ...state.reportFilters };
+    const message = reportFilterError(filters);
+    state.reportReady = false;
+    state.reportData = null;
+    state.reportLoading = false;
+    $("report-loading").hidden = true;
+    $("report-results").setAttribute("aria-busy", "false");
+    $("report-results").hidden = true;
+    $("report-body").replaceChildren();
+    $("report-error").hidden = true;
+    if (message) { showReportError(message); return; }
+    state.reportLoading = true;
+    $("report-loading").hidden = false;
+    $("report-results").setAttribute("aria-busy", "true");
+    const query = new URLSearchParams({ view: reportViews[view].api, from: filters.from, to: filters.to });
+    if (filters.jobId) query.set("job_id", filters.jobId);
+    if (isReportManager() && filters.userId) query.set("user_id", filters.userId);
+    try {
+      const data = await api("/api/reports?" + query.toString());
+      if (request !== state.reportRequest || state.activeTab !== "reports" || view !== state.reportView) return;
+      if (!data.summary || !Array.isArray(data.rows) || !data.options || data.view !== reportViews[view].api || data.from !== filters.from || data.to !== filters.to || !isReportManager() && data.scope !== "personal") throw new Error("Il server ha restituito un’analisi non valida. Riprova.");
+      if (validDate(data.today)) {
+        state.reportToday = data.today;
+        if (state.reportDefaultsPending) {
+          state.reportDefaultsPending = false;
+          const defaults = defaultReportFilters(data.today);
+          if (filters.from !== defaults.from || filters.to !== defaults.to) {
+            state.reportFilters = { ...filters, from: defaults.from, to: defaults.to };
+            renderReportControls();
+            writeReportRoute(true);
+            refreshReports();
+            return;
+          }
+        }
+      }
+      state.reportData = data;
+      state.reportReady = true;
+      renderReportControls();
+      renderReportData();
+    } catch (error) {
+      if (request === state.reportRequest) showReportError(error.message);
+    } finally {
+      if (request === state.reportRequest) {
+        state.reportLoading = false;
+        $("report-loading").hidden = true;
+        $("report-results").setAttribute("aria-busy", "false");
+      }
+    }
+  }
+
+  function renderLaborRates() {
+    if (!isReportManager() || !state.laborRatesReady) return;
+    $("report-rates-body").replaceChildren();
+    for (const rate of state.laborRates) {
+      const row = node("tr");
+      const identity = reportCell();
+      identity.append(node("strong", "", rate.user_name || rate.user_email), node("span", "report-secondary", rate.user_email));
+      const actions = reportCell();
+      actions.append(action("Modifica", `Modifica tariffa di ${rate.user_name || rate.user_email} dal ${dateLabel(rate.starts_on)}`, () => openLaborRate(rate)));
+      row.append(identity, reportCell(euroLabel(rate.hourly_cents) + " / ora", true), reportCell(dateLabel(rate.starts_on)), reportCell(rate.ends_on ? dateLabel(rate.ends_on) : "Senza scadenza"), actions);
+      $("report-rates-body").append(row);
+    }
+    $("report-rates-table-wrap").hidden = state.laborRates.length === 0;
+    $("report-rates-empty").hidden = state.laborRates.length !== 0;
+  }
+
+  async function refreshLaborRates() {
+    if (!isReportManager()) return;
+    const request = ++state.laborRatesRequest;
+    state.laborRatesLoading = true;
+    state.laborRatesReady = false;
+    $("report-rates-loading").hidden = false;
+    $("report-rates-error").hidden = true;
+    $("report-rates-table-wrap").hidden = true;
+    $("report-rates-empty").hidden = true;
+    $("report-new-rate").disabled = true;
+    try {
+      const [data, users] = await Promise.all([api("/api/labor-rates"), api("/api/users")]);
+      if (request !== state.laborRatesRequest || !isReportManager()) return;
+      if (!Array.isArray(data.rates) || !Array.isArray(users.users)) throw new Error("Il server ha restituito un elenco tariffe non valido. Riprova.");
+      state.laborRates = data.rates;
+      state.laborRateUsers = users.users;
+      state.laborRatesReady = true;
+      renderLaborRates();
+    } catch (error) {
+      if (request === state.laborRatesRequest && isReportManager()) {
+        $("report-rates-error-text").textContent = error.message;
+        $("report-rates-error").hidden = false;
+      }
+    } finally {
+      if (request === state.laborRatesRequest) {
+        state.laborRatesLoading = false;
+        $("report-rates-loading").hidden = true;
+        $("report-new-rate").disabled = !state.laborRatesReady;
+      }
+    }
+  }
+
+  function openLaborRate(rate = null) {
+    if (!isReportManager() || !state.laborRatesReady || busyDialogs.has("labor-rate-dialog")) return;
+    state.editingLaborRate = rate;
+    $("labor-rate-form").reset();
+    $("labor-rate-hourly").setCustomValidity("");
+    $("labor-rate-to").setCustomValidity("");
+    $("labor-rate-error").hidden = true;
+    $("labor-rate-dialog-title").textContent = rate ? "Modifica tariffa oraria" : "Nuova tariffa oraria";
+    $("labor-rate-save").textContent = rate ? "Salva modifiche" : "Crea tariffa";
+    reportSelectOptions("labor-rate-user", state.laborRateUsers, rate ? String(rate.user_id) : "", "Seleziona un utente", (user) => `${user.name || user.email}${user.active ? "" : " · Disattivato"}`);
+    $("labor-rate-user").disabled = Boolean(rate);
+    $("labor-rate-from").value = rate?.starts_on || state.reportToday || localDate(new Date());
+    $("labor-rate-to").value = rate?.ends_on || "";
+    if (rate) {
+      const cents = BigInt(rate.hourly_cents);
+      $("labor-rate-hourly").value = `${cents / 100n},${String(cents % 100n).padStart(2, "0")}`;
+    }
+    $("labor-rate-dialog").showModal();
+    $(rate ? "labor-rate-hourly" : "labor-rate-user").focus();
   }
 
   function renderStats() {
@@ -292,6 +775,7 @@
       const row = node("tr");
       const nameCell = node("td");
       nameCell.append(jobIdentity(job.code, job.name));
+      if (isCommonJob(job)) nameCell.querySelector(".job-identity").append(node("span", "job-kind-badge job-kind-common", "Comune · tutti gli utenti"));
       if (can("manage_contracts") && job.contract_id) nameCell.querySelector(".job-identity").append(node("span", "job-contract-label", `Contratto ${job.contract_code || job.contract_id}${job.supplier_name ? " · " + job.supplier_name : ""}`));
       const clientCell = node("td", job.client ? "" : "no-value", job.client || "—");
       const statusCell = node("td");
@@ -322,11 +806,34 @@
     $("clear-filters").hidden = noJobs;
     $("jobs-visible-count").textContent = `${jobs.length} ${jobs.length === 1 ? "commessa" : "commesse"}${jobs.length !== state.jobs.length ? " su " + state.jobs.length : ""}`;
     ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => { $(id).hidden = !can("manage_jobs") && !state.jobs.some(canLogTime); });
+    if ($("entry-dialog").open) renderEntryJobs($("entry-job").value, true);
     renderStats();
   }
 
   function canLogTime(job) {
     return can("manage_jobs") || job.can_log_time === true;
+  }
+
+  function isCommonJob(job) {
+    return job?.is_common === true || job?.is_common === 1;
+  }
+
+  function renderEntryJobs(selectedId = "", notifyUnavailable = false) {
+    const writableJobs = state.jobs.filter(canLogTime);
+    const options = [node("option", "", writableJobs.length ? "Seleziona una commessa" : "Nessuna commessa abilitata")];
+    options[0].value = "";
+    for (const job of writableJobs) {
+      const option = node("option", "", `${job.code} · ${job.name}`);
+      option.value = job.id;
+      options.push(option);
+    }
+    const selectionAvailable = writableJobs.some((job) => String(job.id) === String(selectedId));
+    $("entry-job").replaceChildren(...options);
+    $("entry-job").value = selectionAvailable ? String(selectedId) : "";
+    if (notifyUnavailable && selectedId && !selectionAvailable) {
+      const nextStep = writableJobs.length ? "Scegli una commessa abilitata." : "Chiedi a un gestore di abilitarti a una commessa.";
+      dialogError("entry-error", new Error(`La commessa selezionata non è più abilitata alla registrazione delle ore. ${nextStep} Data, ore e nota sono conservate.`));
+    }
   }
 
   function renderEntries() {
@@ -748,7 +1255,7 @@
         state.revokeAssignment = assignment;
         state.revokeGroupGrant = null;
         $("group-grant-revoke").hidden = true;
-        $("assignment-revoke-description").textContent = `Revocare l’abilitazione di ${assignment.name}? ${assignment.role === "manager" ? "Come gestore manterrà l’accesso alla commessa." : "L’accesso diretto sarà revocato; eventuali abilitazioni ricevute tramite gruppi resteranno valide. Le ore già registrate saranno conservate."}`;
+        $("assignment-revoke-description").textContent = `Revocare l’abilitazione di ${assignment.name}? ${isCommonJob(state.assignmentJob) ? "La commessa è comune: l’utente attivo manterrà il diritto di consultarla e registrare le proprie ore." : assignment.role === "manager" ? "Come gestore manterrà l’accesso alla commessa." : "L’accesso diretto sarà revocato; eventuali abilitazioni ricevute tramite gruppi resteranno valide. Le ore già registrate saranno conservate."}`;
         $("assignment-revoke").hidden = false;
         $("assignment-revoke-cancel").focus();
       }, true));
@@ -801,7 +1308,8 @@
     state.assignmentsReady = false;
     state.revokeAssignment = null;
     $("assignment-dialog-title").textContent = "Abilitazioni · " + job.code;
-    $("assignment-dialog-description").textContent = `${job.name}. Scegli chi può utilizzare questa commessa. Una revoca conserva tutte le ore già registrate.`;
+    $("assignment-dialog-description").textContent = isCommonJob(job) ? `${job.name}. Commessa comune: tutti gli utenti attivi possono consultarla e registrare le proprie ore. Le abilitazioni specifiche saranno applicate se la commessa smette di essere comune.` : `${job.name}. Scegli chi può utilizzare questa commessa. Una revoca conserva tutte le ore già registrate.`;
+    $("assignment-empty").textContent = isCommonJob(job) ? "Nessuna abilitazione specifica. Questa commessa è già disponibile a tutti gli utenti attivi." : "Nessun utente abilitato. Aggiungi una persona dal modulo qui sotto. I gestori hanno comunque accesso a tutte le commesse.";
     $("assignment-list").replaceChildren();
     $("assignment-empty").hidden = true;
     $("assignment-revoke").hidden = true;
@@ -1094,7 +1602,7 @@
         state.revokeGroupGrant = grant;
         state.revokeAssignment = null;
         $("assignment-revoke").hidden = true;
-        $("group-grant-revoke-text").textContent = `Revocare l’abilitazione di ${grant.group_name} e dei suoi sottogruppi? Eventuali abilitazioni dirette o ricevute da altri gruppi restano valide. Le ore già registrate sono conservate.`;
+        $("group-grant-revoke-text").textContent = `Revocare l’abilitazione di ${grant.group_name} e dei suoi sottogruppi? ${isCommonJob(state.assignmentJob) ? "La commessa è comune: tutti gli utenti attivi manterranno il diritto di consultarla e registrare le proprie ore." : "Eventuali abilitazioni dirette o ricevute da altri gruppi restano valide. Le ore già registrate sono conservate."}`;
         $("group-grant-revoke").hidden = false;
         $("group-grant-revoke-cancel").focus();
       }, true));
@@ -1105,23 +1613,300 @@
     setAssignmentBusy(busyDialogs.has("assignment-dialog"));
   }
 
+  function isAlertManager() {
+    return state.session?.role === "manager";
+  }
+
+  function resetAlertsAndNotifications() {
+    state.alertRulesRequest++;
+    state.notificationsRequest++;
+    state.alertRules = [];
+    state.alertUsers = [];
+    state.alertRulesReady = false;
+    state.alertRulesLoading = false;
+    state.editingAlertRule = null;
+    state.runningAlertRule = null;
+    state.alertSmtpConfigured = false;
+    state.notifications = [];
+    state.notificationsReady = false;
+    state.notificationsLoading = false;
+    state.notificationsUnread = 0;
+    state.readingNotifications = new Set();
+    ["alert-rules-list", "alert-rule-users", "notifications-list"].forEach((id) => $(id).replaceChildren());
+    ["alert-rules-count", "notifications-count", "nav-notifications-count"].forEach((id) => { $(id).textContent = "0"; });
+    $("nav-notifications-count").hidden = true;
+    $("alert-rule-form").reset();
+    $("notifications-summary").textContent = "Caricamento delle notifiche…";
+    $("notifications-empty").hidden = true;
+    $("notifications-error").hidden = true;
+  }
+
+  function alertDateTime(value, fallback = "Non ancora eseguita") {
+    if (!value) return fallback;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function setAlertRulesBusy() {
+    const busy = !isAlertManager() || !state.alertRulesReady || state.alertRulesLoading || state.runningAlertRule !== null;
+    $("new-alert-rule").disabled = busy;
+    document.querySelectorAll("[data-new-alert-type]").forEach((button) => { button.disabled = busy; });
+    $("alert-rules-list").querySelectorAll("button").forEach((button) => { button.disabled = busy; });
+    $("alert-rules-refresh").disabled = state.alertRulesLoading || state.runningAlertRule !== null;
+    $("alert-rules-retry").disabled = state.alertRulesLoading;
+  }
+
+  function renderAlertRules() {
+    if (!isAlertManager()) return;
+    $("alert-rules-list").replaceChildren();
+    for (const rule of state.alertRules) {
+      const item = node("li", "alert-rule-card");
+      const heading = node("div", "alert-rule-heading");
+      const enabled = rule.enabled === true || rule.enabled === 1;
+      heading.append(node("h4", "", rule.name), node("span", "status-badge " + (enabled ? "status-active" : "status-paused"), enabled ? "Attiva" : "Sospesa"));
+      const recipients = (rule.recipient_user_ids || []).map((id) => {
+        const user = state.alertUsers.find((candidate) => String(candidate.id) === String(id));
+        return user ? user.name || user.email : "Utente #" + id;
+      });
+      const emails = rule.recipient_emails || [];
+      const meta = node("dl", "alert-rule-details");
+      const fields = [
+        ["Controllo", alertTypes[rule.type]?.label || rule.type],
+        ["Esecuzione", `Ogni giorno alle ${rule.run_time} · Europe/Rome`],
+        ["Notifiche nell’app", recipients.length ? recipients.join(", ") : "Nessun destinatario nell’app"],
+        ["Email", emails.length ? emails.join(", ") + (state.alertSmtpConfigured ? "" : " · invii in attesa") : "Nessun destinatario email"],
+        ["Ultima esecuzione", alertDateTime(rule.last_run_at)],
+        ["Prossima esecuzione", enabled ? alertDateTime(rule.next_run_at, "In programmazione") : "Sospesa"]
+      ];
+      for (const [label, value] of fields) meta.append(node("dt", "", label), node("dd", "", value));
+      const controls = node("div", "row-actions");
+      controls.append(action("Modifica", "Modifica la regola " + rule.name, () => openAlertRule(rule)));
+      controls.append(action(state.runningAlertRule === rule.id ? "Controllo in corso…" : "Esegui ora", "Esegui ora la regola " + rule.name, () => runAlertRule(rule)));
+      item.append(heading, meta, controls);
+      $("alert-rules-list").append(item);
+    }
+    $("alert-rules-count").textContent = state.alertRules.length;
+    $("alert-rules-empty").hidden = !state.alertRulesReady || state.alertRules.length > 0;
+    $("alerts-mail-status").textContent = state.alertSmtpConfigured ? "Il canale email è configurato. Le notifiche nell’app restano disponibili nella sezione Notifiche." : "Email non configurata: gli invii vengono messi in attesa e non vengono spediti. Le notifiche nell’app sono disponibili subito.";
+    setAlertRulesBusy();
+  }
+
+  async function refreshAlertRules() {
+    if (!isAlertManager() || state.alertRulesLoading) return;
+    const request = ++state.alertRulesRequest;
+    state.alertRulesLoading = true;
+    $("alert-rules-loading").hidden = state.alertRulesReady;
+    $("alert-rules-error").hidden = true;
+    $("alert-rules-empty").hidden = true;
+    setAlertRulesBusy();
+    try {
+      const data = await api("/api/alert-rules");
+      if (request !== state.alertRulesRequest || !isAlertManager()) return;
+      if (!Array.isArray(data.rules) || !Array.isArray(data.users)) throw new Error("Il server ha restituito un elenco regole non valido. Riprova.");
+      state.alertRules = data.rules;
+      state.alertUsers = data.users;
+      state.alertSmtpConfigured = data.smtp_configured === true;
+      state.alertRulesReady = true;
+      renderAlertRules();
+    } catch (error) {
+      if (request === state.alertRulesRequest && isAlertManager()) {
+        $("alert-rules-error-text").textContent = error.message;
+        $("alert-rules-error").hidden = false;
+      }
+    } finally {
+      if (request === state.alertRulesRequest) {
+        state.alertRulesLoading = false;
+        $("alert-rules-loading").hidden = true;
+        setAlertRulesBusy();
+      }
+    }
+  }
+
+  function renderAlertRuleTypeHelp() {
+    $("alert-rule-type-help").textContent = alertTypes[$("alert-rule-type").value]?.description || "";
+  }
+
+  function openAlertRule(rule = null, type = "missing_hours") {
+    if (!isAlertManager() || !state.alertRulesReady || state.alertRulesLoading || state.runningAlertRule !== null || busyDialogs.has("alert-rule-dialog")) return;
+    state.editingAlertRule = rule;
+    $("alert-rule-form").reset();
+    $("alert-rule-error").hidden = true;
+    $("alert-rule-emails").setCustomValidity("");
+    $("alert-rule-dialog-title").textContent = rule ? "Modifica regola" : "Nuova regola";
+    $("alert-rule-save").textContent = rule ? "Salva modifiche" : "Crea regola";
+    $("alert-rule-type").value = rule?.type || type;
+    $("alert-rule-name").value = rule?.name || alertTypes[type]?.label || "";
+    $("alert-rule-time").value = rule?.run_time || "09:00";
+    $("alert-rule-enabled").checked = rule ? rule.enabled === true || rule.enabled === 1 : true;
+    $("alert-rule-emails").value = (rule?.recipient_emails || []).join("\n");
+    $("alert-rule-emails-help").textContent = state.alertSmtpConfigured ? "Fino a 50 indirizzi separati da virgole o righe." : "Fino a 50 indirizzi separati da virgole o righe. Email non configurata: gli invii resteranno in attesa, senza spedizione.";
+    const selected = new Set((rule?.recipient_user_ids || []).map(String));
+    const users = [...state.alertUsers];
+    for (const id of selected) if (!users.some((user) => String(user.id) === id)) users.push({ id, name: "Utente #" + id, unavailable: true });
+    $("alert-rule-users").replaceChildren();
+    for (const user of users) {
+      const label = node("label", "alert-recipient-option");
+      const checkbox = node("input");
+      checkbox.type = "checkbox";
+      checkbox.value = user.id;
+      checkbox.checked = selected.has(String(user.id));
+      checkbox.dataset.unavailable = user.unavailable ? "1" : "0";
+      const identity = node("span");
+      identity.append(node("strong", "", user.name || user.email));
+      identity.append(node("span", "", user.unavailable ? "Non più attivo: deselezionalo per salvare" : `${user.email} · ${roles[user.role] || "Operatore"}`));
+      label.append(checkbox, identity);
+      $("alert-rule-users").append(label);
+    }
+    if (!users.length) $("alert-rule-users").append(node("p", "field-help", "Nessun utente attivo disponibile. Puoi impostare destinatari email in attesa di configurazione."));
+    renderAlertRuleTypeHelp();
+    $("alert-rule-dialog").showModal();
+    $("alert-rule-name").focus();
+  }
+
+  function alertRecipientEmails() {
+    const emails = [...new Set($("alert-rule-emails").value.split(/[,\r\n]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
+    if (emails.length > 50) throw new Error("Inserisci al massimo 50 indirizzi email.");
+    for (const email of emails) {
+      if (email.length > 254 || /[^\x21-\x7e]/.test(email) || !/^[^\s@,;<>]+@[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z0-9-]{2,}$/i.test(email) || email.includes("..")) throw new Error(`L’indirizzo “${email}” non è valido. Separa gli indirizzi con virgole o righe.`);
+    }
+    return emails;
+  }
+
+  async function runAlertRule(rule) {
+    if (!isAlertManager() || state.runningAlertRule !== null || state.alertRulesLoading) return;
+    const email = state.session.email;
+    state.runningAlertRule = rule.id;
+    renderAlertRules();
+    try {
+      const result = await post(`/api/alert-rules/${encodeURIComponent(rule.id)}/run`, {});
+      if (!isAlertManager() || state.session.email !== email) return;
+      state.auditReady = false;
+      state.alertRulesRequest++;
+      state.alertRulesLoading = false;
+      state.notificationsRequest++;
+      state.notificationsLoading = false;
+      const count = Number(result.notifications_created) || 0;
+      const queued = Number(result.emails_queued) || 0;
+      showNotice(`Controllo completato: ${count} ${count === 1 ? "nuova notifica nell’app" : "nuove notifiche nell’app"}.${queued ? ` ${queued} email in attesa; nessun invio effettuato.` : ""}`);
+      await Promise.all([refreshAlertRules(), refreshNotifications()]);
+    } catch (error) {
+      if (isAlertManager() && state.session.email === email) showNotice(error.message, true);
+    } finally {
+      if (state.session?.email === email && state.runningAlertRule === rule.id) {
+        state.runningAlertRule = null;
+        renderAlertRules();
+      }
+    }
+  }
+
+  function renderNotifications() {
+    $("notifications-list").replaceChildren();
+    for (const notification of state.notifications) {
+      const unread = !notification.read_at;
+      const item = node("li", "notification-card" + (unread ? " is-unread" : ""));
+      const heading = node("div", "notification-heading");
+      const title = node("h3", "", notification.title);
+      heading.append(title);
+      if (unread) heading.append(node("span", "notification-new-label", "Da leggere"));
+      const created = node("time", "", alertDateTime(notification.created_at, ""));
+      created.dateTime = notification.created_at;
+      item.append(heading, node("p", "notification-message", notification.message), created);
+      if (notification.work_date && validDate(notification.work_date)) item.append(node("p", "notification-context", "Giornata: " + dateLabel(notification.work_date)));
+      if (unread) {
+        const button = action(state.readingNotifications.has(notification.id) ? "Aggiornamento…" : "Segna come letta", "Segna come letta: " + notification.title, () => markNotificationRead(notification));
+        button.disabled = state.readingNotifications.has(notification.id);
+        item.append(button);
+      } else item.append(node("span", "notification-read-label", "Letta il " + alertDateTime(notification.read_at, "")));
+      $("notifications-list").append(item);
+    }
+    $("notifications-count").textContent = state.notifications.length;
+    $("nav-notifications-count").textContent = state.notificationsUnread;
+    $("nav-notifications-count").setAttribute("aria-label", `${state.notificationsUnread} notifiche non lette`);
+    $("nav-notifications-count").hidden = state.notificationsUnread === 0;
+    $("notifications-summary").textContent = (state.notifications.length === 100 ? "Sono mostrati gli ultimi 100 avvisi. " : "") + (state.notificationsUnread ? `${state.notificationsUnread} ${state.notificationsUnread === 1 ? "notifica da leggere" : "notifiche da leggere"}.` : "Hai letto tutti gli avvisi ricevuti.");
+    $("notifications-empty").hidden = !state.notificationsReady || state.notifications.length > 0;
+  }
+
+  async function refreshNotifications() {
+    if (!state.session?.authenticated || state.notificationsLoading) return;
+    const request = ++state.notificationsRequest;
+    state.notificationsLoading = true;
+    $("notifications-loading").hidden = state.notificationsReady;
+    $("notifications-error").hidden = true;
+    $("notifications-refresh").disabled = true;
+    $("notifications-retry").disabled = true;
+    try {
+      const data = await api("/api/notifications");
+      if (request !== state.notificationsRequest) return;
+      if (!Array.isArray(data.notifications) || !Number.isInteger(data.unread_count) || data.unread_count < 0) throw new Error("Il server ha restituito un elenco notifiche non valido. Riprova.");
+      state.notifications = data.notifications;
+      state.notificationsUnread = data.unread_count;
+      state.notificationsReady = true;
+      renderNotifications();
+    } catch (error) {
+      if (request === state.notificationsRequest) {
+        $("notifications-error-text").textContent = error.message;
+        $("notifications-error").hidden = false;
+        if (!state.notificationsReady) $("notifications-summary").textContent = "Le notifiche non sono disponibili. Riprova a caricarle.";
+      }
+    } finally {
+      if (request === state.notificationsRequest) {
+        state.notificationsLoading = false;
+        $("notifications-loading").hidden = true;
+        $("notifications-refresh").disabled = false;
+        $("notifications-retry").disabled = false;
+      }
+    }
+  }
+
+  async function markNotificationRead(notification) {
+    if (state.readingNotifications.has(notification.id)) return;
+    const email = state.session?.email;
+    state.readingNotifications.add(notification.id);
+    renderNotifications();
+    try {
+      await post(`/api/notifications/${encodeURIComponent(notification.id)}/read`, {});
+      if (state.session?.email !== email) return;
+      // A poll started before the mark must not restore the unread version.
+      state.notificationsRequest++;
+      state.notificationsLoading = false;
+      const current = state.notifications.find((item) => item.id === notification.id);
+      if (current && !current.read_at) {
+        current.read_at = new Date().toISOString();
+        state.notificationsUnread = Math.max(0, state.notificationsUnread - 1);
+        renderNotifications();
+      }
+      await refreshNotifications();
+    } catch (error) {
+      if (state.session?.email === email) showNotice(error.message, true);
+    } finally {
+      if (state.session?.email === email) {
+        state.readingNotifications.delete(notification.id);
+        renderNotifications();
+      }
+    }
+  }
+
   const auditActions = {
-    "jobs.create": "Commessa creata", "jobs.update": "Commessa aggiornata",
+    "jobs.create": "Commessa creata", "jobs.update": "Commessa aggiornata", "jobs.delete": "Commessa e ore eliminate",
     "time_entries.create": "Ore registrate", "time_entries.update": "Ore aggiornate", "time_entries.delete": "Ore eliminate",
     "assignments.create": "Utente abilitato", "assignments.update": "Abilitazione aggiornata", "assignments.delete": "Abilitazione revocata",
     "suppliers.create": "Fornitore creato", "suppliers.update": "Fornitore aggiornato",
     "contracts.create": "Contratto creato", "contracts.update": "Contratto aggiornato", "contract_documents.create": "PDF contrattuale archiviato",
+    "labor_rates.create": "Tariffa oraria creata", "labor_rates.update": "Tariffa oraria aggiornata",
+    "alert_rules.create": "Regola alert creata", "alert_rules.update": "Regola alert aggiornata", "alert_rules.run": "Controllo alert eseguito", "alert_rules.trigger": "Controllo alert automatico eseguito",
     "groups.create": "Gruppo creato", "groups.update": "Gruppo aggiornato", "groups.delete": "Gruppo eliminato",
     "group_members.create": "Utente aggiunto al gruppo", "group_members.delete": "Utente rimosso dal gruppo",
     "job_roles.create": "Ruolo commessa creato", "job_roles.update": "Ruolo commessa aggiornato",
     "group_grants.create": "Gruppo abilitato", "group_grants.update": "Abilitazione gruppo aggiornata", "group_grants.delete": "Abilitazione gruppo revocata",
     "users.create": "Utente creato", "users.update": "Utente aggiornato", "system.migration": "Database aggiornato"
   };
-  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", group: "Gruppo", group_member: "Membro gruppo", job_role: "Ruolo commessa", group_grant: "Abilitazione gruppo", system: "Sistema" };
+  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", labor_rate: "Tariffa oraria", alert_rule: "Regola alert", group: "Gruppo", group_member: "Membro gruppo", job_role: "Ruolo commessa", group_grant: "Abilitazione gruppo", system: "Sistema" };
   const auditLabels = {
     parent_id: "ID gruppo padre", group_id: "ID gruppo", group_name: "Gruppo", role_id: "ID ruolo commessa", role_code: "Codice ruolo", role_name: "Ruolo commessa", can_log_time: "Può registrare ore", builtin: "Ruolo predefinito", id: "ID", user_id: "ID utente", job_id: "ID commessa", owner_id: "ID autore", owner: "Account", email: "Email", name: "Nome", role: "Ruolo", active: "Accesso attivo",
-    title: "Titolo", supplier_id: "ID fornitore", supplier_name: "Fornitore", contract_id: "ID contratto", contract_code: "Codice contratto", contract_title: "Contratto", vat_number: "Partita IVA", phone: "Telefono", address: "Indirizzo", notes: "Note", value_cents: "Valore", currency: "Valuta", file_name: "Nome documento", byte_size: "Dimensione",
-    code: "Codice", status: "Stato", description: "Descrizione", client: "Cliente", date: "Giornata", minutes: "Ore lavorate", starts_on: "Abilitato dal", ends_on: "Abilitato fino al",
+    title: "Titolo", supplier_id: "ID fornitore", supplier_name: "Fornitore", contract_id: "ID contratto", contract_code: "Codice contratto", contract_title: "Contratto", vat_number: "Partita IVA", phone: "Telefono", address: "Indirizzo", notes: "Note", value_cents: "Valore", hourly_cents: "Tariffa oraria", currency: "Valuta", file_name: "Nome documento", byte_size: "Dimensione",
+    type: "Tipo di controllo", run_time: "Orario giornaliero", enabled: "Regola attiva", recipient_user_ids: "ID destinatari nell’app", recipient_emails: "Destinatari email", recipient_email_count: "Numero destinatari email", recipient_user_count: "Numero destinatari nell’app", notifications_created: "Notifiche create", emails_queued: "Email in attesa", last_run_at: "Ultima esecuzione", last_run_on: "Giorno ultima esecuzione", next_run_at: "Prossima esecuzione", created_at: "Creata il", updated_at: "Aggiornata il",
+    code: "Codice", status: "Stato", description: "Descrizione", client: "Cliente", is_common: "Commessa comune", deleted_time_entries: "Registrazioni ore eliminate", deleted_minutes: "Ore eliminate", deleted_assignments: "Abilitazioni utenti eliminate", deleted_group_grants: "Abilitazioni gruppi eliminate", date: "Giornata", minutes: "Ore lavorate", starts_on: "Abilitato dal", ends_on: "Abilitato fino al",
     user_name: "Utente", user_email: "Email utente", job_name: "Commessa", job_code: "Codice commessa", note: "Attività / nota", version: "Versione", schema_version: "Versione database", migrated_entries: "Registrazioni migrate", migrated_users: "Utenti migrati", mapped_entries: "Registrazioni collegate agli utenti", archived_entries: "Registrazioni storiche conservate"
   };
 
@@ -1130,20 +1915,29 @@
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("it-IT", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
-  function auditValue(key, value) {
+  function auditValue(key, value, entityType) {
     if (value === null || value === undefined || value === "") return "—";
-    if (key === "minutes") return minutesLabel(value);
+    if (key === "minutes" || key === "deleted_minutes") return minutesLabel(value);
     if (key === "value_cents") return euroLabel(value);
+    if (key === "hourly_cents") return euroLabel(value) + " / ora";
     if (key === "byte_size") return fileSize(value);
     if (key === "role") return roles[value] || String(value);
-    if (key === "status") return states[value] || contractStates[value] || String(value);
+    if (key === "status") {
+      const catalogue = entityType === "contract" ? contractStates : entityType === "job" ? states : null;
+      return catalogue?.[value] || String(value);
+    }
     if (key === "active") return value === true || value === 1 || value === "1" ? "Attivo" : "Disattivato";
+    if (key === "is_common") return value === true || value === 1 || value === "1" ? "Sì" : "No";
+    if (key === "enabled") return value === true || value === 1 || value === "1" ? "Attiva" : "Sospesa";
+    if (key === "type" && entityType === "alert_rule") return alertTypes[value]?.label || String(value);
+    if (["last_run_at", "next_run_at", "created_at", "updated_at"].includes(key) && entityType === "alert_rule") return alertDateTime(value, "—");
+    if (key === "last_run_on" && validDate(String(value))) return dateLabel(value);
     if (["date", "starts_on", "ends_on"].includes(key) && validDate(String(value))) return dateLabel(value);
     if (typeof value === "boolean") return value ? "Sì" : "No";
     return String(value);
   }
 
-  function auditSnapshot(snapshot, title) {
+  function auditSnapshot(snapshot, title, entityType) {
     const section = node("section", "audit-snapshot");
     section.append(node("h4", "", title));
     if (!snapshot || typeof snapshot !== "object") {
@@ -1151,12 +1945,17 @@
       return section;
     }
     const list = node("dl");
-    function addFields(fields, prefix = "", depth = 0) {
+    function addFields(fields, prefix = "", depth = 0, fieldEntityType = entityType) {
       for (const [key, value] of Object.entries(fields)) {
         if (/password|hash|salt|token|secret/i.test(key)) continue;
-        const label = prefix + (auditLabels[key] || key.replaceAll("_", " "));
-        if (value && typeof value === "object" && !Array.isArray(value) && depth < 3) { addFields(value, label + " · ", depth + 1); continue; }
-        list.append(node("dt", "", label), node("dd", "", Array.isArray(value) ? value.map((item) => typeof item === "object" ? "Elemento" : auditValue(key, item)).join(", ") : auditValue(key, value)));
+        const contextualLabel = fieldEntityType === "labor_rate" && key === "starts_on" ? "Valida dal" : fieldEntityType === "labor_rate" && key === "ends_on" ? "Valida al" : null;
+        const label = prefix + (contextualLabel || auditLabels[key] || key.replaceAll("_", " "));
+        if (value && typeof value === "object" && !Array.isArray(value) && depth < 3) {
+          const nestedType = key === "contract" ? "contract" : key === "job" ? "job" : null;
+          addFields(value, label + " · ", depth + 1, nestedType);
+          continue;
+        }
+        list.append(node("dt", "", label), node("dd", "", Array.isArray(value) ? value.map((item) => typeof item === "object" ? "Elemento" : auditValue(key, item, fieldEntityType)).join(", ") : auditValue(key, value, fieldEntityType)));
       }
     }
     addFields(snapshot);
@@ -1175,7 +1974,7 @@
       time.dateTime = event.created_at;
       top.append(title, time);
       const snapshot = event.after || event.before || {};
-      const subject = snapshot.job_name || snapshot.name || snapshot.job_code || snapshot.code;
+      const subject = snapshot.job_name || snapshot.name || snapshot.user_name || snapshot.user_email || snapshot.job_code || snapshot.code;
       const type = auditTypes[event.entity_type] || "Elemento";
       const object = `${type}${event.entity_id ? " #" + event.entity_id : ""}${subject ? " · " + subject : ""}`;
       const actor = event.actor_name || event.actor_email || "Sistema";
@@ -1183,7 +1982,7 @@
       const details = node("details", "audit-details");
       details.append(node("summary", "", "Visualizza prima e dopo"));
       const snapshots = node("div", "audit-snapshots");
-      snapshots.append(auditSnapshot(event.before, "Prima"), auditSnapshot(event.after, "Dopo"));
+      snapshots.append(auditSnapshot(event.before, "Prima", event.entity_type), auditSnapshot(event.after, "Dopo", event.entity_type));
       details.append(snapshots);
       item.append(top, node("p", "audit-object", object), byline, details);
       $("audit-list").append(item);
@@ -1275,6 +2074,7 @@
   }
 
   async function refreshAll() {
+    invalidateReports();
     const request = ++state.refreshRequest;
     $("load-error").hidden = true;
     $("retry-load").disabled = true;
@@ -1289,12 +2089,14 @@
       if (!state.jobsReady) $("jobs-loading").textContent = "Le commesse non sono disponibili. Usa Riprova per ricaricare i dati.";
       showLoadError(error);
     });
-    const tasks = [jobsTask, refreshEntries()];
+    const tasks = [jobsTask, refreshEntries(), refreshNotifications()];
     if (can("manage_users")) tasks.push(refreshUsers());
     if (can("manage_suppliers")) tasks.push(refreshRegistry("suppliers"));
     if (can("manage_contracts")) tasks.push(refreshRegistry("contracts"));
     if (can("manage_groups") && state.activeTab === "organization") tasks.push(refreshOrganization());
     if (can("view_audit") && state.activeTab === "audit") tasks.push(refreshAudit());
+    if (isAlertManager() && state.activeTab === "alerts") tasks.push(refreshAlertRules());
+    if (state.activeTab === "reports") tasks.push(refreshReports());
     if (state.selectedDate !== localDate(new Date())) {
       tasks.push(api("/api/time-entries?date=" + localDate(new Date())).then((data) => {
         if (request !== state.refreshRequest) return;
@@ -1326,6 +2128,8 @@
     $("job-form").reset();
     $("job-error").hidden = true;
     $("job-id").value = job ? job.id : "";
+    $("job-common").checked = isCommonJob(job);
+    $("job-delete-field").hidden = !job;
     $("job-dialog-title").textContent = job ? "Modifica commessa" : "Nuova commessa";
     $("job-save").textContent = job ? "Salva modifiche" : "Crea commessa";
     if (job) {
@@ -1335,6 +2139,14 @@
     $("job-dialog").showModal();
     $("job-code").focus();
     if (can("manage_contracts") && !state.contractsReady) loadJobContracts();
+  }
+
+  function openDeleteJob() {
+    if (!requirePermission("manage_jobs") || !state.editingJob || busyDialogs.has("job-dialog") || busyDialogs.has("job-delete-dialog")) return;
+    state.deleteJob = state.editingJob;
+    $("job-delete-error").hidden = true;
+    $("job-delete-description").textContent = `Stai per eliminare definitivamente “${state.deleteJob.name}” (${state.deleteJob.code}).`;
+    $("job-delete-dialog").showModal();
   }
 
   function openEntry(entry = null, jobId = "") {
@@ -1356,15 +2168,7 @@
     $("entry-id").value = entry ? entry.id : "";
     $("entry-dialog-title").textContent = entry ? "Modifica registrazione" : "Registra ore";
     $("entry-save").textContent = entry ? "Salva modifiche" : "Salva ore";
-    const options = [node("option", "", "Seleziona una commessa")];
-    options[0].value = "";
-    for (const job of writableJobs) {
-      const option = node("option", "", `${job.code} · ${job.name}`);
-      option.value = job.id;
-      options.push(option);
-    }
-    $("entry-job").replaceChildren(...options);
-    $("entry-job").value = entry ? entry.job_id : jobId;
+    renderEntryJobs(entry ? entry.job_id : jobId);
     $("entry-date").value = entry ? entry.date : state.activeTab === "hours" ? state.selectedDate : localDate(new Date());
     if (entry) {
       $("entry-hours").value = `${Math.floor(entry.minutes / 60)}:${String(entry.minutes % 60).padStart(2, "0")}`;
@@ -1435,6 +2239,7 @@
     $("job-error").hidden = true;
     const id = $("job-id").value;
     const fields = Object.fromEntries(["code", "name", "client", "description", "status"].map((field) => [field, $("job-" + field).value]));
+    fields.is_common = $("job-common").checked ? "1" : "0";
     if (can("manage_contracts")) fields.contract_id = $("job-contract").value;
     const followWithEntry = state.openEntryAfterJob && !id;
     dialogBusy("job-dialog", true, "job-save", id ? "Salva modifiche" : "Crea commessa");
@@ -1450,6 +2255,85 @@
     } finally {
       dialogBusy("job-dialog", false, "job-save", id ? "Salva modifiche" : "Crea commessa");
       state.openEntryAfterJob = false;
+    }
+  });
+
+  $("new-alert-rule").addEventListener("click", () => openAlertRule());
+  document.querySelectorAll("[data-new-alert-type]").forEach((button) => {
+    button.addEventListener("click", () => openAlertRule(null, button.dataset.newAlertType));
+  });
+  $("alert-rules-refresh").addEventListener("click", refreshAlertRules);
+  $("alert-rules-retry").addEventListener("click", refreshAlertRules);
+  $("notifications-refresh").addEventListener("click", refreshNotifications);
+  $("notifications-retry").addEventListener("click", refreshNotifications);
+  $("alert-rule-type").addEventListener("change", renderAlertRuleTypeHelp);
+  $("alert-rule-emails").addEventListener("input", () => $("alert-rule-emails").setCustomValidity(""));
+  $("alert-rule-dialog").addEventListener("close", () => { state.editingAlertRule = null; });
+  $("alert-rule-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!isAlertManager() || busyDialogs.has("alert-rule-dialog")) return;
+    $("alert-rule-name").value = $("alert-rule-name").value.trim();
+    $("alert-rule-emails").setCustomValidity("");
+    if (!$("alert-rule-form").reportValidity()) return;
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test($("alert-rule-time").value)) { dialogError("alert-rule-error", new Error("Scegli un orario valido, con ore e minuti.")); return; }
+    let emails;
+    try { emails = alertRecipientEmails(); } catch (error) {
+      $("alert-rule-emails").setCustomValidity(error.message);
+      $("alert-rule-emails").reportValidity();
+      return;
+    }
+    const selected = [...$("alert-rule-users").querySelectorAll("input:checked")];
+    if (selected.some((checkbox) => checkbox.dataset.unavailable === "1")) { dialogError("alert-rule-error", new Error("Deseleziona gli utenti non più attivi prima di salvare la regola.")); return; }
+    if (selected.length > 50) { dialogError("alert-rule-error", new Error("Seleziona al massimo 50 utenti destinatari.")); return; }
+    if (!selected.length && !emails.length) { dialogError("alert-rule-error", new Error("Scegli almeno un utente destinatario oppure inserisci un indirizzo email.")); return; }
+    const id = state.editingAlertRule?.id;
+    const email = state.session.email;
+    const fields = { name: $("alert-rule-name").value, type: $("alert-rule-type").value, run_time: $("alert-rule-time").value, enabled: $("alert-rule-enabled").checked ? "1" : "0", recipient_user_ids: selected.map((checkbox) => checkbox.value).join(","), recipient_emails: emails.join(",") };
+    $("alert-rule-error").hidden = true;
+    dialogBusy("alert-rule-dialog", true, "alert-rule-save", id ? "Salva modifiche" : "Crea regola");
+    try {
+      await post("/api/alert-rules" + (id ? "/" + encodeURIComponent(id) : ""), fields);
+      if (!isAlertManager() || state.session.email !== email) return;
+      state.auditReady = false;
+      $("alert-rule-dialog").close();
+      state.alertRulesRequest++;
+      state.alertRulesLoading = false;
+      showNotice(id ? "Regola aggiornata." : fields.enabled === "1" ? "Regola creata. La prossima esecuzione è indicata nell’elenco." : "Regola creata e sospesa. Puoi attivarla o eseguire un controllo manuale.");
+      await refreshAlertRules();
+    } catch (error) {
+      if (isAlertManager() && state.session.email === email) dialogError("alert-rule-error", error);
+    } finally {
+      dialogBusy("alert-rule-dialog", false, "alert-rule-save", id ? "Salva modifiche" : "Crea regola");
+    }
+  });
+
+  $("job-delete").addEventListener("click", openDeleteJob);
+  $("job-delete-dialog").addEventListener("close", () => { state.deleteJob = null; });
+  $("job-delete-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!requirePermission("manage_jobs") || !state.deleteJob || busyDialogs.has("job-delete-dialog")) return;
+    const job = state.deleteJob;
+    $("job-delete-error").hidden = true;
+    dialogBusy("job-delete-dialog", true, "job-delete-save", "Elimina commessa e ore");
+    $("job-delete-save").textContent = "Eliminazione…";
+    try {
+      await api("/api/jobs/" + encodeURIComponent(job.id), { method: "DELETE" });
+      state.auditReady = false;
+      state.openEntryAfterJob = false;
+      $("job-delete-dialog").close();
+      $("job-dialog").close();
+      if (String(state.assignmentJob?.id) === String(job.id)) {
+        state.assignmentRequest++;
+        state.assignmentJob = null;
+        state.assignmentsReady = false;
+        $("assignment-dialog").close();
+      }
+      showNotice(`Commessa “${job.name}” eliminata insieme a tutte le ore e alle abilitazioni collegate.`);
+      await refreshAll();
+    } catch (error) {
+      dialogError("job-delete-error", error);
+    } finally {
+      dialogBusy("job-delete-dialog", false, "job-delete-save", "Elimina commessa e ore");
     }
   });
 
@@ -1534,6 +2418,18 @@
     try {
       await post("/api/users" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
+      state.organizationRequest++;
+      state.groupMembersRequest++;
+      state.organizationReady = false;
+      state.groupMembersReady = false;
+      state.organizationLoading = false;
+      state.organizationConfirm = null;
+      state.organizationUsers = [];
+      state.groupMembers = [];
+      $("organization-content").hidden = true;
+      $("organization-loading").hidden = true;
+      $("organization-confirm").hidden = true;
+      $("group-members").replaceChildren();
       $("user-dialog").close();
       if (editingSelf && !await refreshSession()) return;
       showNotice(id ? "Utente aggiornato." : "Utente creato. L’account è pronto per accedere.");
@@ -1837,6 +2733,94 @@
     }
   });
 
+  $("report-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!$("report-form").reportValidity()) return;
+    applyReportFilters(readReportFilters());
+  });
+  $("report-reset").addEventListener("click", () => {
+    state.reportFilters = defaultReportFilters(state.reportToday || localDate(new Date()));
+    state.reportDefaultsPending = !state.reportToday;
+    renderReportControls();
+    writeReportRoute();
+    refreshReports();
+  });
+  $("report-retry").addEventListener("click", () => {
+    if (!$("report-form").reportValidity()) return;
+    applyReportFilters(readReportFilters());
+  });
+  for (const view of Object.keys(reportViews)) {
+    $("report-tab-" + view).addEventListener("click", () => chooseReportView(view));
+    $("report-tab-" + view).addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const available = availableReportViews();
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next = event.key === "Home" ? available[0] : event.key === "End" ? available[available.length - 1] : available[(available.indexOf(view) + direction + available.length) % available.length];
+      chooseReportView(next, true);
+    });
+  }
+  document.querySelectorAll("[data-report-preset]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.reportToday) return;
+      const today = state.reportToday;
+      const filters = { ...readReportFilters(), from: today, to: today };
+      if (button.dataset.reportPreset === "month") filters.from = today.slice(0, 7) + "-01";
+      if (button.dataset.reportPreset === "week") {
+        const date = new Date(reportDayNumber(today) * 86400000);
+        date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+        filters.from = date.toISOString().slice(0, 10);
+      }
+      applyReportFilters(filters);
+    });
+  });
+  const onReportRouteChange = () => { if (window.location.hash !== state.routeHash) applyReportRoute(); };
+  window.addEventListener("hashchange", onReportRouteChange);
+  window.addEventListener("popstate", onReportRouteChange);
+  $("report-new-rate").addEventListener("click", () => openLaborRate());
+  $("report-rates-retry").addEventListener("click", refreshLaborRates);
+  $("labor-rate-hourly").addEventListener("input", () => $("labor-rate-hourly").setCustomValidity(""));
+  ["labor-rate-from", "labor-rate-to"].forEach((id) => $(id).addEventListener("input", () => $("labor-rate-to").setCustomValidity("")));
+  $("labor-rate-dialog").addEventListener("close", () => {
+    state.editingLaborRate = null;
+    $("labor-rate-form").reset();
+    $("labor-rate-user").replaceChildren();
+    $("labor-rate-error").hidden = true;
+  });
+  $("labor-rate-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!isReportManager() || busyDialogs.has("labor-rate-dialog")) return;
+    const editing = state.editingLaborRate;
+    $("labor-rate-hourly").setCustomValidity("");
+    $("labor-rate-to").setCustomValidity("");
+    let cents;
+    try {
+      cents = valueToCents($("labor-rate-hourly").value);
+      if (cents === "" || BigInt(cents) > 99999999n) throw new Error("Inserisci una tariffa da 0 a 999.999,99 EUR, con al massimo due decimali.");
+    } catch (error) { $("labor-rate-hourly").setCustomValidity(error.message); }
+    const from = $("labor-rate-from").value;
+    const to = $("labor-rate-to").value;
+    if (!validDate(from) || to && !validDate(to)) { dialogError("labor-rate-error", new Error("Scegli date valide per la tariffa.")); return; }
+    if (to && from > to) $("labor-rate-to").setCustomValidity("La data finale deve essere uguale o successiva alla data iniziale.");
+    if (!$("labor-rate-form").reportValidity()) return;
+    const fields = { user_id: editing ? String(editing.user_id) : $("labor-rate-user").value, hourly_cents: cents, starts_on: from, ends_on: to, currency: "EUR" };
+    $("labor-rate-error").hidden = true;
+    dialogBusy("labor-rate-dialog", true, "labor-rate-save", editing ? "Salva modifiche" : "Crea tariffa");
+    try {
+      await post("/api/labor-rates" + (editing ? "/" + encodeURIComponent(editing.id) : ""), fields);
+      if (!isReportManager()) return;
+      state.auditReady = false;
+      $("labor-rate-dialog").close();
+      showNotice(editing ? "Tariffa aggiornata. Le stime sono state ricalcolate." : "Tariffa creata. Le ore nel periodo di validità sono ora valorizzate.");
+      await Promise.all([refreshReports(), refreshLaborRates()]);
+    } catch (error) {
+      if (isReportManager() && $("labor-rate-dialog").open) dialogError("labor-rate-error", error);
+    } finally {
+      dialogBusy("labor-rate-dialog", false, "labor-rate-save", editing ? "Salva modifiche" : "Crea tariffa");
+      $("labor-rate-user").disabled = Boolean(editing) || !isReportManager();
+    }
+  });
+
   $("new-supplier").addEventListener("click", () => openSupplier());
   $("new-contract").addEventListener("click", () => openContract());
   $("supplier-search").addEventListener("input", renderSuppliers);
@@ -1920,12 +2904,14 @@
   const updateTabOrientation = () => document.querySelector(".app-navigation").setAttribute("aria-orientation", mobileNavigation.matches ? "horizontal" : "vertical");
   updateTabOrientation();
   mobileNavigation.addEventListener("change", updateTabOrientation);
+  window.setInterval(() => { if (state.session?.authenticated && !document.hidden) refreshNotifications(); }, 60000);
 
   async function initialize() {
     try {
       if (!await refreshSession()) return;
       $("session-status").hidden = true;
       $("workspace").hidden = false;
+      applyReportRoute();
       await refreshAll();
     } catch (error) {
       $("session-status").textContent = error.message + " Ricarica la pagina per riprovare.";

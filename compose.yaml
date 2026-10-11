@@ -10,6 +10,19 @@ services:
       BIND_HOST: "172.30.20.10"
       PUBLIC_DIR: /app/public
       TZ: Europe/Rome
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: localhost,127.0.0.1,::1,app,db-proxy,db,db2,db3,documents,mail-api,mail-addon,calendar-api,calendar-addon,172.30.20.10,172.30.60.2,172.30.70.2
+      no_proxy: localhost,127.0.0.1,::1,app,db-proxy,db,db2,db3,documents,mail-api,mail-addon,calendar-api,calendar-addon,172.30.20.10,172.30.60.2,172.30.70.2
+      MAIL_API_URL: https://mail-api:8090
+      MAIL_API_TOKEN_FILE: /run/secrets/mail_api_token
+      MAIL_API_CA_FILE: /etc/punto/tls/ca.crt
+      MAIL_API_NAMESPACE: "${MAIL_API_NAMESPACE:-punto-alerts-v1}"
+      CALENDAR_API_URL: https://calendar-api:8091
+      CALENDAR_API_TOKEN_FILE: /run/secrets/calendar_api_token
+      CALENDAR_API_CA_FILE: /etc/punto/tls/ca.crt
       DB_HOST: db-proxy
       DB_PORT: "3306"
       DB_NAME: "${MYSQL_DATABASE:-punto}"
@@ -26,6 +39,12 @@ services:
       PUNTO_EMAIL: "${PUNTO_EMAIL:?Imposta PUNTO_EMAIL nel file .env.docker}"
       PUNTO_PASSWORD: "${PUNTO_PASSWORD:?Imposta PUNTO_PASSWORD nel file .env.docker}"
     depends_on:
+      squid:
+        condition: service_healthy
+      mail-addon:
+        condition: service_healthy
+      calendar-addon:
+        condition: service_healthy
       db-proxy:
         condition: service_healthy
       documents:
@@ -41,6 +60,9 @@ services:
       - no-new-privileges:true
     volumes:
       - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
+    secrets:
+      - mail_api_token
+      - calendar_api_token
     sysctls:
       net.ipv4.ip_forward: "0"
       net.ipv6.conf.all.forwarding: "0"
@@ -51,6 +73,175 @@ services:
       backend_app:
         ipv4_address: 172.30.30.10
         interface_name: backend_app
+      app_egress:
+        ipv4_address: 172.30.40.10
+        interface_name: app_egress
+      mail_api:
+        ipv4_address: 172.30.60.10
+        interface_name: mail_api
+      calendar_api:
+        ipv4_address: 172.30.70.10
+        interface_name: calendar_api
+
+  calendar-addon:
+    build:
+      context: ./calendar-addon
+    environment:
+      CALENDAR_BIND: 172.30.70.2
+      CALENDAR_PORT: "8091"
+      CALENDAR_ALLOWED_CLIENT: 172.30.70.10
+      CALENDAR_API_TOKEN_FILE: /run/secrets/calendar_api_token
+      CALENDAR_TOKEN_KEY_FILE: /run/secrets/calendar_token_key
+      CALENDAR_TLS_CERT_FILE: /etc/punto/tls/calendar-addon.crt
+      CALENDAR_TLS_KEY_FILE: /etc/punto/tls/calendar-addon.key
+      CALENDAR_DB_PATH: /var/lib/punto-calendar/calendar.sqlite3
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET_FILE: /run/secrets/google_client_secret
+      GOOGLE_REDIRECT_URI: "${GOOGLE_REDIRECT_URI:-}"
+      CALENDAR_PROXY_URL: http://squid:3128
+      CALENDAR_SYNC_INTERVAL: "${CALENDAR_SYNC_INTERVAL:-300}"
+      CALENDAR_HTTP_TIMEOUT: "10"
+    depends_on:
+      squid:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    secrets:
+      - calendar_api_token
+      - calendar_token_key
+      - google_client_secret
+    volumes:
+      - calendar_addon_data:/var/lib/punto-calendar
+      - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
+      - ./data/network-tls/calendar-addon.crt:/etc/punto/tls/calendar-addon.crt:ro
+      - ./data/network-tls/calendar-addon.key:/etc/punto/tls/calendar-addon.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "--noproxy", "*", "--fail", "--silent", "--show-error", "--max-time", "3", "--cacert", "/etc/punto/tls/ca.crt", "https://172.30.70.2:8091/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      calendar_api:
+        ipv4_address: 172.30.70.2
+        interface_name: calendar_api
+        aliases:
+          - calendar-api
+      app_egress:
+        ipv4_address: 172.30.40.12
+        interface_name: app_egress
+
+  mail-addon:
+    build:
+      context: ./addon
+    environment:
+      MAIL_BIND: 172.30.60.2
+      MAIL_PORT: "8090"
+      MAIL_ALLOWED_CLIENT: 172.30.60.10
+      MAIL_API_TOKEN_FILE: /run/secrets/mail_api_token
+      MAIL_TLS_CERT_FILE: /etc/punto/tls/mail-addon.crt
+      MAIL_TLS_KEY_FILE: /etc/punto/tls/mail-addon.key
+      MAIL_LEDGER_PATH: /var/lib/punto-mailer/delivery.sqlite3
+      MAIL_SMTP_HOST: "${MAIL_SMTP_HOST:-}"
+      MAIL_SMTP_PORT: "${MAIL_SMTP_PORT:-587}"
+      MAIL_SMTP_MODE: "${MAIL_SMTP_MODE:-starttls}"
+      MAIL_SMTP_FROM: "${MAIL_SMTP_FROM:-}"
+      MAIL_SMTP_USER: "${MAIL_SMTP_USER:-}"
+      MAIL_SMTP_PASSWORD_FILE: /run/secrets/mail_smtp_password
+      MAIL_PROXY_URL: http://squid:3128
+      MAIL_SMTP_TIMEOUT: "20"
+    depends_on:
+      squid:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    secrets:
+      - mail_api_token
+      - mail_smtp_password
+    volumes:
+      - mail_addon_data:/var/lib/punto-mailer
+      - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
+      - ./data/network-tls/mail-addon.crt:/etc/punto/tls/mail-addon.crt:ro
+      - ./data/network-tls/mail-addon.key:/etc/punto/tls/mail-addon.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "--noproxy", "*", "--fail", "--silent", "--show-error", "--max-time", "3", "--cacert", "/etc/punto/tls/ca.crt", "https://172.30.60.2:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      mail_api:
+        ipv4_address: 172.30.60.2
+        interface_name: mail_api
+        aliases:
+          - mail-api
+      app_egress:
+        ipv4_address: 172.30.40.11
+        interface_name: app_egress
+
+  squid:
+    build:
+      context: ./docker/squid
+    restart: unless-stopped
+    stop_grace_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./docker/squid/squid.conf:/etc/squid/squid.conf:ro
+      - ./docker/squid/allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
+      - ./docker/squid/allowed-smtp-domains.txt:/etc/squid/allowed-smtp-domains.txt:ro
+      - ./docker/squid/denied-destinations.txt:/etc/squid/denied-destinations.txt:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/proxy-health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    networks:
+      app_egress:
+        ipv4_address: 172.30.40.2
+        interface_name: app_egress
+      proxy_wan:
+        ipv4_address: 172.30.50.2
+        interface_name: proxy_wan
+        gw_priority: 100
 
   nginx-proxy-manager:
     build:
@@ -290,11 +481,25 @@ services:
         interface_name: backend_app
 
 volumes:
+  mail_addon_data:
+  calendar_addon_data:
   mysql_data:
   mysql_data_2:
   mysql_data_3:
   documents_data:
   documents_config:
+
+secrets:
+  mail_api_token:
+    file: ./data/addon-secrets/mail-api-token
+  mail_smtp_password:
+    file: ./data/addon-secrets/smtp-password
+  calendar_api_token:
+    file: ./data/addon-secrets/calendar-api-token
+  calendar_token_key:
+    file: ./data/addon-secrets/calendar-token-key
+  google_client_secret:
+    file: ./data/addon-secrets/google-client-secret
 
 networks:
   public:
@@ -318,3 +523,32 @@ networks:
     ipam:
       config:
         - subnet: 172.30.30.0/24
+  app_egress:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.40.0/24
+  proxy_wan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.50.0/24
+  mail_api:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.60.0/24
+  calendar_api:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.70.0/24

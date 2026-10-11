@@ -1,0 +1,4 @@
+# SMTP is not configured. This reserved, unresolvable name enables no real host.
+# Replace with the exact SMTP hostname when configuring the mail addon.
+# No leading dot, wildcard, scheme, path, IP literal or port.
+smtp-not-configured.invalid

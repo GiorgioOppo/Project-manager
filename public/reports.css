@@ -1,0 +1,100 @@
+/* Shared layout for period, project, person and contract analysis. */
+#panel-reports { min-width:0; }
+#panel-reports .panel-heading { align-items:flex-start; }
+.report-tabs { display:flex; flex-wrap:wrap; gap:6px; margin:0 28px 24px; padding:5px; border:1px solid #dce2d4; border-radius:9px; background:#f1f3eb; }
+.report-tab { flex:1 1 130px; min-height:42px; padding:10px 14px; border:1px solid transparent; border-radius:6px; background:transparent; color:#53664b; font-weight:600!important; cursor:pointer; }
+.report-tab:hover { background:#e7eddf; }
+.report-tab.is-active { color:#2c4431; background:#fffefa; border-color:#d8dfcf; box-shadow:0 1px 3px #283b3309; }
+.report-tab:focus-visible,.report-preset:focus-visible,#panel-reports .button:focus-visible { outline:3px solid #a84430; outline-offset:3px; }
+.report-filters { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin:0 28px; padding:20px; border:1px solid #dfe5d6; border-radius:9px; background:#fafbf6; }
+.report-filters .work-field { min-width:0; margin:0; }
+.report-filters label { color:#445a3d; font-size:12px; }
+.report-filters input,.report-filters select { width:100%; min-width:0; color:#354e32; background:#fffefa; }
+.report-filter-actions { grid-column:1/-1; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; }
+.report-filter-actions>div { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.report-form>.report-filter-actions { margin:16px 28px 22px; }
+.report-form>.field-help { margin:0 28px 20px; color:#5d7055; line-height:1.8; }
+.report-view-title { margin:0 28px 10px; color:#304b35; font-size:19px; line-height:1.5; font-weight:600; }
+.report-presets { display:flex; flex-wrap:wrap; gap:6px; }
+.report-preset { min-height:36px; padding:8px 11px; border:1px solid #d5decb; border-radius:6px; background:#fffefa; color:#4d6245; cursor:pointer; font-size:12px!important; }
+.report-preset:hover { background:#eaf0e0; border-color:#a9bb96; }
+#panel-reports .button-primary { background:#b94932; border-color:#b94932; }
+#panel-reports .button-primary:hover { background:#9f3d29; border-color:#9f3d29; }
+.report-scope { margin:18px 28px 0; color:#4e6446; font-size:12px; line-height:1.75; }
+.report-scope::before { content:""; display:inline-block; width:6px; height:6px; margin-right:8px; border-radius:50%; background:#69845b; vertical-align:middle; }
+.report-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:20px 28px; }
+.report-metric { min-width:0; padding:18px; border:1px solid #dce3d2; border-radius:8px; background:#fffefa; }
+.report-metric:first-child { background:#edf2e4; border-color:#d6e0c8; }
+.report-metric>span,.report-metric>p { display:block; margin:0; color:#53684b; font-size:12px; line-height:1.6; }
+.report-metric strong { display:block; margin-top:10px; color:#2d4732; font-size:26px; font-weight:600; line-height:1.2; letter-spacing:-.5px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.report-metric small { display:block; margin-top:8px; color:#596e50; font-size:11px; line-height:1.6; }
+.report-cost-notice { margin:20px 28px; padding:15px 18px; border-left:3px solid #b94932; border-radius:0 6px 6px 0; background:#fcf0e8; color:#74442f; line-height:1.8; font-size:12px; }
+.report-cost-summary { display:flex; flex-wrap:wrap; gap:12px 24px; margin:0 28px 20px; color:#4b6242; font-size:13px; line-height:1.8; }
+.report-cost-summary strong { color:#2e4a32; font-variant-numeric:tabular-nums; }
+.report-cost-summary>p { flex:1 1 220px; margin:0; }
+.report-cost-summary>p:first-child { flex-basis:100%; padding:16px 18px; border:1px solid #d9e1ce; border-radius:8px; background:#edf2e4; }
+.report-cost-summary>p:first-child strong { display:block; margin-top:8px; font-size:26px; line-height:1.4; overflow-wrap:anywhere; }
+.report-results { min-width:0; }
+#panel-reports .report-table { min-width:720px; table-layout:auto; }
+#panel-reports .report-table th { color:#52664a; letter-spacing:.6px; }
+#panel-reports .report-table td { color:#4f6547; font-size:12px; }
+#panel-reports .report-table td:first-child { min-width:200px; }
+#panel-reports .report-table .job-identity strong { color:#354e33; font-size:12px; }
+#panel-reports .report-table .job-identity span { color:#5d7055; }
+#panel-reports .report-number { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.report-caption { margin:18px 28px 24px; color:#566a4d; font-size:12px; line-height:1.75; overflow-wrap:anywhere; }
+.report-secondary { display:block; margin-top:5px; color:#5d7055; line-height:1.65; overflow-wrap:anywhere; }
+.report-row-link { padding:2px 0; border:0; border-bottom:1px solid #92a084; background:transparent; color:#375432; text-align:left; cursor:pointer; font-weight:600!important; }
+.report-row-link:hover { color:#963d2b; border-bottom-color:#963d2b; }
+.report-row-link:focus-visible { outline:2px solid #a84430; outline-offset:4px; }
+.report-rates { margin:28px 0 0; padding-top:24px; border-top:1px solid #dce3d2; }
+.report-rates-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin:0 28px 20px; }
+.report-rates-heading>div { min-width:0; }
+.report-rates-heading h3 { margin:0; color:#304b35; font-size:19px; line-height:1.5; }
+.report-rates-heading .field-help { color:#596d51; max-width:650px; line-height:1.8; }
+.report-rates-heading .button { flex-shrink:0; }
+#report-rates-empty { margin:0 28px 25px; color:#596d51; line-height:1.8; }
+#labor-rate-dialog .button-primary { background:#b94932; border-color:#b94932; }
+.report-empty { padding:40px 25px; }
+.report-empty h3 { color:#3f5737; }
+.report-empty p { color:#596d51; }
+#panel-reports .audit-error { margin:20px 28px; }
+@media(max-width:1100px) {
+  .report-filters { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .report-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:760px) {
+  .report-tabs { margin:0 20px 18px; }
+  .report-tab { flex-basis:40%; padding:10px 8px; font-size:12px!important; }
+  .report-filters { margin:0 20px; padding:16px; gap:14px; }
+  .report-form>.report-filter-actions { margin:16px 20px 20px; }
+  .report-form>.field-help { margin-left:20px; margin-right:20px; }
+  .report-view-title,.report-rates-heading { margin-left:20px; margin-right:20px; }
+  .report-rates-heading { flex-wrap:wrap; }
+  .report-summary { margin:18px 20px; gap:10px; }
+  .report-metric { padding:15px; }
+  .report-metric strong { font-size:23px; }
+  .report-scope,.report-caption,.report-cost-summary { margin-left:20px; margin-right:20px; }
+  .report-cost-notice,#panel-reports .audit-error { margin:18px 20px; }
+  .report-filter-actions { align-items:stretch; }
+}
+@media(max-width:480px) {
+  .report-tabs { margin-left:15px; margin-right:15px; gap:3px; }
+  .report-filters { margin:0 15px; padding:14px; grid-template-columns:minmax(0,1fr); gap:14px; }
+  .report-form>.report-filter-actions { margin:16px 15px 20px; }
+  .report-form>.field-help { margin-left:15px; margin-right:15px; }
+  .report-view-title,.report-rates-heading { margin-left:15px; margin-right:15px; }
+  .report-filter-actions { flex-direction:column; gap:14px; }
+  .report-filter-actions>div { width:100%; }
+  .report-filter-actions .button { flex:1; }
+  .report-presets { width:100%; }
+  .report-preset { flex:1; padding-left:6px; padding-right:6px; font-size:11px!important; }
+  .report-summary { margin:18px 15px; }
+  .report-metric { padding:12px; }
+  .report-metric strong { font-size:21px; }
+  .report-scope,.report-caption,.report-cost-summary { margin-left:15px; margin-right:15px; }
+  .report-cost-notice,#panel-reports .audit-error { margin:16px 15px; }
+  .report-cost-summary>p:first-child { padding:14px; }
+  .report-cost-summary>p:first-child strong { font-size:23px; }
+  #labor-rate-dialog .form-grid { grid-template-columns:minmax(0,1fr); gap:0; }
+}

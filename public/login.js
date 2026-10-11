@@ -124,7 +124,9 @@
         else localStorage.removeItem(rememberedEmailKey);
       } catch (_) { /* Saving an email is optional and must not block login. */ }
       status.textContent = "Accesso completato. Apertura del tuo spazio.";
-      window.location.assign("/app");
+      const reportHash = /^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(window.location.hash)
+        && window.location.hash.length <= 2048 ? window.location.hash : "";
+      window.location.assign("/app" + reportHash);
     } catch (error) {
       formError.textContent = error.name === "AbortError"
         ? "La richiesta sta impiegando troppo tempo. Riprova tra poco."

@@ -5,8 +5,11 @@
 #include "db.h"
 
 #include <stddef.h>
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
 
-#define MYSQL_SCHEMA_VERSION 3
+#define MYSQL_SCHEMA_VERSION 7
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -91,6 +94,72 @@ static bool ensure_assignment_role(Db *database) {
         NULL, NULL, NULL) == DB_OK);
 }
 
+static bool ensure_job_flags(Db *database) {
+    static const struct { const char *name; const char *ddl; } columns[] = {
+        {"is_common", "ALTER TABLE jobs ADD COLUMN is_common TINYINT NOT NULL DEFAULT 0 CHECK(is_common IN (0,1))"}
+    };
+    for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+        DbStmt *statement = NULL;
+        bool okay = db_prepare_v2(database,
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='jobs' AND COLUMN_NAME=?", -1, &statement, NULL) == DB_OK &&
+            db_bind_text(statement, 1, columns[i].name, -1, DB_STATIC) == DB_OK &&
+            db_step(statement) == DB_ROW;
+        bool exists = okay && db_column_int64(statement, 0) == 1;
+        if (okay && db_column_int64(statement, 0) > 1) okay = false;
+        db_finalize(statement);
+        if (!okay || (!exists && db_exec(database, columns[i].ddl, NULL, NULL, NULL) != DB_OK))
+            return false;
+    }
+    return true;
+}
+
+static bool ensure_email_statuses(Db *database) {
+    DbStmt *statement = NULL;
+    if (db_prepare_v2(database,
+        "SELECT t.CONSTRAINT_NAME,c.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS t "
+        "JOIN information_schema.CHECK_CONSTRAINTS c ON c.CONSTRAINT_SCHEMA=t.CONSTRAINT_SCHEMA "
+        "AND c.CONSTRAINT_NAME=t.CONSTRAINT_NAME WHERE t.CONSTRAINT_SCHEMA=DATABASE() "
+        "AND t.TABLE_NAME='alert_email_outbox' AND t.CONSTRAINT_TYPE='CHECK'", -1,
+        &statement,NULL) != DB_OK) return false;
+    char name[65] = {0}, normalized[512] = {0};
+    bool okay = db_step(statement) == DB_ROW;
+    if (okay) {
+        const char *identifier = (const char *)db_column_text(statement,0);
+        const char *clause = (const char *)db_column_text(statement,1);
+        size_t length = identifier ? strlen(identifier) : 0;
+        okay = length > 0 && length < sizeof(name) && clause;
+        for (size_t i=0; okay && i<length; i++)
+            okay = isalnum((unsigned char)identifier[i]) || identifier[i]=='_';
+        if (okay) {
+            memcpy(name,identifier,length+1);
+            size_t used=0;
+            for (const char *p=clause; *p && okay; p++) {
+                if (strncmp(p,"_utf8mb4",8)==0 || strncmp(p,"_utf8mb3",8)==0) { p+=7; continue; }
+                /* MySQL's CHECK_CLAUSE can retain backslash-quoted literals. */
+                if (*p=='\\' && p[1]=='\'') p++;
+                if (isspace((unsigned char)*p) || *p=='`' || *p=='(' || *p==')') continue;
+                if (used+1>=sizeof(normalized)) { okay=false; break; }
+                normalized[used++]=(char)tolower((unsigned char)*p);
+            }
+            normalized[used]='\0';
+        }
+        if (okay) okay = db_step(statement) == DB_DONE;
+    }
+    db_finalize(statement);
+    if (!okay) return false;
+    static const char expanded[] = "statusin'pending_configuration','retrying','sent','delivery_unknown','delivery_failed'";
+    if (strcmp(name,"alert_email_outbox_status")==0 && strcmp(normalized,expanded)==0) return true;
+    /* Only replace the known legacy restriction, retaining all keys and rows.
+       Unknown custom constraints are left intact and fail startup closed. */
+    if (strcmp(normalized,"status='pending_configuration'")!=0) return false;
+    char ddl[512];
+    int count=snprintf(ddl,sizeof(ddl),"ALTER TABLE alert_email_outbox DROP CHECK `%s`,"
+        "ADD CONSTRAINT alert_email_outbox_status CHECK(status IN "
+        "('pending_configuration','retrying','sent','delivery_unknown','delivery_failed'))",name);
+    return count>0 && (size_t)count<sizeof(ddl) && db_exec(database,ddl,NULL,NULL,NULL)==DB_OK;
+}
+
 bool mysql_schema_prepare(void) {
     static const char *const tables[] = {
         "CREATE TABLE IF NOT EXISTS schema_metadata ("
@@ -160,9 +229,11 @@ bool mysql_schema_prepare(void) {
         "name VARCHAR(120) NOT NULL,client VARCHAR(120) NOT NULL DEFAULT '',"
         "description VARCHAR(1000) NOT NULL DEFAULT '',"
         "status VARCHAR(16) NOT NULL,contract_id BIGINT NULL,"
+        "is_common TINYINT NOT NULL DEFAULT 0,"
         "UNIQUE KEY jobs_code(code),KEY jobs_contract(contract_id,id),"
         "CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
-        "CHECK(status IN ('planned','active','paused','completed','cancelled'))"
+        "CHECK(status IN ('planned','active','paused','completed','cancelled')),"
+        "CHECK(is_common IN (0,1))"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS time_entries ("
@@ -179,6 +250,19 @@ bool mysql_schema_prepare(void) {
         "CONSTRAINT time_entries_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),"
         "CONSTRAINT time_entries_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
         "CHECK(minutes BETWEEN 1 AND 1440),CHECK(CHAR_LENGTH(date)=10)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS labor_rates ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,user_id BIGINT NOT NULL,"
+        "hourly_cents BIGINT NOT NULL,currency CHAR(3) NOT NULL DEFAULT 'EUR',"
+        "starts_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "ends_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "UNIQUE KEY labor_rates_user_start(user_id,starts_on),"
+        "KEY labor_rates_user_dates(user_id,starts_on,ends_on,id),"
+        "CONSTRAINT labor_rates_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CHECK(hourly_cents BETWEEN 0 AND 99999999),CHECK(currency='EUR'),"
+        "CHECK(CHAR_LENGTH(starts_on)=10),CHECK(ends_on IS NULL OR CHAR_LENGTH(ends_on)=10),"
+        "CHECK(ends_on IS NULL OR starts_on<=ends_on)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS job_roles ("
@@ -230,6 +314,66 @@ bool mysql_schema_prepare(void) {
         "CHECK(starts_on IS NULL OR ends_on IS NULL OR starts_on<=ends_on)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
+        "CREATE TABLE IF NOT EXISTS alert_rules (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,owner_id BIGINT NOT NULL,"
+        "name VARCHAR(120) NOT NULL,type VARCHAR(24) NOT NULL,"
+        "run_time CHAR(5) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,enabled TINYINT NOT NULL DEFAULT 0,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "updated_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "last_run_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "last_run_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,last_event_id BIGINT NOT NULL DEFAULT 0,"
+        "KEY alert_rules_owner(owner_id,id),CONSTRAINT alert_rules_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),"
+        "CHECK(type IN ('invalid_job','missing_hours')),CHECK(CHAR_LENGTH(run_time)=5),CHECK(enabled IN (0,1)),"
+        "CHECK(last_event_id>=0)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS alert_rule_users (rule_id BIGINT NOT NULL,user_id BIGINT NOT NULL,"
+        "PRIMARY KEY(rule_id,user_id),"
+        "CONSTRAINT alert_rule_users_rule_fk FOREIGN KEY(rule_id) REFERENCES alert_rules(id),"
+        "CONSTRAINT alert_rule_users_user_fk FOREIGN KEY(user_id) REFERENCES users(id)) ENGINE=InnoDB DEFAULT "
+        "CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS alert_rule_emails (rule_id BIGINT NOT NULL,"
+        "email VARCHAR(254) COLLATE utf8mb4_general_ci NOT NULL,PRIMARY KEY(rule_id,email),"
+        "CONSTRAINT alert_rule_emails_rule_fk FOREIGN KEY(rule_id) REFERENCES alert_rules(id)) ENGINE=InnoDB DEFAULT "
+        "CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS alert_subjects (rule_id BIGINT NOT NULL,user_id BIGINT NOT NULL,"
+        "starts_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "last_checked_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,PRIMARY KEY(rule_id,user_id),"
+        "CONSTRAINT alert_subjects_rule_fk FOREIGN KEY(rule_id) REFERENCES alert_rules(id),"
+        "CONSTRAINT alert_subjects_user_fk FOREIGN KEY(user_id) REFERENCES users(id),CHECK(CHAR_LENGTH(starts_on)=10),"
+        "CHECK(last_checked_on IS NULL OR CHAR_LENGTH(last_checked_on)=10)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+        "COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS alert_events (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,user_id BIGINT NOT NULL,"
+        "job_id BIGINT NOT NULL,work_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,minutes INT NOT NULL,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,KEY alert_events_created(created_at,id),"
+        "CONSTRAINT alert_events_user_fk FOREIGN KEY(user_id) REFERENCES users(id),CHECK(CHAR_LENGTH(work_date)=10),"
+        "CHECK(minutes BETWEEN 1 AND 1440)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS alert_notifications (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "rule_id BIGINT NOT NULL,recipient_id BIGINT NOT NULL,subject_user_id BIGINT NOT NULL,"
+        "event_key VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,title VARCHAR(160) NOT NULL,"
+        "message VARCHAR(1000) NOT NULL,work_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "recorded_minutes INT NULL,created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "read_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,UNIQUE KEY alert_notifications_event(rule_id,"
+        "recipient_id,event_key),KEY alert_notifications_recipient(recipient_id,id),"
+        "KEY alert_notifications_unread(recipient_id,read_at,id),"
+        "CONSTRAINT alert_notifications_rule_fk FOREIGN KEY(rule_id) REFERENCES alert_rules(id),"
+        "CONSTRAINT alert_notifications_recipient_fk FOREIGN KEY(recipient_id) REFERENCES users(id),"
+        "CONSTRAINT alert_notifications_subject_fk FOREIGN KEY(subject_user_id) REFERENCES users(id)) ENGINE=InnoDB "
+        "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS alert_email_outbox (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "rule_id BIGINT NOT NULL,email VARCHAR(254) COLLATE utf8mb4_general_ci NOT NULL,subject_user_id BIGINT NOT NULL,"
+        "event_key VARCHAR(120) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,title VARCHAR(160) NOT NULL,"
+        "message VARCHAR(1000) NOT NULL,created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "status VARCHAR(24) NOT NULL DEFAULT 'pending_configuration',UNIQUE KEY alert_email_outbox_event(rule_id,email,"
+        "event_key),CONSTRAINT alert_email_outbox_rule_fk FOREIGN KEY(rule_id) REFERENCES alert_rules(id),"
+        "CONSTRAINT alert_email_outbox_subject_fk FOREIGN KEY(subject_user_id) REFERENCES users(id),"
+        "CONSTRAINT alert_email_outbox_status CHECK(status IN "
+        "('pending_configuration','retrying','sent','delivery_unknown','delivery_failed'))) ENGINE=InnoDB "
+        "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
         "CREATE TABLE IF NOT EXISTS audit_events ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
@@ -251,6 +395,10 @@ bool mysql_schema_prepare(void) {
          "FOR EACH ROW BEGIN IF OLD.user_id IS NOT NULL AND "
          "(NEW.user_id IS NULL OR NEW.user_id<>OLD.user_id) THEN "
          "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='user_id is immutable'; END IF; END"},
+        {"labor_rates_preserve_user_update",
+         "CREATE TRIGGER labor_rates_preserve_user_update BEFORE UPDATE ON labor_rates "
+         "FOR EACH ROW BEGIN IF NEW.user_id<>OLD.user_id THEN "
+         "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='rate user_id is immutable'; END IF; END"},
         {"contract_documents_no_update",
          "CREATE TRIGGER contract_documents_no_update BEFORE UPDATE ON contract_documents "
          "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='contract documents are immutable'"},
@@ -272,6 +420,8 @@ bool mysql_schema_prepare(void) {
         okay = db_exec(database, tables[i], NULL, NULL, NULL) == DB_OK;
     if (okay) okay = ensure_job_contract(database);
     if (okay) okay = ensure_assignment_role(database);
+    if (okay) okay = ensure_job_flags(database);
+    if (okay) okay = ensure_email_statuses(database);
     if (okay) okay = db_exec(database,
         "INSERT IGNORE INTO schema_metadata(id,version) VALUES(1,0)",
         NULL, NULL, NULL) == DB_OK;

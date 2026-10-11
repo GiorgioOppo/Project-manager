@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 3
+#define SCHEMA_VERSION 7
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -303,6 +303,103 @@ static bool migrate(void) {
             !storage_audit(database,0,"system.migration","system",3,NULL,"{\"schema_version\":3}") ||
             db_exec(database,"PRAGMA user_version=3",NULL,NULL,NULL) != DB_OK) goto failure;
     }
+    if (version <= 3) {
+        if (db_exec(database,
+            "CREATE TABLE IF NOT EXISTS labor_rates ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL REFERENCES users(id),"
+            "hourly_cents INTEGER NOT NULL CHECK(typeof(hourly_cents)='integer' AND hourly_cents BETWEEN 0 AND 99999999),"
+            "currency TEXT NOT NULL DEFAULT 'EUR' CHECK(currency='EUR'),"
+            "starts_on TEXT NOT NULL CHECK(length(starts_on)=10),"
+            "ends_on TEXT CHECK(ends_on IS NULL OR length(ends_on)=10),"
+            "CHECK(ends_on IS NULL OR starts_on<=ends_on),"
+            "UNIQUE(user_id,starts_on)"
+            ");"
+            "CREATE INDEX IF NOT EXISTS labor_rates_user_dates ON labor_rates(user_id,starts_on,ends_on,id);"
+            "CREATE TRIGGER IF NOT EXISTS labor_rates_preserve_user_update "
+            "BEFORE UPDATE OF user_id ON labor_rates WHEN NEW.user_id<>OLD.user_id "
+            "BEGIN SELECT RAISE(ABORT,'rate user_id is immutable'); END;",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",4,NULL,"{\"schema_version\":4}") ||
+            db_exec(database,"PRAGMA user_version=4",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (version <= 4) {
+        bool has_common = false;
+        if (!prepare(database,&statement,"PRAGMA table_info(jobs)")) goto failure;
+        int result;
+        while ((result = db_step(statement)) == DB_ROW) {
+            if (strcmp(column(statement,1),"is_common") == 0) has_common = true;
+        }
+        db_finalize(statement); statement = NULL;
+        if (result != DB_DONE || (!has_common && db_exec(database,
+            "ALTER TABLE jobs ADD COLUMN is_common INTEGER NOT NULL DEFAULT 0 CHECK(is_common IN (0,1))",
+            NULL,NULL,NULL) != DB_OK) ||
+            !storage_audit(database,0,"system.migration","system",5,NULL,"{\"schema_version\":5}") ||
+            db_exec(database,"PRAGMA user_version=5",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (version <= 5) {
+        if (db_exec(database,
+            "CREATE TABLE IF NOT EXISTS alert_rules (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "owner_id INTEGER NOT NULL REFERENCES users(id),name TEXT NOT NULL,"
+            "type TEXT NOT NULL CHECK(type IN ('invalid_job','missing_hours')),"
+            "run_time TEXT NOT NULL CHECK(length(run_time)=5),enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),"
+            "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_run_at TEXT,last_run_on TEXT,"
+            "last_event_id INTEGER NOT NULL DEFAULT 0 CHECK(last_event_id>=0));"
+            "CREATE INDEX IF NOT EXISTS alert_rules_owner ON alert_rules(owner_id,id);"
+            "CREATE TABLE IF NOT EXISTS alert_rule_users (rule_id INTEGER NOT NULL REFERENCES alert_rules(id),"
+            "user_id INTEGER NOT NULL REFERENCES users(id),PRIMARY KEY(rule_id,user_id));"
+            "CREATE TABLE IF NOT EXISTS alert_rule_emails (rule_id INTEGER NOT NULL REFERENCES alert_rules(id),"
+            "email TEXT NOT NULL COLLATE NOCASE,PRIMARY KEY(rule_id,email));"
+            "CREATE TABLE IF NOT EXISTS alert_subjects (rule_id INTEGER NOT NULL REFERENCES alert_rules(id),"
+            "user_id INTEGER NOT NULL REFERENCES users(id),starts_on TEXT NOT NULL CHECK(length(starts_on)=10),"
+            "last_checked_on TEXT CHECK(last_checked_on IS NULL OR length(last_checked_on)=10),PRIMARY KEY(rule_id,"
+            "user_id));"
+            "CREATE TABLE IF NOT EXISTS alert_events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL REFERENCES users(id),job_id INTEGER NOT NULL,"
+            "work_date TEXT NOT NULL CHECK(length(work_date)=10),minutes INTEGER NOT NULL CHECK(minutes BETWEEN 1 AND 1440),"
+            "created_at TEXT NOT NULL);"
+            "CREATE INDEX IF NOT EXISTS alert_events_created ON alert_events(created_at,id);"
+            "CREATE TABLE IF NOT EXISTS alert_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "rule_id INTEGER NOT NULL REFERENCES alert_rules(id),recipient_id INTEGER NOT NULL REFERENCES users(id),"
+            "subject_user_id INTEGER NOT NULL REFERENCES users(id),event_key TEXT NOT NULL,title TEXT NOT NULL,"
+            "message TEXT NOT NULL,work_date TEXT,recorded_minutes INTEGER,created_at TEXT NOT NULL,read_at TEXT,"
+            "UNIQUE(rule_id,recipient_id,event_key));"
+            "CREATE INDEX IF NOT EXISTS alert_notifications_recipient ON alert_notifications(recipient_id,id);"
+            "CREATE INDEX IF NOT EXISTS alert_notifications_unread ON alert_notifications(recipient_id,read_at,id);"
+            "CREATE TABLE IF NOT EXISTS alert_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "rule_id INTEGER NOT NULL REFERENCES alert_rules(id),email TEXT NOT NULL COLLATE NOCASE,"
+            "subject_user_id INTEGER NOT NULL REFERENCES users(id),event_key TEXT NOT NULL,title TEXT NOT NULL,"
+            "message TEXT NOT NULL,created_at TEXT NOT NULL,"
+            "status TEXT NOT NULL DEFAULT 'pending_configuration' CHECK(status='pending_configuration'),UNIQUE(rule_id,"
+            "email,event_key));"
+            ,NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",6,NULL,"{\"schema_version\":6}") ||
+            db_exec(database,"PRAGMA user_version=6",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (version <= 6) {
+        if (db_exec(database,
+            "CREATE TABLE alert_email_outbox_v7 (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "rule_id INTEGER NOT NULL REFERENCES alert_rules(id),email TEXT NOT NULL COLLATE NOCASE,"
+            "subject_user_id INTEGER NOT NULL REFERENCES users(id),event_key TEXT NOT NULL,title TEXT NOT NULL,"
+            "message TEXT NOT NULL,created_at TEXT NOT NULL,"
+            "status TEXT NOT NULL DEFAULT 'pending_configuration' CHECK(status IN "
+            "('pending_configuration','retrying','sent','delivery_unknown','delivery_failed')),"
+            "UNIQUE(rule_id,email,event_key));"
+            "INSERT INTO alert_email_outbox_v7(id,rule_id,email,subject_user_id,event_key,title,message,created_at,status) "
+            "SELECT id,rule_id,email,subject_user_id,event_key,title,message,created_at,status FROM alert_email_outbox;"
+            /* Keep deleted IDs consumed too: delivery idempotency relies on IDs
+               never being reused within the same application namespace. */
+            "UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence "
+            "WHERE name='alert_email_outbox'),0)) WHERE name='alert_email_outbox_v7';"
+            "INSERT INTO sqlite_sequence(name,seq) SELECT 'alert_email_outbox_v7',COALESCE((SELECT seq "
+            "FROM sqlite_sequence WHERE name='alert_email_outbox'),0) WHERE NOT EXISTS "
+            "(SELECT 1 FROM sqlite_sequence WHERE name='alert_email_outbox_v7');"
+            "DROP TABLE alert_email_outbox;"
+            "ALTER TABLE alert_email_outbox_v7 RENAME TO alert_email_outbox;",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",7,NULL,"{\"schema_version\":7}") ||
+            db_exec(database,"PRAGMA user_version=7",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -334,6 +431,18 @@ static bool migrate(void) {
          db_exec(database,"UPDATE job_assignments SET role_id=2 WHERE role_id IS NULL",NULL,NULL,NULL) != DB_OK ||
          !storage_audit(database,0,"system.migration","system",3,NULL,"{\"schema_version\":3}") ||
          db_exec(database,"UPDATE schema_metadata SET version=3 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 3 &&
+        (!storage_audit(database,0,"system.migration","system",4,NULL,"{\"schema_version\":4}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=4 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 4 &&
+        (!storage_audit(database,0,"system.migration","system",5,NULL,"{\"schema_version\":5}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=5 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 5 &&
+        (!storage_audit(database,0,"system.migration","system",6,NULL,"{\"schema_version\":6}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=6 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 6 &&
+        (!storage_audit(database,0,"system.migration","system",7,NULL,"{\"schema_version\":7}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=7 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -429,7 +538,8 @@ static bool query_fields(const char *query, DbInt *limit,
                 strcmp(value, "system") != 0 && strcmp(value, "supplier") != 0 &&
                 strcmp(value, "contract") != 0 && strcmp(value, "contract_document") != 0 &&
                 strcmp(value, "group") != 0 && strcmp(value, "group_member") != 0 &&
-                strcmp(value, "job_role") != 0 && strcmp(value, "group_grant") != 0)) return false;
+                strcmp(value, "job_role") != 0 && strcmp(value, "group_grant") != 0 &&
+                strcmp(value, "labor_rate") != 0 && strcmp(value, "alert_rule") != 0)) return false;
             strcpy(type, value); got_type = true;
         } else return false;
         if (!*end) break;

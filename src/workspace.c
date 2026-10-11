@@ -1,6 +1,7 @@
 #include "workspace.h"
 #include "storage.h"
 #include "organization.h"
+#include "alerts.h"
 
 #include <limits.h>
 #include "db.h"
@@ -401,10 +402,14 @@ static void job_contract_json(Json *json, DbStmt *statement, int index) {
     append(json, ",\"supplier_name\":"); append_string(json,column_text(statement,index+3));
 }
 
+static void job_flags_json(Json *json, DbStmt *statement, int index) {
+    append(json, ",\"is_common\":"); append(json, db_column_int(statement,index) ? "true" : "false");
+}
+
 /* Snapshot helpers return 1 for an existing row, 0 for a missing row, -1 on error. */
 static int job_snapshot(DbInt id, Json *json) {
     DbStmt *statement = NULL;
-    if (!prepare(&statement, "SELECT j.id,j.code,j.name,j.client,j.description,j.status,j.contract_id,c.code,c.title,s.name "
+    if (!prepare(&statement, "SELECT j.id,j.code,j.name,j.client,j.description,j.status,j.contract_id,c.code,c.title,s.name,j.is_common "
         "FROM jobs j LEFT JOIN contracts c ON c.id=j.contract_id LEFT JOIN suppliers s ON s.id=c.supplier_id WHERE j.id=?") ||
         !bind_id(statement, 1, id)) {
         db_finalize(statement);
@@ -414,6 +419,7 @@ static int job_snapshot(DbInt id, Json *json) {
     if (result == DB_ROW) {
         job_json(json, statement);
         job_contract_json(json,statement,6);
+        job_flags_json(json,statement,10);
         append(json, "}");
     }
     db_finalize(statement);
@@ -502,7 +508,8 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
         "COALESCE((SELECT SUM(t.minutes) FROM time_entries t WHERE t.job_id=j.id AND t.user_id=?),0),"
         "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_assignments a_count WHERE a_count.job_id=j.id) ELSE 0 END, "
         "j.contract_id,c.code,c.title,s.name,"
-        "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_group_grants gg WHERE gg.job_id=j.id) ELSE 0 END "
+        "CASE WHEN ? THEN (SELECT COUNT(*) FROM job_group_grants gg WHERE gg.job_id=j.id) ELSE 0 END, "
+        "j.is_common "
         "FROM jobs j LEFT JOIN contracts c ON c.id=j.contract_id LEFT JOIN suppliers s ON s.id=c.supplier_id "
         "ORDER BY j.id DESC LIMIT 1001") ||
         !bind_id(statement, 1, actor_id) || !bind_id(statement, 2, manager) ||
@@ -528,6 +535,7 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
         if (count > 1) append(&json, ",");
         job_json(&json, statement);
         job_contract_json(&json,statement,8);
+        job_flags_json(&json,statement,13);
         append(&json, ",\"total_minutes\":"); append_integer(&json, db_column_int64(statement, 6));
         append(&json, ",\"assigned_users\":"); append_integer(&json, db_column_int64(statement, 7));
         append(&json, ",\"assigned_groups\":"); append_integer(&json, db_column_int64(statement, 12));
@@ -549,7 +557,8 @@ static void list_jobs(DbInt actor_id, bool manager, WorkspaceResponse *response)
 static void write_job(const char *body, DbInt actor_id, DbInt id,
                       WorkspaceResponse *response) {
     Field fields[] = {{"code", NULL}, {"name", NULL}, {"client", NULL},
-                      {"description", NULL}, {"status", NULL}, {"contract_id", NULL}};
+                      {"description", NULL}, {"status", NULL}, {"contract_id", NULL},
+                      {"is_common", NULL}};
     const size_t count = sizeof(fields) / sizeof(fields[0]);
     if (!parse_fields(body, fields, count, response)) return;
     trim(fields[0].value); trim(fields[1].value); trim(fields[2].value);
@@ -557,6 +566,11 @@ static void write_job(const char *body, DbInt actor_id, DbInt id,
     const char *client = field_value(&fields[2]), *description = field_value(&fields[3]);
     const char *status = field_value(&fields[4]);
     DbInt contract_id = 0, old_contract_id = 0;
+    if (fields[6].value && strcmp(fields[6].value,"0") != 0 && strcmp(fields[6].value,"1") != 0) {
+        error(response,400,"Il campo comune deve valere 0 oppure 1.");
+        free_fields(fields,count); return;
+    }
+    int is_common = fields[6].value && strcmp(fields[6].value,"1") == 0;
     if ((fields[5].value && *fields[5].value && !parse_positive(fields[5].value,&contract_id)) ||
         !valid_text(code, 40, true, false) || !valid_text(name, 120, true, false) ||
         !valid_text(client, 120, false, false) || !valid_text(description, 1000, false, true) ||
@@ -575,9 +589,10 @@ static void write_job(const char *body, DbInt actor_id, DbInt id,
             rollback(); error(response, 404, "Commessa non trovata.");
             free_fields(fields, count); return;
         }
-        if (!prepare(&statement,"SELECT contract_id FROM jobs WHERE id=?") ||
+        if (!prepare(&statement,"SELECT contract_id,is_common FROM jobs WHERE id=?") ||
             !bind_id(statement,1,id) || db_step(statement) != DB_ROW) goto database_failure;
         old_contract_id = db_column_int64(statement,0);
+        if (!fields[6].value) is_common = db_column_int(statement,1);
         db_finalize(statement); statement = NULL;
         if (!fields[5].value) contract_id = old_contract_id;
     } else {
@@ -603,13 +618,14 @@ static void write_job(const char *body, DbInt actor_id, DbInt id,
         }
     }
     if (!prepare(&statement, id ?
-        "UPDATE jobs SET code=?,name=?,client=?,description=?,status=?,contract_id=? WHERE id=?" :
-        "INSERT INTO jobs(code,name,client,description,status,contract_id) VALUES(?,?,?,?,?,?)") ||
+        "UPDATE jobs SET code=?,name=?,client=?,description=?,status=?,contract_id=?,is_common=? WHERE id=?" :
+        "INSERT INTO jobs(code,name,client,description,status,contract_id,is_common) VALUES(?,?,?,?,?,?,?)") ||
         !bind_text(statement, 1, code) || !bind_text(statement, 2, name) ||
         !bind_text(statement, 3, client) || !bind_text(statement, 4, description) ||
         !bind_text(statement, 5, status) ||
         (contract_id ? !bind_id(statement,6,contract_id) : db_bind_null(statement,6) != DB_OK) ||
-        (id && !bind_id(statement, 7, id)))
+        !bind_id(statement,7,is_common) ||
+        (id && !bind_id(statement, 8, id)))
         goto database_failure;
     int result = db_step(statement);
     db_finalize(statement); statement = NULL;
@@ -632,6 +648,55 @@ database_failure:
     db_finalize(statement); rollback();
     free(before.data); free(after.data); free_fields(fields, count);
     server_error(response);
+}
+
+static void delete_job(const char *body, DbInt actor_id, DbInt id,
+                       WorkspaceResponse *response) {
+    if (*body) { error(response,400,"La richiesta di eliminazione non deve contenere campi."); return; }
+    if (!begin_transaction(response)) return;
+    Json before = {0};
+    DbStmt *statement = NULL;
+    int found = job_snapshot(id,&before);
+    if (found < 0) goto database_failure;
+    if (!found) {
+        rollback(); error(response,404,"Commessa non trovata."); return;
+    }
+    if (!prepare(&statement,
+        "SELECT COUNT(*),COALESCE(SUM(minutes),0),"
+        "(SELECT COUNT(*) FROM job_assignments WHERE job_id=?),"
+        "(SELECT COUNT(*) FROM job_group_grants WHERE job_id=?) "
+        "FROM time_entries WHERE job_id=?") || !bind_id(statement,1,id) ||
+        !bind_id(statement,2,id) || !bind_id(statement,3,id) ||
+        db_step(statement) != DB_ROW) goto database_failure;
+    /* Keep the job's ordinary snapshot fields at the top level so the audit
+       retains its identity after all foreign-key rows have been removed. */
+    if (!before.length || before.data[before.length-1] != '}') goto database_failure;
+    before.data[--before.length] = '\0';
+    append(&before,",\"deleted_time_entries\":"); append_integer(&before,db_column_int64(statement,0));
+    append(&before,",\"deleted_minutes\":"); append_integer(&before,db_column_int64(statement,1));
+    append(&before,",\"deleted_assignments\":"); append_integer(&before,db_column_int64(statement,2));
+    append(&before,",\"deleted_group_grants\":"); append_integer(&before,db_column_int64(statement,3));
+    append(&before,"}");
+    db_finalize(statement); statement = NULL;
+    if (before.failed) goto database_failure;
+    static const char *const deletes[] = {
+        "DELETE FROM time_entries WHERE job_id=?",
+        "DELETE FROM job_assignments WHERE job_id=?",
+        "DELETE FROM job_group_grants WHERE job_id=?",
+        "DELETE FROM jobs WHERE id=?"
+    };
+    for (size_t i = 0; i < sizeof(deletes) / sizeof(deletes[0]); i++) {
+        if (!prepare(&statement,deletes[i]) || !bind_id(statement,1,id) ||
+            db_step(statement) != DB_DONE) goto database_failure;
+        db_finalize(statement); statement = NULL;
+    }
+    if (db_changes(database) != 1 ||
+        !storage_audit(database,actor_id,"jobs.delete","job",id,before.data,NULL))
+        goto database_failure;
+    if (commit_transaction(response)) success(response,200,0);
+    free(before.data); return;
+database_failure:
+    db_finalize(statement); rollback(); free(before.data); server_error(response);
 }
 
 static void list_entries(const char *query, DbInt actor_id, WorkspaceResponse *response) {
@@ -682,6 +747,311 @@ static void list_entries(const char *query, DbInt actor_id, WorkspaceResponse *r
     finish_json(response, 200, &json);
 }
 
+/* Calendar arithmetic avoids local-time/DST conversions when validating an
+   inclusive report period. valid_date() has already checked each component. */
+static int report_date_ordinal(const char *date) {
+    int year = (date[0] - '0') * 1000 + (date[1] - '0') * 100 +
+               (date[2] - '0') * 10 + date[3] - '0';
+    int month = (date[5] - '0') * 10 + date[6] - '0';
+    int day = (date[8] - '0') * 10 + date[9] - '0';
+    static const int previous[] = {0,31,59,90,120,151,181,212,243,273,304,334};
+    int prior_year = year - 1;
+    int ordinal = prior_year * 365 + prior_year / 4 - prior_year / 100 + prior_year / 400;
+    ordinal += previous[month - 1] + day;
+    if (month > 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ordinal++;
+    return ordinal;
+}
+
+static void report_integer(Json *json, const char *key, DbStmt *statement, int column) {
+    append(json, ",\""); append(json, key); append(json, "\":");
+    append_integer(json, db_column_int64(statement, column));
+}
+
+static void report_string(Json *json, const char *key, DbStmt *statement, int column) {
+    append(json, ",\""); append(json, key); append(json, "\":");
+    append_string(json, column_text(statement, column));
+}
+
+/* Options are independent of the selected date/job/user filters. A personal
+   report can select its own historical jobs even after access is revoked. It
+   never exposes the catalogue or people belonging to other workers. */
+static bool report_options(Json *json, DbInt actor_id, bool manager,
+                            WorkspaceResponse *response) {
+    DbStmt *statement = NULL;
+    const char *jobs_sql = manager ?
+        "SELECT j.id,j.code,j.name FROM jobs j ORDER BY j.code COLLATE NOCASE,j.id" :
+        "SELECT j.id,j.code,j.name FROM jobs j WHERE EXISTS(SELECT 1 FROM time_entries t "
+        "WHERE t.job_id=j.id AND t.user_id=?) ORDER BY j.code COLLATE NOCASE,j.id";
+    if (!prepare(&statement, jobs_sql) || (!manager && !bind_id(statement, 1, actor_id)))
+        goto database_failure;
+    append(json, "{\"jobs\":[");
+    int result, count = 0;
+    while ((result = db_step(statement)) == DB_ROW) {
+        if (++count > RESULT_LIMIT) goto too_many;
+        if (count > 1) append(json, ",");
+        append(json, "{\"id\":"); append_integer(json, db_column_int64(statement, 0));
+        report_string(json, "code", statement, 1);
+        report_string(json, "name", statement, 2);
+        append(json, "}");
+        if (json->failed) goto database_failure;
+    }
+    db_finalize(statement); statement = NULL;
+    if (result != DB_DONE) goto database_failure;
+    const char *users_sql = manager ?
+        "SELECT id,name,email,active FROM users ORDER BY name COLLATE NOCASE,id" :
+        "SELECT id,name,email,active FROM users WHERE id=? ORDER BY id";
+    if (!prepare(&statement, users_sql) || (!manager && !bind_id(statement, 1, actor_id)))
+        goto database_failure;
+    append(json, "],\"users\":[");
+    count = 0;
+    while ((result = db_step(statement)) == DB_ROW) {
+        if (++count > RESULT_LIMIT) goto too_many;
+        if (count > 1) append(json, ",");
+        append(json, "{\"id\":"); append_integer(json, db_column_int64(statement, 0));
+        report_string(json, "name", statement, 1);
+        report_string(json, "email", statement, 2);
+        append(json, ",\"active\":"); append(json, db_column_int(statement, 3) ? "true" : "false");
+        append(json, "}");
+        if (json->failed) goto database_failure;
+    }
+    db_finalize(statement);
+    if (result != DB_DONE) { server_error(response); return false; }
+    append(json, "]}");
+    return !json->failed;
+too_many:
+    db_finalize(statement);
+    error(response, 409, "Il report contiene più di 1000 commesse o utenti: nessun risultato parziale è stato restituito.");
+    return false;
+database_failure:
+    db_finalize(statement);
+    server_error(response);
+    return false;
+}
+
+static void report_row(Json *json, const char *view, DbStmt *statement) {
+    if (strcmp(view, "date") == 0) {
+        append(json, "{\"date\":"); append_string(json, column_text(statement, 4));
+        report_integer(json, "minutes", statement, 5);
+        report_integer(json, "entry_count", statement, 6);
+        report_integer(json, "job_count", statement, 7);
+        report_integer(json, "user_count", statement, 8);
+    } else if (strcmp(view, "job") == 0) {
+        append(json, "{\"job_id\":"); append_integer(json, db_column_int64(statement, 4));
+        report_string(json, "code", statement, 5);
+        report_string(json, "name", statement, 6);
+        report_string(json, "client", statement, 7);
+        report_string(json, "status", statement, 8);
+        report_integer(json, "minutes", statement, 9);
+        report_integer(json, "entry_count", statement, 10);
+        report_integer(json, "user_count", statement, 11);
+    } else if (strcmp(view, "user") == 0) {
+        append(json, "{\"user_id\":"); append_integer(json, db_column_int64(statement, 4));
+        report_string(json, "name", statement, 5);
+        report_string(json, "email", statement, 6);
+        append(json, ",\"active\":"); append(json, db_column_int(statement, 7) ? "true" : "false");
+        report_integer(json, "minutes", statement, 8);
+        report_integer(json, "entry_count", statement, 9);
+        report_integer(json, "job_count", statement, 10);
+    } else if (strcmp(view, "labor_cost") == 0) {
+        append(json, "{\"user_id\":"); append_integer(json, db_column_int64(statement, 7));
+        report_string(json, "name", statement, 8);
+        report_string(json, "email", statement, 9);
+        report_integer(json, "job_id", statement, 10);
+        report_string(json, "code", statement, 11);
+        report_string(json, "job_name", statement, 12);
+        report_integer(json, "minutes", statement, 13);
+        report_integer(json, "entry_count", statement, 14);
+        report_integer(json, "priced_minutes", statement, 15);
+        report_integer(json, "unpriced_minutes", statement, 16);
+        append(json, ",\"cost_cents\":");
+        if (db_column_type(statement, 17) == DB_NULL) append(json, "null");
+        else append_integer(json, db_column_int64(statement, 17));
+    } else {
+        append(json, "{\"contract_id\":"); append_integer(json, db_column_int64(statement, 8));
+        report_string(json, "code", statement, 9);
+        report_string(json, "title", statement, 10);
+        report_string(json, "supplier_name", statement, 11);
+        report_string(json, "status", statement, 12);
+        report_string(json, "starts_on", statement, 13);
+        report_string(json, "ends_on", statement, 14);
+        append(json, ",\"value_cents\":");
+        if (db_column_type(statement, 15) == DB_NULL) append(json, "null");
+        else append_integer(json, db_column_int64(statement, 15));
+        report_string(json, "currency", statement, 16);
+        report_integer(json, "job_count", statement, 17);
+        report_integer(json, "minutes", statement, 18);
+    }
+    append(json, "}");
+}
+
+static void list_report(const char *query, DbInt actor_id, bool manager,
+                         WorkspaceResponse *response) {
+    Field fields[] = {{"view", NULL}, {"from", NULL}, {"to", NULL},
+                      {"job_id", NULL}, {"user_id", NULL}};
+    const size_t count = sizeof(fields) / sizeof(fields[0]);
+    if (!parse_fields(query, fields, count, response)) return;
+    const char *view = field_value(&fields[0]);
+    const char *from = field_value(&fields[1]), *to = field_value(&fields[2]);
+    bool cost = strcmp(view, "cost") == 0;
+    bool labor = strcmp(view, "labor_cost") == 0;
+    DbInt job_id = 0, user_id = 0;
+    if ((strcmp(view, "date") != 0 && strcmp(view, "job") != 0 &&
+         strcmp(view, "user") != 0 && !cost && !labor) || !valid_date(from) || !valid_date(to) ||
+        (fields[3].value && !parse_positive(fields[3].value, &job_id)) ||
+        (fields[4].value && !parse_positive(fields[4].value, &user_id))) {
+        error(response, 400, "Seleziona una vista, due date valide e identificativi numerici positivi.");
+        goto cleanup;
+    }
+    int span = report_date_ordinal(to) - report_date_ordinal(from);
+    if (span < 0 || span >= 366) {
+        error(response, 400, "Il periodo deve includere da 1 a 366 giorni e la data iniziale non può seguire quella finale.");
+        goto cleanup;
+    }
+    if (!manager && (cost || labor || (user_id && user_id != actor_id))) {
+        error(response, 403, (cost || labor) ? "La vista costi è riservata ai gestori." :
+            "Puoi consultare solo le tue ore lavorate.");
+        goto cleanup;
+    }
+    if (!manager) user_id = actor_id;
+    char today[11];
+    if (!today_date(today)) { server_error(response); goto cleanup; }
+    Json options = {0};
+    if (!report_options(&options, actor_id, manager, response)) {
+        free(options.data);
+        if (!response->body) server_error(response);
+        goto cleanup;
+    }
+    /* One SQL statement supplies both summary and rows from the same snapshot.
+       The source has no LIMIT: limits apply to output groups, never to minutes.
+       No BEGIN is needed (the MySQL adapter reserves BEGIN for guarded writes). */
+    const char *prefix =
+        "WITH filtered AS (SELECT t.date,t.minutes,t.job_id,t.user_id,j.code AS job_code,"
+        "j.name AS job_name,j.client,j.status AS job_status,j.contract_id,"
+        "u.name AS user_name,u.email,u.active FROM time_entries t "
+        "JOIN jobs j ON j.id=t.job_id JOIN users u ON u.id=t.user_id "
+        "WHERE t.date>=? AND t.date<=? AND (?=0 OR t.job_id=?) AND (?=0 OR t.user_id=?)),"
+        "totals AS (SELECT COALESCE(SUM(minutes),0) AS minutes,COUNT(*) AS entry_count,"
+        "COUNT(DISTINCT job_id) AS job_count,COUNT(DISTINCT user_id) AS user_count,"
+        "COALESCE(SUM(CASE WHEN contract_id IS NULL THEN minutes ELSE 0 END),0) AS uncontracted_minutes "
+        "FROM filtered)";
+    if (labor) prefix =
+        "WITH filtered AS (SELECT t.minutes,t.job_id,t.user_id,j.code AS job_code,j.name AS job_name,"
+        "u.name AS user_name,u.email,r.id AS rate_id,"
+        /* Remove the remainder before dividing. SQLite integer division and
+           MySQL decimal division then return the same exact HALF_UP cents,
+           without casting or rounding each user's aggregated minutes. */
+        "CASE WHEN r.id IS NULL THEN NULL ELSE ((t.minutes*r.hourly_cents+30)-"
+        "((t.minutes*r.hourly_cents+30)%60))/60 END AS entry_cost_cents "
+        "FROM time_entries t JOIN jobs j ON j.id=t.job_id JOIN users u ON u.id=t.user_id "
+        "LEFT JOIN labor_rates r ON r.user_id=t.user_id AND r.starts_on<=t.date "
+        "AND (r.ends_on IS NULL OR r.ends_on>=t.date) "
+        "WHERE t.date>=? AND t.date<=? AND (?=0 OR t.job_id=?) AND (?=0 OR t.user_id=?)),"
+        "totals AS (SELECT COALESCE(SUM(minutes),0) AS minutes,COUNT(*) AS entry_count,"
+        "COUNT(DISTINCT job_id) AS job_count,COUNT(DISTINCT user_id) AS user_count,"
+        "COALESCE(SUM(entry_cost_cents),0) AS estimated_cost_cents,"
+        "COALESCE(SUM(CASE WHEN rate_id IS NOT NULL THEN minutes ELSE 0 END),0) AS priced_minutes,"
+        "COALESCE(SUM(CASE WHEN rate_id IS NULL THEN minutes ELSE 0 END),0) AS unpriced_minutes FROM filtered)";
+    const char *suffix;
+    if (strcmp(view, "date") == 0) suffix =
+        ",report_rows AS (SELECT date,SUM(minutes) AS minutes,COUNT(*) AS entry_count,"
+        "COUNT(DISTINCT job_id) AS job_count,COUNT(DISTINCT user_id) AS user_count "
+        "FROM filtered GROUP BY date) "
+        "SELECT s.minutes,s.entry_count,s.job_count,s.user_count,r.date,r.minutes,r.entry_count,r.job_count,r.user_count "
+        "FROM totals s LEFT JOIN report_rows r ON 1=1 ORDER BY r.date";
+    else if (strcmp(view, "job") == 0) suffix =
+        ",report_rows AS (SELECT job_id,job_code,job_name,client,job_status,SUM(minutes) AS minutes,"
+        "COUNT(*) AS entry_count,COUNT(DISTINCT user_id) AS user_count FROM filtered "
+        "GROUP BY job_id,job_code,job_name,client,job_status) "
+        "SELECT s.minutes,s.entry_count,s.job_count,s.user_count,r.job_id,r.job_code,r.job_name,r.client,r.job_status,"
+        "r.minutes,r.entry_count,r.user_count FROM totals s LEFT JOIN report_rows r ON 1=1 "
+        "ORDER BY r.minutes DESC,r.job_code COLLATE NOCASE,r.job_id";
+    else if (strcmp(view, "user") == 0) suffix =
+        ",report_rows AS (SELECT user_id,user_name,email,active,SUM(minutes) AS minutes,"
+        "COUNT(*) AS entry_count,COUNT(DISTINCT job_id) AS job_count FROM filtered "
+        "GROUP BY user_id,user_name,email,active) "
+        "SELECT s.minutes,s.entry_count,s.job_count,s.user_count,r.user_id,r.user_name,r.email,r.active,"
+        "r.minutes,r.entry_count,r.job_count FROM totals s LEFT JOIN report_rows r ON 1=1 "
+        "ORDER BY r.minutes DESC,r.user_name COLLATE NOCASE,r.user_id";
+    else if (labor) suffix =
+        ",report_rows AS (SELECT user_id,user_name,email,job_id,job_code,job_name,SUM(minutes) AS minutes,"
+        "COUNT(*) AS entry_count,SUM(CASE WHEN rate_id IS NOT NULL THEN minutes ELSE 0 END) AS priced_minutes,"
+        "SUM(CASE WHEN rate_id IS NULL THEN minutes ELSE 0 END) AS unpriced_minutes,"
+        "SUM(entry_cost_cents) AS cost_cents FROM filtered GROUP BY user_id,user_name,email,job_id,job_code,job_name) "
+        "SELECT s.minutes,s.entry_count,s.job_count,s.user_count,s.estimated_cost_cents,s.priced_minutes,s.unpriced_minutes,"
+        "r.user_id,r.user_name,r.email,r.job_id,r.job_code,r.job_name,r.minutes,r.entry_count,r.priced_minutes,"
+        "r.unpriced_minutes,r.cost_cents FROM totals s LEFT JOIN report_rows r ON 1=1 "
+        "ORDER BY r.user_name COLLATE NOCASE,r.user_id,r.job_code COLLATE NOCASE,r.job_id";
+    else suffix =
+        ",contract_totals AS (SELECT contract_id,COUNT(DISTINCT job_id) AS job_count,SUM(minutes) AS minutes "
+        "FROM filtered WHERE contract_id IS NOT NULL GROUP BY contract_id),"
+        "report_rows AS (SELECT c.id AS contract_id,c.code,c.title,s.name AS supplier_name,c.status,"
+        "c.starts_on,c.ends_on,c.value_cents,c.currency,t.job_count,t.minutes "
+        "FROM contract_totals t JOIN contracts c ON c.id=t.contract_id JOIN suppliers s ON s.id=c.supplier_id),"
+        "financial_totals AS (SELECT COUNT(*) AS contract_count,COALESCE(SUM(value_cents),0) AS known_value_cents,"
+        "COALESCE(SUM(CASE WHEN value_cents IS NULL THEN 1 ELSE 0 END),0) AS unpriced_contract_count FROM report_rows) "
+        "SELECT s.minutes,s.entry_count,s.job_count,s.user_count,f.contract_count,f.known_value_cents,"
+        "f.unpriced_contract_count,s.uncontracted_minutes,r.contract_id,r.code,r.title,r.supplier_name,r.status,"
+        "r.starts_on,r.ends_on,r.value_cents,r.currency,r.job_count,r.minutes "
+        "FROM totals s CROSS JOIN financial_totals f LEFT JOIN report_rows r ON 1=1 "
+        "ORDER BY r.code COLLATE NOCASE,r.contract_id";
+    char sql[4096];
+    int length = snprintf(sql, sizeof(sql), "%s%s", prefix, suffix);
+    DbStmt *statement = NULL;
+    Json json = {0};
+    if (length < 0 || (size_t)length >= sizeof(sql) || !prepare(&statement, sql) ||
+        !bind_text(statement, 1, from) || !bind_text(statement, 2, to) ||
+        !bind_id(statement, 3, job_id) || !bind_id(statement, 4, job_id) ||
+        !bind_id(statement, 5, user_id) || !bind_id(statement, 6, user_id))
+        goto database_failure;
+    int result = db_step(statement);
+    if (result != DB_ROW) goto database_failure;
+    append(&json, "{\"ok\":true,\"view\":"); append_string(&json, view);
+    append(&json, ",\"from\":"); append_string(&json, from);
+    append(&json, ",\"to\":"); append_string(&json, to);
+    append(&json, ",\"today\":"); append_string(&json, today);
+    append(&json, ",\"scope\":"); append_string(&json, manager ? "all" : "personal");
+    append(&json, ",\"summary\":{\"minutes\":"); append_integer(&json, db_column_int64(statement, 0));
+    report_integer(&json, "entry_count", statement, 1);
+    report_integer(&json, "job_count", statement, 2);
+    report_integer(&json, "user_count", statement, 3);
+    if (cost) {
+        report_integer(&json, "contract_count", statement, 4);
+        report_integer(&json, "known_value_cents", statement, 5);
+        report_integer(&json, "unpriced_contract_count", statement, 6);
+        report_integer(&json, "uncontracted_minutes", statement, 7);
+    } else if (labor) {
+        report_integer(&json, "estimated_cost_cents", statement, 4);
+        report_integer(&json, "priced_minutes", statement, 5);
+        report_integer(&json, "unpriced_minutes", statement, 6);
+    }
+    append(&json, "},\"options\":"); append(&json, options.data);
+    append(&json, ",\"rows\":[");
+    int rows = 0;
+    do {
+        if (db_column_type(statement, cost ? 8 : labor ? 7 : 4) != DB_NULL) {
+            if (++rows > RESULT_LIMIT) {
+                db_finalize(statement); free(json.data); free(options.data);
+                error(response, 409, "Il report contiene più di 1000 righe: restringi il periodo o i filtri. Nessun risultato parziale è stato restituito.");
+                goto cleanup;
+            }
+            if (rows > 1) append(&json, ",");
+            report_row(&json, view, statement);
+        }
+        if (json.failed) goto database_failure;
+    } while ((result = db_step(statement)) == DB_ROW);
+    db_finalize(statement); statement = NULL;
+    if (result != DB_DONE) goto database_failure;
+    append(&json, "]}");
+    free(options.data);
+    finish_json(response, 200, &json);
+    goto cleanup;
+database_failure:
+    db_finalize(statement); free(json.data); free(options.data);
+    server_error(response);
+cleanup:
+    free_fields(fields, count);
+}
+
 static void write_entry(const char *body, DbInt actor_id, const char *owner,
                         bool manager, DbInt id, WorkspaceResponse *response) {
     Field fields[] = {{"job_id", NULL}, {"date", NULL}, {"minutes", NULL}, {"note", NULL}};
@@ -722,7 +1092,12 @@ static void write_entry(const char *body, DbInt actor_id, const char *owner,
         if (permission < 0) goto database_failure;
     }
     if (!(permission & 2)) {
+        if (!prepare(&statement,"SELECT 1 FROM jobs WHERE id=?") || !bind_id(statement,1,job_id)) goto database_failure;
+        int found=db_step(statement);
+        db_finalize(statement); statement=NULL;
+        if (found!=DB_ROW && found!=DB_DONE) goto database_failure;
         rollback();
+        if (found==DB_DONE) alerts_record_invalid_job(actor_id,job_id,date,minutes);
         error(response, manager ? 404 : 403, manager ? "Commessa non trovata." :
             "Non hai il permesso di registrare ore su questa commessa oggi e nella data lavorata. Contatta il gestore.");
         free(before.data); free_fields(fields, count); return;
@@ -836,6 +1211,168 @@ static void list_assignments(DbInt job_id, WorkspaceResponse *response) {
 
 static bool bind_date(DbStmt *statement, int index, const char *date) {
     return *date ? bind_text(statement, index, date) : db_bind_null(statement, index) == DB_OK;
+}
+
+static void labor_rate_json(Json *json, DbStmt *statement) {
+    append(json, "{\"id\":"); append_integer(json, db_column_int64(statement, 0));
+    report_integer(json, "user_id", statement, 1);
+    report_string(json, "user_name", statement, 2);
+    report_string(json, "user_email", statement, 3);
+    report_integer(json, "hourly_cents", statement, 4);
+    report_string(json, "currency", statement, 5);
+    report_string(json, "starts_on", statement, 6);
+    report_string(json, "ends_on", statement, 7);
+    append(json, "}");
+}
+
+static int labor_rate_snapshot(DbInt id, Json *json, DbInt *user_id) {
+    DbStmt *statement = NULL;
+    if (!prepare(&statement,
+        "SELECT r.id,r.user_id,u.name,u.email,r.hourly_cents,r.currency,r.starts_on,r.ends_on "
+        "FROM labor_rates r JOIN users u ON u.id=r.user_id WHERE r.id=?") ||
+        !bind_id(statement, 1, id)) {
+        db_finalize(statement);
+        return -1;
+    }
+    int result = db_step(statement);
+    if (result == DB_ROW) {
+        labor_rate_json(json, statement);
+        if (user_id) *user_id = db_column_int64(statement, 1);
+    }
+    db_finalize(statement);
+    if (json->failed) return -1;
+    return result == DB_ROW ? 1 : result == DB_DONE ? 0 : -1;
+}
+
+static void list_labor_rates(WorkspaceResponse *response) {
+    DbStmt *statement = NULL;
+    if (!prepare(&statement,
+        "SELECT r.id,r.user_id,u.name,u.email,r.hourly_cents,r.currency,r.starts_on,r.ends_on "
+        "FROM labor_rates r JOIN users u ON u.id=r.user_id "
+        "ORDER BY u.name COLLATE NOCASE,r.user_id,r.starts_on DESC,r.id DESC")) {
+        server_error(response);
+        return;
+    }
+    Json json = {0};
+    append(&json, "{\"ok\":true,\"rates\":[");
+    int result, count = 0;
+    while ((result = db_step(statement)) == DB_ROW) {
+        if (++count > RESULT_LIMIT) break;
+        if (count > 1) append(&json, ",");
+        labor_rate_json(&json, statement);
+        if (json.failed) break;
+    }
+    db_finalize(statement);
+    if (count > RESULT_LIMIT || result != DB_DONE || json.failed) {
+        free(json.data);
+        if (count > RESULT_LIMIT)
+            error(response, 409, "Sono presenti più di 1000 tariffe: nessun risultato parziale è stato restituito.");
+        else server_error(response);
+        return;
+    }
+    append(&json, "]}");
+    finish_json(response, 200, &json);
+}
+
+static bool parse_hourly_cents(const char *text, DbInt *value) {
+    if (!text || !*text) return false;
+    DbInt result = 0;
+    for (const char *p = text; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        int digit = *p - '0';
+        if (result > (99999999 - digit) / 10) return false;
+        result = result * 10 + digit;
+    }
+    *value = result;
+    return true;
+}
+
+static void write_labor_rate(const char *body, DbInt actor_id, DbInt id,
+                              WorkspaceResponse *response) {
+    Field fields[] = {{"user_id", NULL}, {"hourly_cents", NULL}, {"starts_on", NULL},
+                      {"ends_on", NULL}, {"currency", NULL}};
+    const size_t count = sizeof(fields) / sizeof(fields[0]);
+    if (!parse_fields(body, fields, count, response)) return;
+    DbInt user_id, hourly_cents;
+    const char *starts_on = field_value(&fields[2]), *ends_on = field_value(&fields[3]);
+    if (!parse_positive(field_value(&fields[0]), &user_id) ||
+        !parse_hourly_cents(field_value(&fields[1]), &hourly_cents) ||
+        !valid_date(starts_on) || (*ends_on && !valid_date(ends_on)) ||
+        (*ends_on && strcmp(starts_on, ends_on) > 0) ||
+        strcmp(field_value(&fields[4]), "EUR") != 0) {
+        error(response, 400, "Seleziona un utente, una tariffa da 0 a 99999999 centesimi/ora, valuta EUR e date valide. La fine non può precedere l'inizio.");
+        free_fields(fields, count);
+        return;
+    }
+    if (!begin_transaction(response)) { free_fields(fields, count); return; }
+    DbStmt *statement = NULL;
+    Json before = {0}, after = {0};
+    if (id) {
+        DbInt existing_user_id = 0;
+        int found = labor_rate_snapshot(id, &before, &existing_user_id);
+        if (found < 0) goto database_failure;
+        if (!found) {
+            rollback(); error(response, 404, "Tariffa non trovata.");
+            goto cleanup;
+        }
+        if (existing_user_id != user_id) {
+            rollback(); error(response, 400, "L'utente di una tariffa esistente non può essere modificato.");
+            goto cleanup;
+        }
+    }
+    if (!prepare(&statement, "SELECT 1 FROM users WHERE id=?") ||
+        !bind_id(statement, 1, user_id)) goto database_failure;
+    int result = db_step(statement);
+    db_finalize(statement); statement = NULL;
+    if (result == DB_DONE) {
+        rollback(); error(response, 404, "Utente non trovato.");
+        goto cleanup;
+    }
+    if (result != DB_ROW) goto database_failure;
+    if (!id) {
+        if (!prepare(&statement, "SELECT COUNT(*) FROM labor_rates") ||
+            db_step(statement) != DB_ROW) goto database_failure;
+        DbInt existing = db_column_int64(statement, 0);
+        db_finalize(statement); statement = NULL;
+        if (existing >= RESULT_LIMIT) {
+            rollback(); error(response, 409, "Hai raggiunto il limite di 1000 tariffe.");
+            goto cleanup;
+        }
+    }
+    /* Inclusive boundaries: a rate ending on a given date conflicts with a
+       second rate starting on the same day. The guarded transaction serializes
+       this check with all other application writes, including on MySQL primaries. */
+    if (!prepare(&statement,
+        "SELECT 1 FROM labor_rates WHERE user_id=? AND id<>? "
+        "AND (ends_on IS NULL OR ends_on>=?) AND (? IS NULL OR starts_on<=?)") ||
+        !bind_id(statement, 1, user_id) || !bind_id(statement, 2, id) ||
+        !bind_text(statement, 3, starts_on) || !bind_date(statement, 4, ends_on) ||
+        !bind_date(statement, 5, ends_on)) goto database_failure;
+    result = db_step(statement);
+    db_finalize(statement); statement = NULL;
+    if (result == DB_ROW) {
+        rollback(); error(response, 409, "Le date si sovrappongono a un'altra tariffa dello stesso utente. Ogni giornata può avere una sola tariffa.");
+        goto cleanup;
+    }
+    if (result != DB_DONE) goto database_failure;
+    if (!prepare(&statement, id ?
+        "UPDATE labor_rates SET hourly_cents=?,currency=?,starts_on=?,ends_on=? WHERE id=?" :
+        "INSERT INTO labor_rates(hourly_cents,currency,starts_on,ends_on,user_id) VALUES(?,?,?,?,?)") ||
+        !bind_id(statement, 1, hourly_cents) || !bind_text(statement, 2, "EUR") ||
+        !bind_text(statement, 3, starts_on) || !bind_date(statement, 4, ends_on) ||
+        !bind_id(statement, 5, id ? id : user_id) || db_step(statement) != DB_DONE)
+        goto database_failure;
+    db_finalize(statement); statement = NULL;
+    DbInt saved_id = id ? id : db_last_insert_rowid(database);
+    if (labor_rate_snapshot(saved_id, &after, NULL) != 1 ||
+        !storage_audit(database, actor_id, id ? "labor_rates.update" : "labor_rates.create",
+                       "labor_rate", saved_id, before.data, after.data)) goto database_failure;
+    if (commit_transaction(response)) success(response, id ? 200 : 201, saved_id);
+    goto cleanup;
+database_failure:
+    db_finalize(statement); rollback(); server_error(response);
+cleanup:
+    free(before.data); free(after.data); free_fields(fields, count);
 }
 
 static void write_assignment(const char *body, DbInt actor_id,
@@ -972,7 +1509,11 @@ bool workspace_handle(const char *method, const char *target, const char *query,
     bool job_item = strncmp(target, "/api/jobs/", 10) == 0;
     bool entries = strcmp(target, "/api/time-entries") == 0;
     bool entry_item = strncmp(target, "/api/time-entries/", 18) == 0;
-    if (!jobs && !job_item && !entries && !entry_item) return false;
+    bool reports = strcmp(target, "/api/reports") == 0;
+    bool labor_rates = strcmp(target, "/api/labor-rates") == 0;
+    bool labor_rate_item = strncmp(target, "/api/labor-rates/", 17) == 0;
+    if (!jobs && !job_item && !entries && !entry_item && !reports &&
+        !labor_rates && !labor_rate_item) return false;
     response->status = 0;
     response->body = NULL;
     if (!database) { server_error(response); return true; }
@@ -981,11 +1522,28 @@ bool workspace_handle(const char *method, const char *target, const char *query,
     bool worker = role && strcmp(role, "worker") == 0;
     if ((!manager && !worker) || (!manager &&
         (((jobs || job_item || entry_item) && strcmp(method, "POST") == 0) ||
-         (entry_item && strcmp(method, "DELETE") == 0)))) {
+         ((job_item || entry_item) && strcmp(method, "DELETE") == 0)))) {
         error(response, 403, "Il tuo ruolo non consente questa operazione."); return true;
     }
     if (!query) query = "";
     if (!body) body = "";
+    if (labor_rates || labor_rate_item) {
+        if (!manager) { error(response, 403, "La gestione delle tariffe è riservata ai gestori."); return true; }
+        if (*query) { error(response, 400, "Parametri della richiesta non validi."); return true; }
+        DbInt rate_id = 0;
+        if (labor_rate_item && !parse_positive(target + 17, &rate_id)) {
+            error(response, 400, "Identificativo non valido."); return true;
+        }
+        if (labor_rates && strcmp(method, "GET") == 0) list_labor_rates(response);
+        else if (strcmp(method, "POST") == 0) write_labor_rate(body, actor_id, rate_id, response);
+        else error(response, 405, "Metodo non consentito.");
+        return true;
+    }
+    if (reports) {
+        if (strcmp(method, "GET") == 0) list_report(query, actor_id, manager, response);
+        else error(response, 405, "Metodo non consentito.");
+        return true;
+    }
     DbInt id = 0, user_id = 0;
     bool assignments = false;
     if ((job_item && !parse_job_path(target + 10, &id, &assignments, &user_id)) ||
@@ -1005,6 +1563,7 @@ bool workspace_handle(const char *method, const char *target, const char *query,
         else error(response, 405, "Metodo non consentito.");
     } else if (jobs && strcmp(method, "GET") == 0) list_jobs(actor_id, manager, response);
     else if ((jobs || job_item) && strcmp(method, "POST") == 0) write_job(body, actor_id, id, response);
+    else if (job_item && strcmp(method,"DELETE") == 0) delete_job(body,actor_id,id,response);
     else if (entries && strcmp(method, "GET") == 0) list_entries(query, actor_id, response);
     else if ((entries || entry_item) && strcmp(method, "POST") == 0)
         write_entry(body, actor_id, owner, manager, id, response);

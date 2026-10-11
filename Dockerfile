@@ -7,6 +7,8 @@ RUN apt-get update \
         libmariadb-dev \
         libmongoc-dev \
         libssl-dev \
+        libcurl4-openssl-dev \
+        libjson-c-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -21,6 +23,8 @@ RUN apt-get update \
         libmariadb3 \
         libmongoc-1.0-0 \
         libssl3 \
+        libcurl4 \
+        libjson-c5 \
         ca-certificates \
         curl \
         tzdata \
@@ -42,6 +46,6 @@ EXPOSE 8080
 STOPSIGNAL SIGTERM
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl --fail --silent --show-error --max-time 3 --header "Host: localhost:${PORT}" "http://${BIND_HOST:-127.0.0.1}:${PORT}/healthz" || exit 1
+    CMD curl --noproxy '*' --fail --silent --show-error --max-time 3 --header "Host: localhost:${PORT}" "http://${BIND_HOST:-127.0.0.1}:${PORT}/healthz" || exit 1
 
 CMD ["./punto"]

@@ -9,6 +9,7 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/workspace.css">
+    <link rel="stylesheet" href="/reports.css">
     <script src="/app.js" defer></script>
   </head>
   <body class="work-app">
@@ -16,7 +17,7 @@
     <div class="app-shell">
       <header class="app-header">
         <a class="brand" href="/app" aria-label="punto, il tuo spazio"><svg class="brand-mark" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="1" y="1" width="11" height="11" rx="3.5" fill="currentColor"/><rect x="17" y="1" width="11" height="11" rx="3.5" fill="currentColor"/><rect x="1" y="17" width="11" height="11" rx="3.5" fill="currentColor"/><circle cx="22.5" cy="22.5" r="5.5" fill="#ee654b"/></svg><span>punto<span class="brand-period">.</span></span></a>
-        <span class="header-workspace">Il tuo spazio di lavoro <span class="header-separator">/</span> <strong>Commesse e ore</strong></span>
+        <span class="header-workspace">Il tuo spazio di lavoro <span class="header-separator">/</span> <strong id="workspace-current-view">Commesse e ore</strong></span>
         <div class="account"><span id="user-avatar" class="account-avatar" aria-hidden="true">P</span><div class="account-details"><div class="account-heading"><span id="session-name" class="account-name">Il tuo account</span><span id="session-role" class="role-badge" hidden></span></div><span id="session-email">Caricamento…</span></div><button id="logout" class="account-logout" type="button" aria-label="Esci dall’account">Esci <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 4H5v16h5m5-13 5 5-5 5m-6-5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
       </header>
       <p id="session-status" class="session-state" role="status">Stiamo aprendo il tuo spazio di lavoro…</p>
@@ -26,6 +27,9 @@
           <div class="app-navigation" role="tablist" aria-label="Sezioni" aria-orientation="vertical">
             <button id="tab-jobs" class="nav-item is-active" type="button" role="tab" aria-selected="true" aria-controls="panel-jobs"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M3 12h18m-11 0v3h4v-3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><span>Commesse</span><span id="nav-jobs-count" class="nav-count">0</span></button>
             <button id="tab-hours" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-hours" tabindex="-1"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Registro ore</span></button>
+            <button id="tab-reports" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-reports" tabindex="-1"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 3v18h17M8 16v-5m5 5V6m5 10v-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Analisi</span></button>
+            <button id="tab-notifications" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-notifications" tabindex="-1"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0v5l2 3H4l2-3zm4 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Notifiche</span><span id="nav-notifications-count" class="nav-count notification-unread-count" aria-label="Notifiche non lette" hidden>0</span></button>
+            <button id="tab-alerts" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-alerts" tabindex="-1" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16M8 3v4m8 3v4m-6 3v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>Alert e trigger</span></button>
             <button id="tab-suppliers" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-suppliers" tabindex="-1" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 21h18M5 21V5l7-2 7 2v16M9 8h1m4 0h1m-6 4h1m4 0h1m-6 4h1m4 0h1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Fornitori</span></button>
             <button id="tab-contracts" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-contracts" tabindex="-1" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h10l4 4v14H5zM15 3v5h4M9 12h6m-6 4h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Contratti</span></button>
             <button id="tab-users" class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="panel-users" tabindex="-1" hidden><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m1-16a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 4v3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>Utenti</span></button>
@@ -40,7 +44,7 @@
           <p id="permission-hint" class="permission-hint"></p>
           <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="notice-text"></span><button id="notice-close" type="button" aria-label="Chiudi messaggio">×</button></div>
           <div id="load-error" class="notice notice-error" role="alert" hidden><span id="load-error-text"></span><button id="retry-load" type="button">Riprova</button></div>
-          <section class="summary-grid" aria-label="Il lavoro in sintesi">
+          <section id="workspace-summary" class="summary-grid" aria-label="Le tue commesse e le tue ore di oggi">
             <div class="summary-card"><div class="summary-label">Commesse in corso<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 17 5-5 4 3 7-9m-5 0h5v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="summary-value"><span id="stat-active">—</span><span class="metric-dot" aria-hidden="true"></span></div><p id="stat-active-caption">Il lavoro che prende forma</p></div>
             <div class="summary-card"><div class="summary-label">Le tue ore di oggi<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div><div id="stat-today" class="summary-value">—</div><p id="stat-today-caption">Il tempo dedicato alle commesse</p></div>
             <div class="summary-card summary-card-tinted"><div class="summary-label">Commesse totali<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="m14 17 2 2 4-5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div id="stat-jobs" class="summary-value">—</div><p>Ogni progetto ha il suo spazio</p></div>
@@ -60,6 +64,54 @@
             <div id="entries-table-wrap" class="table-wrap" hidden><table class="entries-table"><caption class="sr-only">Le tue ore registrate per la giornata selezionata</caption><thead><tr><th scope="col">Commessa</th><th scope="col">Attività / nota</th><th scope="col">Ore lavorate</th><th id="entries-actions-heading" scope="col"><span class="sr-only">Azioni</span></th></tr></thead><tbody id="entries-body"></tbody></table></div>
             <div id="entries-empty" class="empty-state" hidden><div class="empty-illustration" aria-hidden="true"><svg width="53" height="53" viewBox="0 0 56 56" fill="none"><circle cx="27" cy="27" r="19" fill="#fffdf8" stroke="#8b9a7d" stroke-width="1.5"/><path d="M27 15v13l8 5" stroke="#8b9a7d" stroke-width="1.5" stroke-linecap="round"/><circle cx="42" cy="41" r="10" fill="#e96850"/><path d="M42 37v8m-4-4h8" stroke="white" stroke-width="1.7" stroke-linecap="round"/></svg></div><h3>Il tuo tempo merita una traccia.</h3><p>Nessuna ora registrata per questa giornata.<br>Aggiungi il lavoro svolto sulle tue commesse.</p><button id="empty-new-entry" class="button button-primary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Registra le prime ore</button></div>
             <div class="table-footer"><span>Le registrazioni sono associate al tuo account.</span><span id="day-entries-count"></span></div>
+          </section>
+          <section id="panel-reports" class="content-panel" role="tabpanel" aria-labelledby="tab-reports" tabindex="0" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">IL LAVORO, DA OGNI PUNTO DI VISTA</p><h2>Analisi del lavoro</h2><p>Consulta ore e attività per periodo, commessa o persona.</p></div></div>
+            <div class="report-tabs" role="tablist" aria-label="Viste di analisi">
+              <button id="report-tab-periodo" class="report-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="report-view">Per periodo</button>
+              <button id="report-tab-commesse" class="report-tab" type="button" role="tab" aria-selected="false" aria-controls="report-view" tabindex="-1">Per commessa</button>
+              <button id="report-tab-utenti" class="report-tab" type="button" role="tab" aria-selected="false" aria-controls="report-view" tabindex="-1">Per utente</button>
+              <button id="report-tab-costi" class="report-tab" type="button" role="tab" aria-selected="false" aria-controls="report-view" tabindex="-1" hidden>Valore contratti</button>
+              <button id="report-tab-costo-ore" class="report-tab" type="button" role="tab" aria-selected="false" aria-controls="report-view" tabindex="-1" hidden>Costo delle ore</button>
+            </div>
+            <div id="report-view" class="report-view" role="tabpanel" aria-labelledby="report-tab-periodo" tabindex="0">
+              <h3 id="report-title" class="report-view-title">Il lavoro nel periodo</h3>
+              <p id="report-scope" class="report-scope"></p>
+              <form id="report-form" class="report-form" novalidate>
+                <div class="report-filters">
+                  <div class="work-field"><label for="report-from">Dal <span aria-hidden="true">*</span></label><input id="report-from" name="from" type="date" required></div>
+                  <div class="work-field"><label for="report-to">Al <span aria-hidden="true">*</span></label><input id="report-to" name="to" type="date" required></div>
+                  <div class="work-field"><label for="report-job">Commessa</label><select id="report-job" name="job_id"><option value="">Tutte le commesse</option></select></div>
+                  <div id="report-user-field" class="work-field" hidden><label for="report-user">Utente</label><select id="report-user" name="user_id"><option value="">Tutti gli utenti</option></select></div>
+                </div>
+                <div class="report-filter-actions"><div class="report-presets" aria-label="Periodi rapidi"><button class="report-preset" type="button" data-report-preset="today">Oggi</button><button class="report-preset" type="button" data-report-preset="week">Questa settimana</button><button class="report-preset" type="button" data-report-preset="month">Questo mese</button></div><div class="report-form-actions"><button id="report-reset" class="button button-secondary" type="button">Azzera</button><button id="report-apply" class="button button-primary" type="submit">Applica</button></div></div>
+                <p class="field-help">Date comprese, fino a 366 giorni. I filtri si mantengono passando da una vista all’altra.</p>
+              </form>
+              <p id="report-cost-notice" class="report-cost-notice" hidden>Contratti collegati al lavoro nel periodo: il valore contrattuale è intero, senza ripartizione sul periodo. Non rappresenta il costo delle ore, una spesa maturata o un margine.</p>
+              <p id="report-labor-notice" class="report-cost-notice" hidden>Stima basata sulle tariffe attuali valide alla data del lavoro; le modifiche alle tariffe ricalcolano la stima. Arrotondamento per registrazione. Importi in EUR.</p>
+              <div id="report-loading" class="data-loading" role="status" hidden>Caricamento dell’analisi…</div>
+              <div id="report-error" class="audit-error" role="alert" hidden><span id="report-error-text"></span><button id="report-retry" class="row-button" type="button">Riprova</button></div>
+              <div id="report-results" class="report-results" aria-busy="false" hidden>
+                <p id="report-caption" class="report-caption" aria-live="polite"></p>
+                <div class="report-summary" aria-label="Totali del periodo filtrato">
+                  <div class="report-metric"><span>Ore registrate</span><strong id="report-total-hours">—</strong></div>
+                  <div class="report-metric"><span>Registrazioni</span><strong id="report-total-entries">—</strong></div>
+                  <div class="report-metric"><span>Commesse con ore</span><strong id="report-total-jobs">—</strong></div>
+                  <div class="report-metric"><span>Utenti con ore</span><strong id="report-total-users">—</strong></div>
+                </div>
+                <div id="report-cost-summary" class="report-cost-summary" hidden><p><span>Valore contrattuale noto (EUR)</span><strong id="report-known-value">—</strong></p><p id="report-contract-count"></p><p id="report-unpriced-count"></p><p id="report-uncontracted-hours"></p></div>
+                <div id="report-labor-summary" class="report-cost-summary" hidden><p><span>Costo stimato delle ore coperte da tariffa (EUR)</span><strong id="report-estimated-cost">—</strong></p><p id="report-priced-hours"></p><p id="report-unpriced-hours"></p></div>
+                <div id="report-table-wrap" class="table-wrap" hidden><table class="report-table"><caption id="report-table-caption" class="sr-only">Analisi delle ore per giorno</caption><thead id="report-head"></thead><tbody id="report-body"></tbody></table></div>
+                <div id="report-empty" class="empty-state report-empty" hidden><h3>Nessun dato per questi filtri.</h3><p id="report-empty-text">Prova un altro periodo oppure azzera i filtri.</p></div>
+              </div>
+              <section id="report-rates" class="report-rates" aria-labelledby="report-rates-title" hidden>
+                <div class="report-rates-heading"><div><h3 id="report-rates-title">Tariffe orarie</h3><p class="field-help">Una tariffa per utente e intervallo di validità. Le date sono comprese; gli intervalli dello stesso utente non possono sovrapporsi.</p></div><button id="report-new-rate" class="button button-secondary" type="button">Nuova tariffa</button></div>
+                <div id="report-rates-loading" class="data-loading" role="status" hidden>Caricamento delle tariffe…</div>
+                <div id="report-rates-error" class="audit-error" role="alert" hidden><span id="report-rates-error-text"></span><button id="report-rates-retry" class="row-button" type="button">Riprova</button></div>
+                <div id="report-rates-table-wrap" class="table-wrap" hidden><table class="report-table"><caption class="sr-only">Tariffe orarie degli utenti e periodi di validità</caption><thead><tr><th scope="col">Utente</th><th scope="col">Tariffa oraria</th><th scope="col">Dal</th><th scope="col">Al</th><th scope="col"><span class="sr-only">Azioni</span></th></tr></thead><tbody id="report-rates-body"></tbody></table></div>
+                <p id="report-rates-empty" class="field-help" hidden>Nessuna tariffa definita. Aggiungi la prima tariffa per stimare il costo delle ore.</p>
+              </section>
+            </div>
           </section>
           <section id="panel-suppliers" class="content-panel" role="tabpanel" aria-labelledby="tab-suppliers" tabindex="0" hidden>
             <div class="panel-heading"><div><p class="section-kicker">LE RELAZIONI, IN ORDINE</p><h2>Fornitori <span id="suppliers-count" class="heading-count">0</span></h2><p>Anagrafiche e contatti dei partner dei tuoi contratti.</p></div><button id="new-supplier" class="button button-primary" type="button"><span class="plus-sign" aria-hidden="true">+</span>Nuovo fornitore</button></div>
@@ -100,9 +152,32 @@
             </div>
             <div id="organization-confirm" class="assignment-revoke" hidden><p id="organization-confirm-text"></p><div><button id="organization-confirm-cancel" class="button button-secondary" type="button">Annulla</button><button id="organization-confirm-save" class="button button-danger" type="button">Conferma</button></div></div>
           </section>
+          <section id="panel-notifications" class="content-panel" role="tabpanel" aria-labelledby="tab-notifications" tabindex="0" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">GLI AVVISI, AL MOMENTO GIUSTO</p><h2>Le tue notifiche <span id="notifications-count" class="heading-count">0</span></h2><p>Gli avvisi destinati al tuo account, con il contesto per intervenire.</p></div><button id="notifications-refresh" class="button button-secondary" type="button">Aggiorna</button></div>
+            <p id="notifications-summary" class="alerts-explanation" aria-live="polite">Caricamento delle notifiche…</p>
+            <div id="notifications-loading" class="data-loading" role="status">Caricamento delle notifiche…</div>
+            <div id="notifications-error" class="audit-error" role="alert" hidden><span id="notifications-error-text"></span><button id="notifications-retry" class="row-button" type="button">Riprova</button></div>
+            <ol id="notifications-list" class="notifications-list" aria-label="Notifiche dalla più recente"></ol>
+            <div id="notifications-empty" class="empty-state" hidden><h3>Nessun avviso da leggere.</h3><p>Le notifiche delle regole che ti includono tra i destinatari appariranno qui.</p></div>
+            <div class="table-footer"><span>Aggiornamento automatico ogni minuto.</span><span>Orari in Europe/Rome</span></div>
+          </section>
+          <section id="panel-alerts" class="content-panel" role="tabpanel" aria-labelledby="tab-alerts" tabindex="0" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">I CONTROLLI, CON CONTINUITÀ</p><h2>Alert e trigger</h2><p>Crea regole personali, scegli l’orario giornaliero e avvisa le persone giuste.</p></div><button id="new-alert-rule" class="button button-primary" type="button" disabled><span class="plus-sign" aria-hidden="true">+</span>Nuova regola</button></div>
+            <div class="alert-catalogue" aria-label="Tipi di controllo disponibili">
+              <article class="alert-catalogue-card"><span class="alert-type-label">INTEGRITÀ DELLE COMMESSE</span><h3>Commessa inesistente</h3><p>Segnala i tentativi rifiutati di registrare ore su commesse eliminate o inesistenti. Le ore non valide non vengono salvate.</p><button class="row-button" type="button" data-new-alert-type="invalid_job" disabled>Crea questo controllo</button></article>
+              <article class="alert-catalogue-card"><span class="alert-type-label">COMPLETEZZA DEL REGISTRO</span><h3>Ore giornaliere mancanti</h3><p>Segnala le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore dalla fine della giornata. Il monitoraggio parte dalla creazione della regola.</p><button class="row-button" type="button" data-new-alert-type="missing_hours" disabled>Crea questo controllo</button></article>
+            </div>
+            <p class="alerts-explanation">Ogni regola viene eseguita ogni giorno nell’orario scelto, nel fuso Europe/Rome. Gli operatori ricevono soltanto avvisi sul proprio lavoro; i gestori possono ricevere gli avvisi relativi a tutti gli utenti.</p>
+            <p id="alerts-mail-status" class="alerts-mail-status">Email non configurata: gli invii vengono messi in attesa e non vengono spediti. Le notifiche nell’app sono disponibili subito.</p>
+            <div class="alerts-list-heading"><h3>Le tue regole <span id="alert-rules-count" class="heading-count">0</span></h3><button id="alert-rules-refresh" class="row-button" type="button">Aggiorna</button></div>
+            <div id="alert-rules-loading" class="data-loading" role="status">Caricamento delle regole…</div>
+            <div id="alert-rules-error" class="audit-error" role="alert" hidden><span id="alert-rules-error-text"></span><button id="alert-rules-retry" class="row-button" type="button">Riprova</button></div>
+            <ul id="alert-rules-list" class="alert-rules-list" aria-label="Regole create da te"></ul>
+            <div id="alert-rules-empty" class="empty-state" hidden><h3>Il primo controllo parte da qui.</h3><p>Scegli un controllo dal catalogo e imposta orario e destinatari.</p></div>
+          </section>
           <section id="panel-audit" class="content-panel" role="tabpanel" aria-labelledby="tab-audit" tabindex="0" hidden>
             <div class="panel-heading"><div><p class="section-kicker">IL LAVORO, NEL TEMPO</p><h2>Storico delle modifiche</h2><p>Chi ha fatto cosa, con i dettagli prima e dopo ogni cambiamento.</p></div><button id="audit-refresh" class="button button-secondary" type="button">Aggiorna</button></div>
-            <div class="audit-toolbar"><div class="status-filter"><label for="audit-filter">Mostra</label><select id="audit-filter"><option value="">Tutte le modifiche</option><option value="job">Commesse</option><option value="time_entry">Ore lavorate</option><option value="assignment">Abilitazioni</option><option value="user">Utenti</option><option value="supplier">Fornitori</option><option value="contract">Contratti</option><option value="contract_document">Documenti contrattuali</option><option value="group">Gruppi</option><option value="group_member">Membri dei gruppi</option><option value="job_role">Ruoli commesse</option><option value="group_grant">Abilitazioni gruppi</option><option value="system">Sistema</option></select></div><span id="audit-count" class="audit-count" aria-live="polite"></span></div>
+            <div class="audit-toolbar"><div class="status-filter"><label for="audit-filter">Mostra</label><select id="audit-filter"><option value="">Tutte le modifiche</option><option value="job">Commesse</option><option value="time_entry">Ore lavorate</option><option value="assignment">Abilitazioni</option><option value="user">Utenti</option><option value="supplier">Fornitori</option><option value="contract">Contratti</option><option value="contract_document">Documenti contrattuali</option><option value="labor_rate">Tariffe orarie</option><option value="alert_rule">Alert e trigger</option><option value="group">Gruppi</option><option value="group_member">Membri dei gruppi</option><option value="job_role">Ruoli commesse</option><option value="group_grant">Abilitazioni gruppi</option><option value="system">Sistema</option></select></div><span id="audit-count" class="audit-count" aria-live="polite"></span></div>
             <div id="audit-loading" class="data-loading" role="status">Caricamento dello storico…</div>
             <div id="audit-error" class="audit-error" role="alert" hidden><span id="audit-error-text"></span><button id="audit-retry" class="row-button" type="button">Riprova</button></div>
             <ol id="audit-list" class="audit-list" aria-label="Modifiche in ordine dalla più recente"></ol>
@@ -113,6 +188,31 @@
         </main>
       </div>
     </div>
+    <dialog id="alert-rule-dialog" class="work-dialog" aria-labelledby="alert-rule-dialog-title" aria-describedby="alert-rule-dialog-description">
+      <form id="alert-rule-form" novalidate>
+        <div class="dialog-heading"><div><p class="section-kicker">UN CONTROLLO, OGNI GIORNO</p><h2 id="alert-rule-dialog-title">Nuova regola</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="alert-rule-dialog" aria-label="Chiudi finestra">×</button></div>
+        <p id="alert-rule-dialog-description" class="dialog-description">Scegli il controllo, quando eseguirlo e chi deve ricevere gli avvisi.</p>
+        <div id="alert-rule-error" class="dialog-error" role="alert" hidden></div>
+        <div class="work-field"><label for="alert-rule-name">Nome regola <span aria-hidden="true">*</span></label><input id="alert-rule-name" maxlength="120" required autocomplete="off" placeholder="Es. Controllo giornaliero ore"></div>
+        <div class="form-grid"><div class="work-field"><label for="alert-rule-type">Tipo di controllo <span aria-hidden="true">*</span></label><select id="alert-rule-type" required aria-describedby="alert-rule-type-help"><option value="missing_hours">Ore giornaliere mancanti</option><option value="invalid_job">Commessa inesistente</option></select></div><div class="work-field"><label for="alert-rule-time">Esegui ogni giorno alle <span aria-hidden="true">*</span></label><input id="alert-rule-time" type="time" required step="60" value="09:00" aria-describedby="alert-rule-time-help"></div></div>
+        <p id="alert-rule-type-help" class="field-help"></p><p id="alert-rule-time-help" class="field-help">Orario nel fuso Europe/Rome, con il cambio automatico tra ora solare e legale.</p>
+        <div class="job-policy-field"><label class="job-policy-check" for="alert-rule-enabled"><input id="alert-rule-enabled" type="checkbox" checked><span>Regola attiva</span></label><p class="field-help">Disattivala per sospendere le esecuzioni automatiche. Potrai comunque eseguire un controllo manuale.</p></div>
+        <fieldset class="alert-recipient-fieldset"><legend>Utenti destinatari nell’app</legend><p id="alert-recipients-help" class="field-help">Seleziona fino a 50 utenti attivi. Gli operatori ricevono soltanto avvisi che li riguardano; i gestori possono ricevere gli avvisi di tutti.</p><div id="alert-rule-users" class="alert-recipient-options" aria-describedby="alert-recipients-help"></div></fieldset>
+        <div class="work-field"><label for="alert-rule-emails">Destinatari email <span class="optional">Facoltativi</span></label><textarea id="alert-rule-emails" rows="3" maxlength="13000" autocomplete="off" placeholder="nome@azienda.it, altro@azienda.it" aria-describedby="alert-rule-emails-help"></textarea><p id="alert-rule-emails-help" class="field-help">Fino a 50 indirizzi separati da virgole o righe. Email non configurata: gli invii resteranno in attesa, senza spedizione.</p></div>
+        <div class="dialog-footer"><span class="required-note">Scegli almeno un destinatario.</span><div><button class="button button-secondary" type="button" data-close-dialog="alert-rule-dialog">Annulla</button><button id="alert-rule-save" class="button button-primary" type="submit">Crea regola</button></div></div>
+      </form>
+    </dialog>
+    <dialog id="labor-rate-dialog" class="work-dialog" aria-labelledby="labor-rate-dialog-title" aria-describedby="labor-rate-dialog-description">
+      <form id="labor-rate-form" novalidate>
+        <div class="dialog-heading"><div><p class="section-kicker">IL TEMPO, CON UN VALORE</p><h2 id="labor-rate-dialog-title">Nuova tariffa oraria</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="labor-rate-dialog" aria-label="Chiudi finestra">×</button></div>
+        <p id="labor-rate-dialog-description" class="dialog-description">La tariffa stima il costo delle ore registrate da questa persona nelle date di validità. Modificarla ricalcola anche le stime del lavoro già registrato.</p>
+        <div id="labor-rate-error" class="dialog-error" role="alert" hidden></div>
+        <div class="work-field"><label for="labor-rate-user">Utente <span aria-hidden="true">*</span></label><select id="labor-rate-user" required><option value="">Seleziona un utente</option></select></div>
+        <div class="work-field"><label for="labor-rate-hourly">Tariffa in EUR per ora <span aria-hidden="true">*</span></label><input id="labor-rate-hourly" type="text" inputmode="decimal" required autocomplete="off" placeholder="Es. 45,50"><p class="field-help">Da 0 a 999.999,99 EUR, con al massimo due decimali.</p></div>
+        <div class="form-grid"><div class="work-field"><label for="labor-rate-from">Valida dal <span aria-hidden="true">*</span></label><input id="labor-rate-from" type="date" required></div><div class="work-field"><label for="labor-rate-to">Valida al <span class="optional">Facoltativo</span></label><input id="labor-rate-to" type="date"></div></div>
+        <div class="dialog-footer"><button class="button button-secondary" type="button" data-close-dialog="labor-rate-dialog">Annulla</button><button id="labor-rate-save" class="button button-primary" type="submit">Crea tariffa</button></div>
+      </form>
+    </dialog>
     <dialog id="job-dialog" class="work-dialog" aria-labelledby="job-dialog-title" aria-describedby="job-dialog-description">
       <form id="job-form" novalidate>
         <div class="dialog-heading"><div><p class="section-kicker">UN POSTO PER IL TUO PROGETTO</p><h2 id="job-dialog-title">Nuova commessa</h2></div><button class="dialog-close icon-button" type="button" data-close-dialog="job-dialog" aria-label="Chiudi finestra">×</button></div>
@@ -124,8 +224,13 @@
         <div class="work-field"><label for="job-client">Cliente <span class="optional">Facoltativo</span></label><input id="job-client" name="client" maxlength="120" placeholder="Nome del cliente" autocomplete="organization"></div>
         <div id="job-contract-field" class="work-field"><label for="job-contract">Contratto <span class="optional">Facoltativo</span></label><select id="job-contract" name="contract_id" aria-describedby="job-contract-help"><option value="">Nessun contratto</option></select><p id="job-contract-help" class="field-help">Collega la commessa a un contratto censito e al suo fornitore.</p><button id="job-contract-retry" class="row-button" type="button" hidden>Ricarica i contratti</button></div>
         <div class="work-field"><label for="job-description">Descrizione <span class="optional">Facoltativa</span></label><textarea id="job-description" name="description" rows="3" maxlength="1000" placeholder="Obiettivi, dettagli o informazioni utili…"></textarea></div>
+        <div class="job-policy-field"><label class="job-policy-check" for="job-common"><input id="job-common" name="is_common" type="checkbox" aria-describedby="job-common-help"><span>Commessa comune</span></label><p id="job-common-help" class="field-help">Tutti gli utenti attivi, anche quelli aggiunti in futuro, potranno consultarla e registrare le proprie ore.</p></div>
+        <div id="job-delete-field" class="job-delete-field" hidden><p>Elimina definitivamente la commessa e tutte le ore registrate dai suoi utenti.</p><button id="job-delete" class="button button-danger" type="button">Elimina commessa</button></div>
         <div class="dialog-footer"><span class="required-note">* Campi obbligatori</span><div><button class="button button-secondary" type="button" data-close-dialog="job-dialog">Annulla</button><button id="job-save" class="button button-primary" type="submit">Crea commessa</button></div></div>
       </form>
+    </dialog>
+    <dialog id="job-delete-dialog" class="work-dialog confirm-dialog" aria-labelledby="job-delete-title" aria-describedby="job-delete-description job-delete-warning">
+      <form id="job-delete-form"><div class="dialog-heading"><h2 id="job-delete-title">Eliminare questa commessa?</h2><button class="dialog-close icon-button" type="button" data-close-dialog="job-delete-dialog" aria-label="Chiudi finestra">×</button></div><p id="job-delete-description" class="dialog-description"></p><p id="job-delete-warning" class="job-delete-warning">Saranno eliminate anche tutte le ore registrate da tutti gli utenti e le abilitazioni di utenti e gruppi. I dati scompariranno dai registri e dalle analisi. L’operazione è definitiva e non può essere annullata dall’app.</p><div id="job-delete-error" class="dialog-error" role="alert" hidden></div><div class="dialog-footer"><button class="button button-secondary" type="button" data-close-dialog="job-delete-dialog" autofocus>Annulla</button><button id="job-delete-save" class="button button-danger" type="submit">Elimina commessa e ore</button></div></form>
     </dialog>
     <dialog id="entry-dialog" class="work-dialog" aria-labelledby="entry-dialog-title" aria-describedby="entry-dialog-description">
       <form id="entry-form" novalidate>

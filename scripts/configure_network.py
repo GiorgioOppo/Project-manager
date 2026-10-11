@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare private TLS material and apply the three-zone Docker network."""
+"""Prepare private TLS material and apply the segmented Docker network."""
 
 import argparse
 import fcntl
@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from manage_cluster import Cluster, ClusterError, NODES, PROJECT, STATE_PATH, lo
 
 TLS_PATH = PROJECT / "data" / "network-tls"
 ADDRESSES = {"db": "172.30.30.21", "db2": "172.30.30.22", "db3": "172.30.30.23"}
+ADDON_SECRETS = PROJECT / "data" / "addon-secrets"
 
 
 def openssl(arguments):
@@ -85,11 +87,84 @@ def prepare_document_certificate(directory):
         openssl(("verify", "-CAfile", directory / "ca.crt", "-verify_ip", address, cert))
 
 
+def prepare_addon_certificate(directory, service, api_name, address):
+    """Issue a missing addon leaf without changing existing keys or the CA."""
+    cert, key = (directory / (service + suffix) for suffix in (".crt", ".key"))
+    if cert.exists() or key.exists():
+        if not cert.is_file() or not key.is_file():
+            raise ClusterError("Certificato addon incompleto: ripristina il bundle originale.")
+    else:
+        with tempfile.TemporaryDirectory(prefix=service + "-tls-", dir=directory) as temporary:
+            staging = Path(temporary)
+            issued_key, csr, issued_cert = (staging / (service + suffix)
+                                             for suffix in (".key", ".csr", ".crt"))
+            openssl(("req", "-new", "-newkey", "rsa:3072", "-nodes", "-sha256",
+                     "-keyout", issued_key, "-out", csr, "-subj", "/O=Punto Local/CN=" + api_name))
+            extension = staging / (service + ".ext")
+            extension.write_text("basicConstraints=critical,CA:FALSE\n"
+                "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                "extendedKeyUsage=serverAuth\n"
+                f"subjectAltName=DNS:{api_name},DNS:{service},DNS:localhost,IP:127.0.0.1,IP:{address}\n",
+                encoding="ascii")
+            openssl(("x509", "-req", "-in", csr, "-CA", directory / "ca.crt",
+                     "-CAkey", directory / "ca.key", "-set_serial", "0x" + secrets.token_hex(16),
+                     "-days", "365", "-sha256", "-extfile", extension, "-out", issued_cert))
+            issued_key.chmod(0o444)
+            issued_cert.chmod(0o644)
+            issued_key.replace(key)
+            issued_cert.replace(cert)
+    openssl(("x509", "-in", cert, "-noout", "-checkend", "86400"))
+    if openssl(("x509", "-in", cert, "-pubkey", "-noout")) != openssl(("pkey", "-in", key, "-pubout")):
+        raise ClusterError("Certificato e chiave addon non corrispondono.")
+    for hostname in (api_name, service, "localhost"):
+        openssl(("verify", "-CAfile", directory / "ca.crt", "-verify_hostname", hostname, cert))
+    for ip_address in ("127.0.0.1", address):
+        openssl(("verify", "-CAfile", directory / "ca.crt", "-verify_ip", ip_address, cert))
+
+
+def prepare_mail_certificate(directory):
+    prepare_addon_certificate(directory, "mail-addon", "mail-api", "172.30.60.2")
+
+
+def prepare_calendar_certificate(directory):
+    prepare_addon_certificate(directory, "calendar-addon", "calendar-api", "172.30.70.2")
+
+
+def prepare_addon_secrets():
+    """Create local file-backed secrets once; never rotate an existing token."""
+    if ADDON_SECRETS.is_symlink():
+        raise ClusterError("La directory dei segreti addon non può essere un collegamento simbolico.")
+    ADDON_SECRETS.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ADDON_SECRETS.chmod(0o700)
+    hex_secrets = {"mail-api-token", "calendar-api-token", "calendar-token-key"}
+    for name, initial in (("mail-api-token", secrets.token_hex(32) + "\n"), ("smtp-password", ""),
+                          ("calendar-api-token", secrets.token_hex(32) + "\n"),
+                          ("calendar-token-key", secrets.token_hex(32) + "\n"),
+                          ("google-client-secret", "")):
+        path = ADDON_SECRETS / name
+        if not path.exists() and not path.is_symlink():
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(initial)
+        if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode):
+            raise ClusterError("File segreto addon non regolare: " + name)
+        if name in hex_secrets:
+            value = path.read_text(encoding="ascii").strip()
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ClusterError("Token addon esistente non valido; ripristina il file originale.")
+        # Compose file-backed secrets keep host ownership. Protected parent 0700
+        # limits host access; readonly files allow the two distinct service UIDs.
+        path.chmod(0o444)
+
+
 def prepare():
     if TLS_PATH.exists():
         verify_bundle(TLS_PATH)
         prepare_document_certificate(TLS_PATH)
-        print("CA e certificati esistenti verificati; nessuna chiave rigenerata.", flush=True)
+        prepare_mail_certificate(TLS_PATH)
+        prepare_calendar_certificate(TLS_PATH)
+        prepare_addon_secrets()
+        print("CA verificata; certificati e segreti addon pronti, materiali esistenti conservati.", flush=True)
         return
     TLS_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="network-tls-", dir=TLS_PATH.parent) as temporary:
@@ -122,7 +197,10 @@ def prepare():
         (directory / "ca.crt").chmod(0o644)
         verify_bundle(directory)
         prepare_document_certificate(directory)
+        prepare_mail_certificate(directory)
+        prepare_calendar_certificate(directory)
         directory.rename(TLS_PATH)
+    prepare_addon_secrets()
     print("CA privata e tre certificati creati in data/network-tls (esclusi da Git e dalle immagini).", flush=True)
     print("Conserva una copia protetta del bundle per ripristino e rinnovo; la chiave CA non viene montata nei servizi.", flush=True)
 
@@ -149,7 +227,10 @@ def check_engine(cluster):
         inspection = subprocess.run(command + ["network", "inspect", *ids], capture_output=True,
                                     env=cluster.environment, timeout=30, check=True)
         import ipaddress
-        targets = {"public": "172.30.10.0/24", "private_app": "172.30.20.0/24", "backend_app": "172.30.30.0/24"}
+        targets = {"public": "172.30.10.0/24", "private_app": "172.30.20.0/24",
+                   "backend_app": "172.30.30.0/24", "app_egress": "172.30.40.0/24",
+                   "proxy_wan": "172.30.50.0/24", "mail_api": "172.30.60.0/24",
+                   "calendar_api": "172.30.70.0/24"}
         for network in json.loads(inspection.stdout):
             labels = network.get("Labels") or {}
             name = labels.get("com.docker.compose.network")
