@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f6f2">
+  <meta name="description" content="Ticket, il tuo spazio per gestire le richieste di assistenza.">
+  <title>Ticket. · Gestione richieste</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect x='2' y='2' width='36' height='36' rx='11' fill='%23e96850'/%3E%3Cpath d='M12 13h16v5a3 3 0 0 0 0 6v4H12v-4a3 3 0 0 0 0-6z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Vai al contenuto</a>
+  <div class="page-shell">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Ticket, pagina iniziale">
+        <svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect width="32" height="32" rx="9" fill="currentColor"/><path d="M9 10h14v4a2.5 2.5 0 0 0 0 5v3H9v-3a2.5 2.5 0 0 0 0-5v-4Z" stroke="white" stroke-width="1.7"/><path d="M19 11v2m0 3v2m0 2v1" stroke="white" stroke-linecap="round"/></svg>
+        <span>Ticket<span class="brand-period">.</span></span>
+      </a>
+      <span class="header-note" id="login-header-note"><span class="status-dot"></span> Uno spazio per ogni richiesta</span>
+      <div class="session-actions" id="session-actions" hidden>
+        <button type="button" class="button button-quiet" id="manage-users" hidden>Utenti</button>
+        <div class="session-person"><span class="avatar" id="session-avatar" aria-hidden="true"></span><span id="session-name"></span><span class="role-label" id="session-role"></span></div>
+        <button type="button" class="button button-quiet" id="logout-button">Esci</button>
+      </div>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <div id="boot-view" class="boot-state" role="status"><span class="spinner" aria-hidden="true"></span> Apertura del tuo spazio…</div>
+
+      <section id="login-view" class="login-layout" aria-labelledby="login-heading" hidden>
+        <div class="login-story">
+          <p class="eyebrow"><span></span> RICHIESTE, CON ORDINE</p>
+          <h1>Ogni richiesta.<br>Il prossimo passo.</h1>
+          <p class="story-description">Uno spazio dedicato ai ticket del tuo team.<br>Assegna le attività, segui i progressi e tieni insieme tutte le risposte.</p>
+          <div class="story-preview" aria-hidden="true">
+            <div class="preview-top"><span class="preview-dot"></span><span>La giornata, sotto controllo</span><span class="preview-menu">···</span></div>
+            <div class="preview-ticket"><span class="preview-check">✓</span><div><b>Una soluzione, condivisa.</b><span>Il team ha tutte le informazioni.</span></div><span class="preview-status">Risolto</span></div>
+            <div class="preview-ticket"><span class="preview-progress">↗</span><div><b>La prossima richiesta.</b><span>Una persona, una priorità, un passo avanti.</span></div><span class="preview-status progress">In corso</span></div>
+            <div class="preview-bottom"><span class="preview-people"><i>G</i><i>M</i><i>A</i></span><span>Lavorare insieme, con chiarezza.</span></div>
+          </div>
+          <p class="story-caption">Semplice da seguire. Facile da portare a termine.</p>
+        </div>
+        <div class="login-card">
+          <p class="card-kicker">BENTORNATO</p>
+          <h2 id="login-heading">Accedi al tuo spazio</h2>
+          <p class="muted">Usa le credenziali del tuo account Ticket.</p>
+          <form id="login-form">
+            <div class="field"><label for="login-email">Email</label><input id="login-email" name="email" type="email" autocomplete="username" maxlength="254" placeholder="nome@azienda.it" required></div>
+            <div class="field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div>
+            <p id="login-error" class="inline-error" role="alert" hidden></p>
+            <p id="login-notice" class="inline-notice" role="status" hidden></p>
+            <button class="button button-primary login-submit" type="submit">Accedi <span aria-hidden="true">→</span></button>
+          </form>
+          <p class="login-help">Per un nuovo account o il recupero della password,<br>contatta l’amministratore.</p>
+        </div>
+      </section>
+
+      <section id="app-view" class="dashboard" aria-labelledby="dashboard-heading" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow"><span></span> IL TUO HELP DESK</p><h1 id="dashboard-heading">Le richieste<span class="brand-period">.</span></h1><p class="muted">Tutto il lavoro da seguire, un ticket alla volta.</p></div>
+          <button type="button" class="button button-primary" id="new-ticket"><span class="plus" aria-hidden="true">＋</span> Nuovo ticket</button>
+        </div>
+        <div class="stats" aria-label="Riepilogo di tutti i ticket">
+          <button class="stat-card" data-status="open" type="button" aria-pressed="false"><span class="stat-label"><i class="status-dot open"></i>Aperti</span><span class="stat-value" id="stat-open">—</span><span class="stat-caption">Da prendere in carico <span aria-hidden="true">↗</span></span></button>
+          <button class="stat-card" data-status="in_progress" type="button" aria-pressed="false"><span class="stat-label"><i class="status-dot in-progress"></i>In corso</span><span class="stat-value" id="stat-in_progress">—</span><span class="stat-caption">Il lavoro avanza <span aria-hidden="true">↗</span></span></button>
+          <button class="stat-card" data-status="waiting" type="button" aria-pressed="false"><span class="stat-label"><i class="status-dot waiting"></i>In attesa</span><span class="stat-value" id="stat-waiting">—</span><span class="stat-caption">Aspettando una risposta <span aria-hidden="true">↗</span></span></button>
+          <button class="stat-card" data-status="resolved" type="button" aria-pressed="false"><span class="stat-label"><i class="status-dot resolved"></i>Risolti</span><span class="stat-value" id="stat-resolved">—</span><span class="stat-caption">Una soluzione trovata <span aria-hidden="true">↗</span></span></button>
+          <button class="stat-card" data-status="closed" type="button" aria-pressed="false"><span class="stat-label"><i class="status-dot closed"></i>Chiusi</span><span class="stat-value" id="stat-closed">—</span><span class="stat-caption">Tutto completato <span aria-hidden="true">↗</span></span></button>
+        </div>
+
+        <section id="ticket-list-section" class="ticket-list-section" aria-labelledby="list-heading">
+          <div class="section-heading"><div class="section-title"><h2 id="list-heading">Da lavorare</h2><span class="count-pill" id="ticket-total">—</span></div><div class="list-tools"><div class="view-switch" role="group" aria-label="Visualizzazione ticket"><button type="button" id="view-board" aria-pressed="true">▦ Bacheca</button><button type="button" id="view-list" aria-pressed="false">☷ Elenco</button></div><button type="button" class="button button-quiet" id="refresh-tickets"><span aria-hidden="true">↻</span> Aggiorna</button></div></div>
+          <div class="queue-bar" role="group" aria-label="Code di lavoro">
+            <button type="button" class="queue-button" data-queue="all" aria-pressed="false">Tutti <span id="queue-count-all" class="queue-count">—</span></button>
+            <button type="button" class="queue-button" data-queue="active" aria-pressed="true">Da lavorare <span id="queue-count-active" class="queue-count">—</span></button>
+            <button type="button" class="queue-button" data-queue="mine" aria-pressed="false">I miei <span id="queue-count-mine" class="queue-count">—</span></button>
+            <button type="button" class="queue-button" data-queue="unassigned" aria-pressed="false">Non assegnati <span id="queue-count-unassigned" class="queue-count">—</span></button>
+            <button type="button" class="queue-button" data-queue="overdue" aria-pressed="false">Scaduti <span id="queue-count-overdue" class="queue-count">—</span></button>
+            <button type="button" class="queue-button" data-queue="due_soon" aria-pressed="false">In scadenza <span id="queue-count-due_soon" class="queue-count">—</span></button>
+          </div>
+          <p class="queue-description" id="queue-description">Ticket aperti, in corso o in attesa.</p>
+          <form class="filters" id="filter-form" role="search" aria-label="Filtra i ticket">
+            <div class="field search-field"><label class="sr-only" for="search-input">Cerca ticket</label><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><input id="search-input" type="search" maxlength="200" placeholder="Cerca per titolo, descrizione, richiedente…" autocomplete="off"></div>
+            <div class="field"><label class="sr-only" for="status-filter">Stato</label><select id="status-filter"><option value="">Tutti gli stati</option><option value="open">Aperti</option><option value="in_progress">In corso</option><option value="waiting">In attesa</option><option value="resolved">Risolti</option><option value="closed">Chiusi</option></select></div>
+            <div class="field"><label class="sr-only" for="priority-filter">Priorità</label><select id="priority-filter"><option value="">Tutte le priorità</option><option value="urgent">Urgente</option><option value="high">Alta</option><option value="normal">Normale</option><option value="low">Bassa</option></select></div>
+            <div class="field"><label class="sr-only" for="assignee-filter">Assegnatario</label><select id="assignee-filter"><option value="">Tutti gli assegnatari</option><option value="unassigned">Non assegnati</option></select></div>
+            <div class="field sort-field"><label class="sr-only" for="sort-filter">Ordina i ticket</label><select id="sort-filter"><option value="updated">Ultimi aggiornamenti</option><option value="priority">Priorità più alta</option><option value="due">Scadenza più vicina</option></select></div>
+            <button type="button" class="button button-quiet reset-filters" id="reset-filters" hidden>Reimposta</button>
+          </form>
+          <p id="list-error" class="inline-error list-error" role="alert" hidden></p>
+          <div id="list-loading" class="list-state compact-loading" role="status" hidden><span class="spinner" aria-hidden="true"></span> Aggiornamento dei ticket…</div>
+          <p id="board-hint" class="board-hint">Apri una scheda per cambiare stato o assegnatario. <span>Scorri in orizzontale per vedere tutte le colonne.</span></p>
+          <div id="board-container" class="board-scroll" tabindex="0" aria-label="Bacheca ticket, scorrimento orizzontale"><div id="ticket-board" class="ticket-board"></div></div>
+          <div id="list-empty" class="empty-state" hidden><span class="empty-icon" aria-hidden="true">✓</span><h3 id="empty-heading">Nessun ticket, per ora</h3><p id="empty-description">Crea il primo ticket e dai il via al lavoro.</p><button type="button" class="button button-secondary" id="empty-action">Crea un ticket</button></div>
+          <div class="table-scroll" id="ticket-table-container" hidden><table class="ticket-table"><caption class="sr-only">Elenco ticket. Apri il titolo di un ticket per leggere dettagli e commenti.</caption><thead><tr><th scope="col" class="ticket-number">Ticket</th><th scope="col">Richiesta</th><th scope="col">Stato</th><th scope="col">Priorità</th><th scope="col" class="assignee-column">Assegnato a</th><th scope="col" class="due-column">Scadenza</th><th scope="col" class="updated-column">Aggiornato</th></tr></thead><tbody id="ticket-rows"></tbody></table></div>
+          <div class="pagination" id="pagination" hidden><p id="page-description" aria-live="polite"></p><div><button type="button" class="button button-secondary" id="previous-page">← Precedenti</button><button type="button" class="button button-secondary" id="next-page">Successivi →</button></div></div>
+          <p class="sr-only" id="list-announcement" role="status" aria-live="polite"></p>
+        </section>
+      </section>
+    </main>
+    <footer class="site-footer"><span>Ticket<span class="brand-period">.</span> <span class="footer-divider">/</span> Meno dispersione, più soluzioni.</span><span>Un’app dedicata al tuo team.</span></footer>
+  </div>
+
+  <dialog id="ticket-editor" class="dialog editor-dialog" aria-labelledby="editor-title">
+    <form id="ticket-form">
+      <div class="dialog-heading"><div><p class="card-kicker" id="editor-kicker">UNA NUOVA RICHIESTA</p><h2 id="editor-title">Nuovo ticket</h2></div><button type="button" class="icon-button" data-close-dialog="ticket-editor" aria-label="Chiudi il modulo ticket">×</button></div>
+      <div class="dialog-body">
+        <div class="field"><label for="ticket-title">Titolo <span class="required-label">obbligatorio</span></label><input id="ticket-title" maxlength="160" placeholder="In poche parole, di cosa hai bisogno?" required></div>
+        <div class="field"><label for="ticket-description">Descrizione</label><textarea id="ticket-description" rows="5" maxlength="8000" placeholder="Aggiungi il contesto, i passaggi e le informazioni utili…"></textarea><span class="field-hint">Fino a 8.000 caratteri.</span></div>
+        <div class="form-grid">
+          <div class="field"><label for="ticket-requester">Richiedente</label><input id="ticket-requester" maxlength="200" placeholder="Nome, email o riferimento"></div>
+          <div class="field"><label for="ticket-assignee">Assegnato a</label><select id="ticket-assignee"><option value="">Non assegnato</option></select></div>
+          <div class="field"><label for="ticket-priority">Priorità</label><select id="ticket-priority"><option value="low">Bassa</option><option value="normal" selected>Normale</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></div>
+          <div class="field"><label for="ticket-due-date">Scadenza</label><input id="ticket-due-date" type="date" min="0001-01-01" max="9999-12-31"></div>
+          <div class="field" id="ticket-status-field" hidden><label for="ticket-status">Stato</label><select id="ticket-status"><option value="open">Aperto</option><option value="in_progress">In corso</option><option value="waiting">In attesa</option><option value="resolved">Risolto</option><option value="closed">Chiuso</option></select></div>
+        </div>
+        <p class="inline-error" id="editor-error" role="alert" hidden></p><button type="button" class="button button-secondary" id="reload-editor" hidden>Ricarica l’ultima versione</button>
+      </div>
+      <div class="dialog-footer"><button type="button" class="button button-secondary" data-close-dialog="ticket-editor">Annulla</button><button type="submit" class="button button-primary" id="save-ticket">Crea ticket</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="ticket-detail" class="dialog detail-dialog" aria-labelledby="detail-title">
+    <div class="dialog-heading"><div><p class="card-kicker" id="detail-number">DETTAGLIO TICKET</p><h2 id="detail-title">Caricamento…</h2></div><button type="button" class="icon-button" data-close-dialog="ticket-detail" aria-label="Chiudi il dettaglio ticket">×</button></div>
+    <div class="detail-tools" id="detail-tools" hidden><button type="button" class="button button-primary" id="take-ticket">Prendi in carico</button><button type="button" class="button button-quiet" id="refresh-detail">↻ Aggiorna</button><button type="button" class="button button-quiet" id="copy-ticket-link">↗ Copia link</button></div>
+    <div id="detail-loading" class="list-state" role="status"><span class="spinner" aria-hidden="true"></span> Apertura del ticket…</div>
+    <div id="detail-error-area" class="detail-error-area" hidden><p class="inline-error" id="detail-load-error" role="alert"></p><button type="button" class="button button-secondary" id="retry-detail">Riprova</button></div>
+    <div id="detail-content" class="detail-layout" hidden>
+      <div class="detail-main">
+        <section class="detail-section"><div class="detail-section-heading"><h3>La richiesta</h3><button type="button" class="button button-quiet" id="edit-ticket">Modifica</button></div><p id="detail-description" class="preserve-lines"></p><dl class="ticket-meta"><div><dt>Richiedente</dt><dd id="detail-requester"></dd></div><div><dt>Creato da</dt><dd id="detail-creator"></dd></div><div><dt>Apertura</dt><dd id="detail-created"></dd></div><div><dt>Ultima modifica</dt><dd id="detail-updated"></dd></div></dl></section>
+        <section class="detail-section" aria-labelledby="comments-heading"><div class="detail-section-heading"><h3 id="comments-heading">Conversazione</h3><span class="count-pill" id="comment-count">0</span></div><div id="comments-list" class="comments-list"></div><form id="comment-form" class="comment-form"><div class="field"><label for="comment-body">Aggiungi un commento</label><textarea id="comment-body" rows="3" maxlength="4000" placeholder="Condividi un aggiornamento con il team…" required></textarea></div><p class="inline-error" id="comment-error" role="alert" hidden></p><button type="submit" class="button button-primary" id="send-comment">Invia commento <span aria-hidden="true">↗</span></button></form></section>
+      </div>
+      <aside class="detail-sidebar" aria-label="Gestione e attività del ticket">
+        <form id="detail-properties-form"><h3>Organizza il lavoro</h3><div class="field"><label for="detail-status">Stato</label><select id="detail-status"><option value="open">Aperto</option><option value="in_progress">In corso</option><option value="waiting">In attesa</option><option value="resolved">Risolto</option><option value="closed">Chiuso</option></select></div><div class="field"><label for="detail-priority">Priorità</label><select id="detail-priority"><option value="low">Bassa</option><option value="normal">Normale</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></div><div class="field"><label for="detail-assignee">Assegnato a</label><select id="detail-assignee"><option value="">Non assegnato</option></select></div><div class="field"><label for="detail-due-date">Scadenza</label><input id="detail-due-date" type="date" min="0001-01-01" max="9999-12-31"></div><p class="inline-error" id="properties-error" role="alert" hidden></p><button type="submit" class="button button-secondary properties-submit" id="save-properties">Salva modifiche</button></form>
+        <section class="history-section" aria-labelledby="history-heading"><h3 id="history-heading">Attività</h3><ol id="history-list" class="history-list"></ol></section>
+      </aside>
+    </div>
+  </dialog>
+
+  <dialog id="users-dialog" class="dialog users-dialog" aria-labelledby="users-title">
+    <div class="dialog-heading"><div><p class="card-kicker">IL TEAM</p><h2 id="users-title">Gestione utenti</h2></div><button type="button" class="icon-button" data-close-dialog="users-dialog" aria-label="Chiudi la gestione utenti">×</button></div>
+    <div class="dialog-body"><div class="users-intro"><p class="muted">Gestisci l’accesso e i ruoli delle persone del team.</p><button type="button" class="button button-primary" id="new-user">＋ Nuovo utente</button></div><p class="inline-error" id="users-error" role="alert" hidden></p><div class="table-scroll"><table class="users-table"><caption class="sr-only">Utenti dell’app Ticket</caption><thead><tr><th scope="col">Persona</th><th scope="col">Ruolo</th><th scope="col">Accesso</th><th scope="col"><span class="sr-only">Azioni</span></th></tr></thead><tbody id="users-rows"></tbody></table></div><p class="muted users-footnote">Gli utenti disattivati restano associati allo storico dei ticket.</p></div>
+  </dialog>
+
+  <dialog id="user-editor" class="dialog user-editor-dialog" aria-labelledby="user-editor-title">
+    <form id="user-form"><div class="dialog-heading"><div><p class="card-kicker">ACCESSO ALLO SPAZIO</p><h2 id="user-editor-title">Nuovo utente</h2></div><button type="button" class="icon-button" data-close-dialog="user-editor" aria-label="Chiudi il modulo utente">×</button></div><div class="dialog-body"><div class="field"><label for="user-name">Nome <span class="required-label">obbligatorio</span></label><input id="user-name" maxlength="100" autocomplete="off" required></div><div class="field"><label for="user-email">Email <span class="required-label">obbligatorio</span></label><input id="user-email" type="email" maxlength="254" autocomplete="off" required><span class="field-hint" id="user-email-hint" hidden>L’indirizzo email identifica l’account e non è modificabile.</span></div><div class="form-grid"><div class="field"><label for="user-role">Ruolo</label><select id="user-role"><option value="agent">Operatore</option><option value="admin">Amministratore</option></select></div><div class="field" id="user-active-field" hidden><label for="user-active">Accesso</label><select id="user-active"><option value="true">Attivo</option><option value="false">Disattivato</option></select></div></div><div class="field"><label for="user-password" id="user-password-label">Password iniziale</label><input id="user-password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required><span class="field-hint" id="user-password-hint">Almeno 12 caratteri.</span></div><p class="inline-error" id="user-editor-error" role="alert" hidden></p></div><div class="dialog-footer"><button type="button" class="button button-secondary" data-close-dialog="user-editor">Annulla</button><button type="submit" class="button button-primary" id="save-user">Crea utente</button></div></form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

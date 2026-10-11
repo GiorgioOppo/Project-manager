@@ -9,9 +9,10 @@ Il **Gestore** amministra lo spazio di lavoro e usa anche il proprio Registro or
 3. Censisci **Fornitori** e **Contratti** per le commesse che hanno un accordo di riferimento.
 4. Crea le **Commesse** e definisci quali sono comuni e quali richiedono abilitazioni specifiche.
 5. Assegna utenti o gruppi con il ruolo e le date appropriati.
-6. Inserisci le **Tariffe orarie** per ottenere una stima del costo del lavoro.
-7. Configura **Alert e trigger** con orario e destinatari.
-8. Usa **Analisi**, **Notifiche** e **Storico** per i controlli successivi.
+6. Organizza **Attività e blocchi** per ogni commessa, con responsabili, scadenze e prossime azioni.
+7. Inserisci le **Tariffe orarie** per ottenere una stima del costo del lavoro.
+8. Configura **Alert e trigger** con orario e destinatari.
+9. Usa **Analisi**, **Notifiche** e **Storico** per i controlli successivi.
 
 Le impostazioni non attribuiscono ore automaticamente. La rendicontazione rimane un’azione della persona che ha svolto il lavoro.
 
@@ -58,6 +59,8 @@ I ruoli predefiniti sono:
 | Collaboratore | Sì | Sì |
 
 In **Ruoli sulle commesse**, premi **+ Ruolo** per aggiungere una variante. Inserisci Codice, Nome e la scelta **Solo consultazione** oppure **Consulta e registra le proprie ore**. Il codice inizia con una lettera minuscola e può contenere lettere minuscole, numeri, trattini e underscore, fino a 40 caratteri.
+
+I ruoli che consentono la registrazione delle ore abilitano anche la collaborazione nella bacheca: l’operatore aggiorna lo stato delle attività assegnate e crea o modifica i propri blocchi. I Lettori consultano soltanto. La scelta del responsabile di un’attività o blocco non crea un’abilitazione alla commessa.
 
 I ruoli predefiniti non sono modificabili. Le modifiche a un ruolo personalizzato valgono per tutte le abilitazioni che lo usano. Il limite è di 100 ruoli complessivi. Un ruolo operativo non permette di creare commesse, gestire account o accedere ai PDF contrattuali.
 
@@ -134,11 +137,32 @@ Una persona può ricevere permessi attraverso più percorsi. Lettore non annulla
 
 Le modifiche si applicano anche alle sessioni aperte. Le registrazioni personali pregresse restano consultabili dopo una semplice revoca.
 
+## Organizzare attività, sottoattività e blocchi
+
+1. Apri **Attività e blocchi** e scegli la commessa, oppure usa **Attività** nella sua riga.
+2. Premi **Nuova attività**, inserisci **Titolo** e, se utile, **Descrizione**.
+3. Scegli **Responsabile**, **Priorità**, **Stato** e l’eventuale **Scadenza**. Il responsabile deve essere attivo e avere accesso Collaboratore alla commessa, oppure essere Gestore.
+4. Per una sottoattività scegli **Attività principale**, oppure parti dal comando **+ Sottoattività** sulla scheda. Puoi raggiungere otto livelli complessivi; i riferimenti circolari sono rifiutati.
+5. Premi **Crea attività**. Usa **Modifica** per rivedere i dettagli o il controllo **Stato → Applica** per spostare rapidamente la scheda.
+6. Consulta **Bacheca Kanban** o **Elenco e sottoattività** e usa ricerca, stato e priorità per focalizzare il lavoro.
+
+I cinque stati sono Da fare, In corso, Bloccato, Da verificare e Completato. Non esiste una sequenza obbligatoria; completare un genitore non completa i figli. Ogni attività mantiene responsabile e scadenza propri. Il modulo non contiene ancora stime di durata, dipendenze o diagrammi Gantt.
+
+Per gli impedimenti usa **Segnala blocco**, compila impatto e prossima azione e scegli un responsabile o lascia **Da assegnare**. Il blocco può riferirsi all’intera commessa o a un’attività. Dal registro usa **Gestisci** per cambiarne lo stato in Aperto, In gestione o Risolto. Lo stato del blocco non sposta la scheda Kanban. Il filtro iniziale include solo aperti e in gestione.
+
+L’operatore può segnalare blocchi e aggiornare quelli di cui è autore o responsabile, mantenendo l’accesso Collaboratore. Solo il Gestore cambia i responsabili, organizza le attività o elimina gli elementi. Se una persona perde l’accesso, il riferimento storico rimane: valuta la riassegnazione del lavoro a una persona abilitata.
+
+L’eliminazione di un’attività richiede prima lo spostamento o l’eliminazione dei figli. Gli eventuali blocchi restano nella commessa senza il collegamento all’attività eliminata. La conferma è dedicata all’elemento e non modifica le ore registrate. Sono ammessi fino a 500 attività e 500 blocchi per commessa, contando anche quelli completati o risolti.
+
+Le modifiche usano una revisione: un salvataggio basato su una versione precedente viene rifiutato. In caso di conflitto, annota le tue variazioni prima di chiudere la bozza, ricarica i dati e confrontali. Lo Storico registra attività, blocchi e lo scollegamento dei blocchi quando elimini un’attività.
+
+Le ore rimangono associate alla commessa. Scadenze e assegnazioni delle attività non generano automaticamente alert o email. Dettagli e matrice dei permessi: [Attività, Kanban e blocchi](attivita-kanban-e-blocchi.md).
+
 ## Eliminare definitivamente una commessa
 
 Apri **Modifica** sulla commessa e usa **Elimina commessa**. Leggi il riepilogo nella finestra dedicata; la conferma finale è **Elimina commessa e ore**.
 
-L’operazione elimina la commessa, **tutte le ore collegate di tutti gli utenti** e le abilitazioni dirette e per gruppo. I dati scompaiono dai registri e dalle analisi. Utenti, gruppi, ruoli, contratti e storico delle modifiche rimangono; nello storico viene aggiunto il riepilogo dell’eliminazione.
+L’operazione elimina la commessa, **attività, sottoattività, blocchi e tutte le ore collegate di tutti gli utenti**, oltre alle abilitazioni dirette e per gruppo. I dati scompaiono dai registri e dalle analisi. Utenti, gruppi, ruoli, contratti e storico delle modifiche rimangono; nello storico viene aggiunto il riepilogo dell’eliminazione.
 
 La cancellazione non dispone di cestino né annullamento nell’app. Per conservare il lavoro storico, mantieni la commessa e gestisci stato e accessi. Per un recupero dopo l’eliminazione occorre valutare un backup con il referente tecnico.
 
@@ -146,7 +170,7 @@ La cancellazione non dispone di cestino né annullamento nell’app. Per conserv
 
 Il gestore può registrare tempo sulle commesse senza un’assegnazione individuale. Nel proprio **Registro ore** dispone anche di **Modifica** e dell’eliminazione con conferma **Elimina registrazione**. Questi comandi riguardano le proprie righe.
 
-L’accesso alle analisi complessive non abilita la modifica delle ore altrui. Il flusso di richiesta e approvazione delle rettifiche degli operatori è pianificato. Non usare l’eliminazione della commessa per correggere un singolo errore: cancellerebbe tutte le registrazioni collegate.
+L’accesso alle analisi complessive non abilita la modifica delle ore altrui. Il flusso di richiesta e approvazione delle rettifiche degli operatori è pianificato. Non usare l’eliminazione della commessa per correggere un singolo errore: cancellerebbe tutte le registrazioni collegate, le attività e i blocchi.
 
 ## Consultare le cinque viste di Analisi
 
@@ -213,7 +237,7 @@ Se il proprietario viene disattivato o perde il profilo Gestore, le sue regole n
 
 Apri **Storico** per vedere le modifiche in ordine dalla più recente. Usa il filtro **Mostra**, espandi i dettagli precedenti/successivi e premi **Carica precedenti** per continuare. **Aggiorna** ricarica gli eventi.
 
-Lo storico comprende commesse, ore, abilitazioni, account, gruppi, ruoli, fornitori, contratti, caricamenti documentali, tariffe e regole. Le password non sono incluse. Il salvataggio della modifica e del relativo evento avviene insieme: se l’app non riesce a registrare lo storico, annulla anche la modifica.
+Lo storico comprende commesse, attività, blocchi, ore, abilitazioni, account, gruppi, ruoli, fornitori, contratti, caricamenti documentali, tariffe e regole. Le password non sono incluse. Il salvataggio della modifica e del relativo evento avviene insieme: se l’app non riesce a registrare lo storico, annulla anche la modifica.
 
 Lo Storico spiega cosa è cambiato, ma non è un comando di ripristino. Dopo una cancellazione le informazioni storiche non ricreano automaticamente i record rimossi.
 

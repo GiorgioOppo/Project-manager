@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 7
+#define SCHEMA_VERSION 9
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -137,7 +137,13 @@ bool storage_audit(Db *db, DbInt actor_id, const char *action,
 #ifndef PUNTO_MYSQL
 static bool migrate(void) {
     DbStmt *statement = NULL;
-    if (db_exec(database, "BEGIN IMMEDIATE", NULL, NULL, NULL) != DB_OK) return false;
+    /* Rebuild the referenced alert-rule table while preserving child rows.
+       Foreign keys are checked before commit and restored on every exit. */
+    if (db_exec(database, "PRAGMA foreign_keys=OFF", NULL, NULL, NULL) != DB_OK ||
+        db_exec(database, "BEGIN IMMEDIATE", NULL, NULL, NULL) != DB_OK) {
+        (void)db_exec(database, "PRAGMA foreign_keys=ON", NULL, NULL, NULL);
+        return false;
+    }
     if (!prepare(database, &statement, "PRAGMA user_version") ||
         db_step(statement) != DB_ROW) goto failure;
     int version = db_column_int(statement, 0);
@@ -400,10 +406,71 @@ static bool migrate(void) {
             !storage_audit(database,0,"system.migration","system",7,NULL,"{\"schema_version\":7}") ||
             db_exec(database,"PRAGMA user_version=7",NULL,NULL,NULL) != DB_OK) goto failure;
     }
-    if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
+    if (version <= 7) {
+        if (db_exec(database,
+            "CREATE TABLE IF NOT EXISTS job_tasks ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,job_id INTEGER NOT NULL REFERENCES jobs(id),"
+            "parent_id INTEGER,assigned_user_id INTEGER REFERENCES users(id),"
+            "title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),"
+            "description TEXT NOT NULL DEFAULT '' CHECK(length(description)<=2000),"
+            "status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','in_review','done')),"
+            "priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),"
+            "due_date TEXT CHECK(due_date IS NULL OR length(due_date)=10),"
+            "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
+            "UNIQUE(job_id,id),FOREIGN KEY(job_id,parent_id) REFERENCES job_tasks(job_id,id),"
+            "CHECK(parent_id IS NULL OR parent_id<>id));"
+            "CREATE INDEX IF NOT EXISTS job_tasks_job_status ON job_tasks(job_id,status,id);"
+            "CREATE INDEX IF NOT EXISTS job_tasks_parent ON job_tasks(job_id,parent_id,id);"
+            "CREATE INDEX IF NOT EXISTS job_tasks_assignee ON job_tasks(assigned_user_id,job_id,id);"
+            "CREATE TABLE IF NOT EXISTS job_blockers ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,job_id INTEGER NOT NULL REFERENCES jobs(id),task_id INTEGER,"
+            "title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),"
+            "description TEXT NOT NULL DEFAULT '' CHECK(length(description)<=2000),"
+            "impact TEXT NOT NULL DEFAULT 'medium' CHECK(impact IN ('low','medium','high','critical')),"
+            "owner_id INTEGER REFERENCES users(id),status TEXT NOT NULL DEFAULT 'open' "
+            "CHECK(status IN ('open','in_progress','resolved')),"
+            "next_action TEXT NOT NULL DEFAULT '' CHECK(length(next_action)<=1000),"
+            "due_date TEXT CHECK(due_date IS NULL OR length(due_date)=10),"
+            "created_by INTEGER NOT NULL REFERENCES users(id),"
+            "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
+            "FOREIGN KEY(job_id,task_id) REFERENCES job_tasks(job_id,id));"
+            "CREATE INDEX IF NOT EXISTS job_blockers_job_status ON job_blockers(job_id,status,id);"
+            "CREATE INDEX IF NOT EXISTS job_blockers_task ON job_blockers(job_id,task_id,id);"
+            "CREATE INDEX IF NOT EXISTS job_blockers_owner ON job_blockers(owner_id,job_id,id);",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",8,NULL,"{\"schema_version\":8}") ||
+            db_exec(database,"PRAGMA user_version=8",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (version <= 8) {
+        if (db_exec(database,
+            "CREATE TABLE alert_rules_v9 (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "owner_id INTEGER NOT NULL REFERENCES users(id),name TEXT NOT NULL,"
+            "type TEXT NOT NULL CHECK(type IN ('invalid_job','missing_hours','inventory_due')),"
+            "run_time TEXT NOT NULL CHECK(length(run_time)=5),enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),"
+            "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_run_at TEXT,last_run_on TEXT,"
+            "last_event_id INTEGER NOT NULL DEFAULT 0 CHECK(last_event_id>=0),"
+            "days_before INTEGER NOT NULL DEFAULT 30 CHECK(days_before BETWEEN 1 AND 365));"
+            "INSERT INTO alert_rules_v9(id,owner_id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,last_event_id) "
+            "SELECT id,owner_id,name,type,run_time,enabled,created_at,updated_at,last_run_at,last_run_on,last_event_id FROM alert_rules;"
+            "UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='alert_rules'),0)) "
+            "WHERE name='alert_rules_v9';"
+            "INSERT INTO sqlite_sequence(name,seq) SELECT 'alert_rules_v9',COALESCE((SELECT seq FROM sqlite_sequence "
+            "WHERE name='alert_rules'),0) WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='alert_rules_v9');"
+            "DROP TABLE alert_rules;ALTER TABLE alert_rules_v9 RENAME TO alert_rules;"
+            "CREATE INDEX alert_rules_owner ON alert_rules(owner_id,id);",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",9,NULL,"{\"schema_version\":9}") ||
+            db_exec(database,"PRAGMA user_version=9",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (!prepare(database, &statement, "PRAGMA foreign_key_check") || db_step(statement) != DB_DONE) goto failure;
+    db_finalize(statement); statement = NULL;
+    if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) {
+        return db_exec(database, "PRAGMA foreign_keys=ON", NULL, NULL, NULL) == DB_OK;
+    }
 failure:
     db_finalize(statement);
     (void)db_exec(database, "ROLLBACK", NULL, NULL, NULL);
+    (void)db_exec(database, "PRAGMA foreign_keys=ON", NULL, NULL, NULL);
     return false;
 }
 
@@ -443,6 +510,12 @@ static bool migrate(void) {
     if (version <= 6 &&
         (!storage_audit(database,0,"system.migration","system",7,NULL,"{\"schema_version\":7}") ||
          db_exec(database,"UPDATE schema_metadata SET version=7 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 7 &&
+        (!storage_audit(database,0,"system.migration","system",8,NULL,"{\"schema_version\":8}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=8 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 8 &&
+        (!storage_audit(database,0,"system.migration","system",9,NULL,"{\"schema_version\":9}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=9 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -539,7 +612,8 @@ static bool query_fields(const char *query, DbInt *limit,
                 strcmp(value, "contract") != 0 && strcmp(value, "contract_document") != 0 &&
                 strcmp(value, "group") != 0 && strcmp(value, "group_member") != 0 &&
                 strcmp(value, "job_role") != 0 && strcmp(value, "group_grant") != 0 &&
-                strcmp(value, "labor_rate") != 0 && strcmp(value, "alert_rule") != 0)) return false;
+                strcmp(value, "labor_rate") != 0 && strcmp(value, "alert_rule") != 0 &&
+                strcmp(value, "task") != 0 && strcmp(value, "blocker") != 0)) return false;
             strcpy(type, value); got_type = true;
         } else return false;
         if (!*end) break;

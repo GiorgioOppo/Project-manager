@@ -10,7 +10,7 @@ Dalla radice del progetto:
 python3 scripts/manage_cluster.py --env-file .env.docker status
 docker compose --env-file .env.docker ps
 curl --fail http://localhost/healthz
-docker compose --env-file .env.docker logs --tail=100 app db-proxy db db2 db3
+docker compose --env-file .env.docker logs --tail=100 app proxy-db mysql-1 mysql-2 mysql-3
 ```
 
 Adattare dominio e porta se diversi. `status` riporta nodo, UUID, stato, ruolo, sola lettura e impostazioni degli ID. Lo stato normale del gruppo è tre membri `ONLINE` / `PRIMARY`; tutti i servizi Compose devono raggiungere il proprio health check.
@@ -19,7 +19,7 @@ Adattare dominio e porta se diversi. `status` riporta nodo, UUID, stato, ruolo, 
 | --- | --- | --- |
 | `/healthz` app | Server HTTP e query SQL disponibili, `database: mysql` o `sqlite` | Disponibilità dei PDF o dei fornitori esterni |
 | Health MySQL | Processo SQL raggiungibile | Appartenenza al quorum e scrivibilità multi-primary |
-| Health `db-proxy` | Almeno due endpoint di monitor pronti | Assenza di errori futuri o integrità completa dei dati |
+| Health `proxy-db` | Almeno due endpoint di monitor pronti | Assenza di errori futuri o integrità completa dei dati |
 | Health MongoDB | TLS, account applicativo e servizio documentale disponibili | Coerenza di ogni riferimento SQL/GridFS |
 | Health Squid | Listener e risposta locale prevista | Google o SMTP raggiungibili |
 | Health addon | Processo HTTPS locale disponibile | Credenziali Google/SMTP valide e consegna esterna |
@@ -45,7 +45,7 @@ python3 scripts/manage_cluster.py --env-file .env.docker status
 docker compose --env-file .env.docker ps
 ```
 
-Se esiste già un gruppo attivo, `recover` fa rientrare i nodi offline senza creare un gruppo concorrente. Se nessun nodo è online, arresta i canali del gruppo, confronta GTID eseguiti e certificati e sceglie un membro il cui insieme contiene quello degli altri. Non sceglie automaticamente `db`. Se gli insiemi divergono, si ferma senza forzare quorum o cancellare dati.
+Se esiste già un gruppo attivo, `recover` fa rientrare i nodi offline senza creare un gruppo concorrente. Se nessun nodo è online, arresta i canali del gruppo, confronta GTID eseguiti e certificati e sceglie un membro il cui insieme contiene quello degli altri. Non sceglie automaticamente il primo nodo (`mysql-1`, identità interna `db`). Se gli insiemi divergono, si ferma senza forzare quorum o cancellare dati.
 
 `recover` recupera **i volumi esistenti**. Non legge un dump SQL, non ricrea i PDF da backup, non ripristina secret e non risolve la perdita totale del disco. `data/cluster-state.json` deve corrispondere al cluster esistente; non va ricreato manualmente inventando UUID o marcatori.
 
@@ -54,7 +54,7 @@ Se esiste già un gruppo attivo, `recover` fa rientrare i nodi offline senza cre
 Con due membri online il cluster può continuare a servire l'app. Un nodo riavviato tenta il rientro e il recupero distribuito. Per un rientro ordinario di un servizio fermo:
 
 ```sh
-docker compose --env-file .env.docker start db2
+docker compose --env-file .env.docker start mysql-2
 python3 scripts/manage_cluster.py --env-file .env.docker status
 ```
 
@@ -70,6 +70,7 @@ Con due nodi indisponibili, l'indisponibilità delle scritture è il comportamen
 | Archivio MongoDB | Database documentale, collezioni GridFS e metadati | Metadati documentali SQL dello stesso punto logico |
 | `calendar_addon_data` | SQLite Calendar e relativi journal/WAL | Chiave `calendar-token-key`, configurazione OAuth e identità degli utenti SQL |
 | `mail_addon_data` | SQLite con storico di idempotenza SMTP | Outbox SQL e `MAIL_API_NAMESPACE` stabile |
+| `inventory_addon_data` | SQLite con catalogo e revisioni dei beni | Copia consistente del database inventory e relativi WAL |
 | Directory NPM `data` e `letsencrypt` | Configurazione proxy, database amministrativo, certificati pubblici | Stessa versione/configurazione del proxy e relativi file |
 | `data/network-tls` | CA, chiave CA, certificati e chiavi server | SAN, nomi, IP e mount della distribuzione |
 | `data/addon-secrets` | Token API, chiave Calendar e segreti dei provider | Database addon e configurazione corrispondenti |
@@ -108,7 +109,7 @@ I comandi di arresto e dump previsti sono:
 
 ```sh
 docker compose --env-file .env.docker stop app
-docker compose --env-file .env.docker stop mail-addon calendar-addon nginx-proxy-manager
+docker compose --env-file .env.docker stop mail calendar inventory proxy-web
 python3 scripts/manage_cluster.py --env-file .env.docker backup
 python3 scripts/backup_documents.py --env-file .env.docker
 ```
@@ -118,8 +119,8 @@ python3 scripts/backup_documents.py --env-file .env.docker
 Dopo il completamento verificato delle copie:
 
 ```sh
-docker compose --env-file .env.docker up -d --no-deps --wait mail-addon calendar-addon app
-docker compose --env-file .env.docker up -d --no-deps --wait nginx-proxy-manager
+docker compose --env-file .env.docker up -d --no-deps --wait mail calendar inventory app
+docker compose --env-file .env.docker up -d --no-deps --wait proxy-web
 ```
 
 Se una copia fallisce, conservare i dati originali e distinguere chiaramente una copia parziale da un punto di ripristino completo. Un errore non autorizza a eliminare né rigenerare volumi o chiavi. Lo spazio di backup deve essere sufficiente anche per gli archivi temporanei.

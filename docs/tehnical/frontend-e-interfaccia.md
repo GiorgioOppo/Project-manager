@@ -1,6 +1,6 @@
 # Frontend: struttura, stato e interazione
 
-Riferimento: codice del **10 ottobre 2026**. Questa guida è destinata a chi modifica l’interfaccia. Le istruzioni per usare il prodotto sono nelle guide [utente](../prod/guida-utente.md) e [gestore](../prod/guida-gestore.md); il contratto delle richieste è in [API app](api-app.md).
+Riferimento: codice dell’**11 ottobre 2026**. Questa guida è destinata a chi modifica l’interfaccia. Le istruzioni per usare il prodotto sono nelle guide [utente](../prod/guida-utente.md) e [gestore](../prod/guida-gestore.md); il contratto delle richieste è in [API app](api-app.md).
 
 ## File e dipendenze
 
@@ -13,6 +13,7 @@ Riferimento: codice del **10 ottobre 2026**. Questa guida è destinata a chi mod
 | [styles.css](../../public/styles.css) | Variabili visive, regole generali e pagina di accesso |
 | [workspace.css](../../public/workspace.css) | Area di lavoro, tabelle, dialog, organizzazione, contratti e notifiche |
 | [reports.css](../../public/reports.css) | Filtri, schede, tabelle e tariffe delle analisi |
+| [work-board.css](../../public/work-board.css) | Colonne Kanban, elenco gerarchico, filtri, schede dei blocchi e layout responsive della nuova sezione |
 | [favicon.svg](../../public/favicon.svg) | Identità grafica del browser |
 
 Non ci sono un framework UI, un bundler o un processo npm per generare le pagine. Gli script sono IIFE in modalità strict; funzioni e stato non sono pubblicati come API globali. Gli ID HTML costituiscono un contratto diretto con `getElementById`: rinominare un campo richiede di aggiornare il JavaScript che lo usa.
@@ -39,7 +40,7 @@ sequenceDiagram
     end
 ```
 
-`initialize()` attende la sessione prima di mostrare `workspace`; interpreta poi l’hash e richiama `refreshAll()`. Questo carica commesse, ore e notifiche e, se consentito, utenti, fornitori e contratti. Organizzazione, storico, alert e analisi hanno anche caricamenti associati al pannello attivo. Non tutte le letture sono effettuate esclusivamente alla prima apertura della scheda.
+`initialize()` attende la sessione prima di mostrare `workspace`; interpreta poi l’hash e richiama `refreshAll()`. Questo carica commesse, ore e notifiche e, se consentito, utenti, fornitori e contratti. Attività/blocchi, organizzazione, storico, alert e analisi hanno anche caricamenti associati al pannello attivo. Non tutte le letture sono effettuate esclusivamente alla prima apertura della scheda.
 
 Lo stato dei record vive nell’oggetto `state`, nella memoria della pagina. Un ricaricamento ricostruisce le liste dal server. Non esiste un archivio offline dei record, delle password o dei token Google nel frontend. Il login usa `localStorage` soltanto per l’email ricordata, sotto `punto.rememberedEmail`; errori o indisponibilità di questo storage non devono bloccare l’accesso.
 
@@ -49,7 +50,7 @@ La casella «ricordami» ha due effetti distinti: il login invia `remember=on` a
 
 | Hash / area | Disponibilità |
 | --- | --- |
-| `#jobs`, `#hours`, `#notifications` | Utenti autenticati, con dati nel proprio ambito |
+| `#jobs`, `#work-board`, `#hours`, `#notifications` | Utenti autenticati, con dati nel proprio ambito |
 | `#suppliers`, `#contracts`, `#users`, `#organization`, `#audit`, `#alerts` | Gestori, secondo i permessi e i controlli specifici |
 | `#analisi/periodo`, `#analisi/commesse`, `#analisi/utenti` | Analisi globale per gestori, personale per operatori |
 | `#analisi/costi`, `#analisi/costo-ore` | Gestori |
@@ -85,13 +86,27 @@ Le mutazioni riuscite sulle risorse gestionali invalidano i report. Le funzioni 
 
 ## Richieste concorrenti e revoche
 
-Lo stato contiene contatori come `sessionRequest`, `entriesRequest`, `reportRequest`, `documentsRequest` e `organizationRequest`. Ogni caricamento rilevante conserva la propria generazione e confronta il contatore prima di applicare il risultato. Per le analisi verifica anche vista, periodo e pannello ancora attivi.
+Lo stato contiene contatori come `sessionRequest`, `entriesRequest`, `reportRequest`, `documentsRequest`, `organizationRequest` e `workRequest`. Ogni caricamento rilevante conserva la propria generazione e confronta il contatore prima di applicare il risultato. Per le analisi verifica anche vista, periodo e pannello ancora attivi.
 
 Esempio: l’utente richiede ottobre e subito novembre; se ottobre arriva per ultimo, non deve sostituire il risultato di novembre. Questo controllo scarta risposte obsolete nella UI; non annulla necessariamente il lavoro HTTP già in corso.
 
 `applySession()` rileva cambi di email, ruolo e mappa permessi. Invalida generazioni, pulisce dati sensibili, chiude dialog non più ammessi e aggiorna i comandi disponibili. I moduli verificano nuovamente i permessi anche quando ricevono una risposta asincrona. Il backend rimane l’autorità: una revoca in un’altra sessione può essere riconosciuta prima dal server che dalla pagina già aperta.
 
 Non è implementato un canale push generale delle modifiche o dei permessi. Il timer periodico aggiorna le notifiche ogni 60 secondi solo quando il documento è visibile e la sessione risulta autenticata; non aggiorna tutte le anagrafiche ogni minuto. La risposta `403` e i caricamenti espliciti fanno parte del riallineamento della pagina.
+
+## Attività, Kanban e blocchi
+
+La sezione `#work-board` seleziona una commessa dall’elenco autorizzato già caricato; il comando «Attività» presente su ogni commessa apre direttamente quel contesto. La selezione della commessa, i filtri e la modalità Kanban/elenco restano in memoria: non sono serializzati nell’hash né salvati nell’account.
+
+`refreshWorkBoard()` interroga `GET /api/work-board?job_id=...` e controlla ID della commessa, generazione `workRequest` e contesto `workEpoch` prima di applicare la risposta. Durante un caricamento svuota dati, permessi e schede precedenti. Cambi di identità, permessi o commessa invalidano il contesto; una risposta arrivata dopo il cambio non ripristina dati obsoleti. Le mutazioni verificano lo stesso contesto prima di aggiornare la pagina.
+
+Il Kanban presenta cinque colonne fisse. Il cambio di stato usa un select e un pulsante «Applica», accessibili anche da tastiera; non richiede trascinamento e non implementa ordinamento manuale delle schede. L’elenco alternativo rende la gerarchia padre/figli. Ricerca testuale, stato e priorità filtrano le attività già ricevute; il registro blocchi ha un filtro distinto per aperti/in gestione, risolti o tutti. Le schede mostrano assegnatario, scadenza, descrizione e numero di blocchi aperti collegati. Non ricavano avanzamento dalle ore.
+
+I comandi seguono `permissions.manage_tasks`, `permissions.report_blockers`, `can_edit` e `can_update_status` restituiti dal server. Gli operatori assegnati inviano soltanto `status` e `revision` per le attività; i dialog del gestore inviano i campi completi. Gli assegnatari già presenti ma non più eleggibili restano visibili come «accesso da verificare», evitando riassegnazioni involontarie.
+
+`workBusy` disabilita filtri, cambio commessa e azioni durante il salvataggio. Ogni update/delete invia la revisione letta. Un `409` nel dialog di modifica conserva i dati immessi, disabilita il salvataggio e offre il ricaricamento; questo chiude il dialog e scarta la bozza prima di leggere la versione corrente. Nei cambi di stato e nelle cancellazioni il conflitto porta alla rilettura della bacheca. La UI non ripete automaticamente la mutazione e non fonde versioni concorrenti.
+
+I testi vengono inseriti con `textContent`; le descrizioni usano espansori `<details>`. Le colonne hanno scorrimento orizzontale su viewport stretti; le schede blocco passano a una colonna e i dialog a campi sovrapposti. La [specifica tecnica del modulo](attivita-kanban-e-blocchi.md) definisce limiti e autorizzazioni lato server.
 
 ## Rendering e formati
 

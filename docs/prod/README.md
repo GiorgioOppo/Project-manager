@@ -2,7 +2,7 @@
 
 [Indice generale](../README.md) · [Documentazione tecnica](../tehnical/README.md) · [README del progetto](../../README.md)
 
-Queste guide spiegano come utilizzare punto, come organizzare l’accesso alle commesse e come interpretare ore, analisi e notifiche. Il riferimento è il prodotto implementato al **10 ottobre 2026**. I piani di sviluppo sono riconoscibili come tali.
+Queste guide spiegano come utilizzare punto, come organizzare l’accesso alle commesse, attività e blocchi, e come interpretare ore, analisi e notifiche. Il riferimento è il prodotto implementato al **11 ottobre 2026**, schema **9**. I piani di sviluppo sono riconoscibili come tali.
 
 ## Guide operative
 
@@ -10,6 +10,8 @@ Queste guide spiegano come utilizzare punto, come organizzare l’accesso alle c
 | --- | --- | --- |
 | [Panoramica](panoramica.md) | Tutti | Scopo, persone coinvolte, moduli disponibili e stato delle integrazioni |
 | [Guida utente](guida-utente.md) | Operatori | Accesso, commesse visibili, registrazione giornaliera, storico personale, analisi e notifiche |
+| [Asset inventory](asset-inventory.md) | Tutti e Gestori | Catalogo beni, stati, assegnazioni, garanzie e storico; scrittura riservata ai Gestori |
+| [Attività, Kanban e blocchi](attivita-kanban-e-blocchi.md) | Gestori e collaboratori | Bacheca, sottoattività, responsabili, impedimenti, revisioni e permessi |
 | [Guida gestore](guida-gestore.md) | Gestori e project manager | Utenti, gruppi, ruoli, contratti, PDF, commesse, tariffe, controlli e audit |
 | [Processi e regole](processi-e-regole.md) | Gestori, utenti e supporto | Flussi completi, criteri di accesso, date, stati, durate, importi e comportamento degli alert |
 | [Domande frequenti](faq.md) | Tutti | Problemi comuni e spiegazione dei comportamenti meno immediati |
@@ -36,6 +38,6 @@ Per il lavoro quotidiano usare le guide operative. Per decidere le priorità usa
 
 ## Confini del prodotto attuale
 
-Il profilo **Gestore** amministra lo spazio di lavoro; il profilo **Operatore** usa le commesse a cui è abilitato. I ruoli sulle singole commesse regolano consultazione e registrazione delle ore. Il registro dettagliato rimane personale anche per i gestori; le analisi consentono ai gestori di consultare aggregati di più utenti.
+Il profilo **Gestore** amministra lo spazio di lavoro; il profilo **Operatore** usa le commesse a cui è abilitato. I ruoli sulle singole commesse regolano consultazione e registrazione delle ore, aggiornamento delle attività assegnate e gestione dei propri blocchi. Il Gestore organizza le attività; il Lettore può consultare la bacheca. Il registro dettagliato rimane personale anche per i gestori; le analisi consentono ai gestori di consultare aggregati di più utenti.
 
 Le pagine economiche disponibili trattano valori contrattuali e costo stimato delle ore in **EUR**. Le notifiche interne sono operative. L’invio email richiede la configurazione SMTP; la sincronizzazione Google è esposta tramite API e richiede OAuth. La schermata Calendario e l’associazione degli eventi a commesse e ore sono sviluppi successivi.

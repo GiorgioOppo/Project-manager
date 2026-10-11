@@ -5,7 +5,7 @@
   const states = { planned: "Da avviare", active: "In corso", paused: "In pausa", completed: "Completata", cancelled: "Annullata" };
   const roles = { manager: "Gestore", worker: "Operatore" };
   const contractStates = { draft: "Bozza", active: "Attivo", expired: "Scaduto", closed: "Chiuso", cancelled: "Annullato" };
-  const tabs = ["jobs", "hours", "reports", "notifications", "alerts", "suppliers", "contracts", "users", "organization", "audit"];
+  const tabs = ["jobs", "work-board", "inventory", "hours", "reports", "notifications", "alerts", "suppliers", "contracts", "users", "organization", "audit"];
   const reportViews = { periodo: { api: "date", label: "Per periodo", title: "Il lavoro nel periodo" }, commesse: { api: "job", label: "Per commessa", title: "Il lavoro per commessa" }, utenti: { api: "user", label: "Per utente", title: "Il lavoro per utente" }, costi: { api: "cost", label: "Valore contratti", title: "Valori contrattuali e lavoro registrato" }, "costo-ore": { api: "labor_cost", label: "Costo delle ore", title: "Il costo stimato delle ore" } };
   const state = { session: null, sessionRequest: 0, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
   Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, deleteJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
@@ -15,7 +15,8 @@
   Object.assign(state, { alertRules: [], alertUsers: [], alertRulesReady: false, alertRulesLoading: false, alertRulesRequest: 0, editingAlertRule: null, runningAlertRule: null, alertSmtpConfigured: false, notifications: [], notificationsReady: false, notificationsLoading: false, notificationsRequest: 0, notificationsUnread: 0, readingNotifications: new Set() });
   const alertTypes = {
     invalid_job: { label: "Commessa inesistente", description: "Controlla i tentativi rifiutati di registrare ore su commesse inesistenti o eliminate. Le ore di questi tentativi non sono state salvate." },
-    missing_hours: { label: "Ore giornaliere mancanti", description: "Controlla le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore reali dalla fine della giornata in Europe/Rome. Il monitoraggio parte dalla creazione della regola." }
+    missing_hours: { label: "Ore giornaliere mancanti", description: "Controlla le giornate da lunedì a venerdì con meno di 8 ore, dopo 48 ore reali dalla fine della giornata in Europe/Rome. Il monitoraggio parte dalla creazione della regola." },
+    inventory_due: { label: "Scadenze inventario", description: "Controlla garanzie, manutenzioni, scadenze e rinnovi delle licenze. Include le date già superate; esclude beni dismessi o smarriti. Ogni destinatario riceve un solo avviso per asset, tipo di scadenza, data e anticipo impostato." }
   };
   const busyDialogs = new Set();
   let noticeTimer;
@@ -84,17 +85,26 @@
     try {
       const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...fetchOptions, signal: controller.signal });
       if (response.status === 401) {
+        if (/^\/api\/inventory(?:\/|$|\?)/.test(path)) resetInventory();
         redirectToLogin();
         throw new Error("La sessione è scaduta. Accedi di nuovo.");
       }
       let data;
       try { data = await response.json(); } catch (_) { throw new Error("Il server ha restituito una risposta non valida. Riprova."); }
       if (!response.ok || data.ok === false) {
+        const workResourceUnavailable = [403, 404].includes(response.status) && /^\/api\/(?:work-board|tasks|blockers)(?:\/|$|\?)/.test(path);
+        if (workResourceUnavailable) {
+          resetWorkBoard(true);
+          showNotice(data.error || "La risorsa non è più disponibile. Seleziona una commessa abilitata.", true);
+        }
         if (response.status === 403) {
+          if (/^\/api\/inventory(?:\/|$|\?)/.test(path)) resetInventory();
           showNotice(data.error || "Il tuo account non è abilitato a questa operazione.", true);
           if (path !== "/api/session") refreshSession().catch(() => {});
         }
-        throw new Error(data.error || (response.status === 403 ? "Il tuo account non è abilitato a questa operazione." : "Non siamo riusciti a completare l’operazione. Riprova."));
+        const error = new Error(data.error || (response.status === 403 ? "Il tuo account non è abilitato a questa operazione." : "Non siamo riusciti a completare l’operazione. Riprova."));
+        error.status = response.status;
+        throw error;
       }
       if (fetchOptions.method && fetchOptions.method !== "GET" && /^\/api\/(?:time-entries|jobs|users|contracts|suppliers|groups|job-roles|labor-rates)(?:\/|$|\?)/.test(path)) invalidateReports();
       return data;
@@ -148,6 +158,8 @@
       state.refreshRequest++;
       state.entriesRequest++;
       resetAlertsAndNotifications();
+      resetWorkBoard(true);
+      resetInventory();
       state.jobs = [];
       state.entries = [];
       state.jobsReady = false;
@@ -200,6 +212,7 @@
     $("tab-organization").hidden = !can("manage_groups");
     $("tab-audit").hidden = !can("view_audit");
     $("tab-alerts").hidden = !isAlertManager();
+    renderInventory();
     if (!isAlertManager()) {
       state.alertRulesRequest++;
       state.alertRules = [];
@@ -322,7 +335,7 @@
       $("tab-" + tab).tabIndex = selected ? 0 : -1;
       $("panel-" + tab).hidden = !selected;
     });
-    $("workspace-summary").hidden = ["reports", "alerts", "notifications"].includes(name);
+    $("workspace-summary").hidden = ["reports", "alerts", "notifications", "work-board", "inventory"].includes(name);
     const title = name === "reports" ? "Analisi · " + reportViews[state.reportView].label : $("tab-" + name).querySelector("span").textContent;
     $("workspace-current-view").textContent = title;
     document.title = title + " · punto";
@@ -334,6 +347,8 @@
     if (moveFocus) $("tab-" + name).focus();
     if (name === "reports" && (entering || !state.reportReady && !state.reportLoading)) refreshReports();
     if (name === "reports" && state.reportView === "costo-ore" && (entering || !state.laborRatesReady && !state.laborRatesLoading)) refreshLaborRates();
+    if (name === "work-board") { renderWorkJobs(); if (state.workJobId && !state.workLoading && (entering || !state.workReady)) refreshWorkBoard(); }
+    if (name === "inventory" && !state.inventoryReady && !state.inventoryLoading) refreshInventory();
     if (name === "users" && !state.usersReady) refreshUsers();
     if (name === "organization" && !state.organizationReady && !state.organizationLoading) refreshOrganization();
     if (name === "audit" && !state.auditReady && !state.auditLoading) refreshAudit();
@@ -783,6 +798,7 @@
       const hoursCell = node("td", "hours-cell", minutesLabel(job.total_minutes));
       const actionsCell = node("td");
       const actions = node("div", "row-actions");
+      actions.append(action("Attività", "Apri attività e blocchi di " + job.name, () => { if (state.workBusy) return; resetWorkBoard(true); state.workJobId = String(job.id); selectTab("work-board"); }), node("span", "row-divider"));
       if (can("manage_jobs")) actions.append(action("Modifica", "Modifica la commessa " + job.name, () => openJob(job)), node("span", "row-divider"));
       if (can("manage_assignments")) {
         const count = Number(job.assigned_users) || 0;
@@ -1678,6 +1694,7 @@
         ["Ultima esecuzione", alertDateTime(rule.last_run_at)],
         ["Prossima esecuzione", enabled ? alertDateTime(rule.next_run_at, "In programmazione") : "Sospesa"]
       ];
+      if (rule.type === "inventory_due") fields.splice(1,0,["Anticipo",`${rule.days_before} giorni · comprese scadenze superate`]);
       for (const [label, value] of fields) meta.append(node("dt", "", label), node("dd", "", value));
       const controls = node("div", "row-actions");
       controls.append(action("Modifica", "Modifica la regola " + rule.name, () => openAlertRule(rule)));
@@ -1724,6 +1741,11 @@
 
   function renderAlertRuleTypeHelp() {
     $("alert-rule-type-help").textContent = alertTypes[$("alert-rule-type").value]?.description || "";
+    const inventory = $("alert-rule-type").value === "inventory_due";
+    $("alert-rule-days-field").hidden = !inventory;
+    $("alert-rule-days").disabled = !inventory;
+    $("alert-rule-days").required = inventory;
+    $("alert-recipients-help").textContent = inventory ? "Seleziona fino a 50 utenti attivi. Tutti i destinatari selezionati ricevono le scadenze dell’inventario aziendale." : "Seleziona fino a 50 utenti attivi. Gli operatori ricevono soltanto avvisi che li riguardano; i gestori possono ricevere gli avvisi di tutti.";
   }
 
   function openAlertRule(rule = null, type = "missing_hours") {
@@ -1737,6 +1759,7 @@
     $("alert-rule-type").value = rule?.type || type;
     $("alert-rule-name").value = rule?.name || alertTypes[type]?.label || "";
     $("alert-rule-time").value = rule?.run_time || "09:00";
+    $("alert-rule-days").value = rule?.days_before || 30;
     $("alert-rule-enabled").checked = rule ? rule.enabled === true || rule.enabled === 1 : true;
     $("alert-rule-emails").value = (rule?.recipient_emails || []).join("\n");
     $("alert-rule-emails-help").textContent = state.alertSmtpConfigured ? "Fino a 50 indirizzi separati da virgole o righe." : "Fino a 50 indirizzi separati da virgole o righe. Email non configurata: gli invii resteranno in attesa, senza spedizione.";
@@ -1812,6 +1835,9 @@
       created.dateTime = notification.created_at;
       item.append(heading, node("p", "notification-message", notification.message), created);
       if (notification.work_date && validDate(notification.work_date)) item.append(node("p", "notification-context", "Giornata: " + dateLabel(notification.work_date)));
+      if (notification.event_kind === "inventory_due" && Number.isSafeInteger(notification.asset_id) && notification.asset_id > 0) {
+        item.append(action("Apri asset", "Apri l’asset relativo alla notifica", () => { selectTab("inventory"); openInventoryDetail(notification.asset_id); }));
+      }
       if (unread) {
         const button = action(state.readingNotifications.has(notification.id) ? "Aggiornamento…" : "Segna come letta", "Segna come letta: " + notification.title, () => markNotificationRead(notification));
         button.disabled = state.readingNotifications.has(notification.id);
@@ -1888,6 +1914,8 @@
   }
 
   const auditActions = {
+    "tasks.create": "Attività creata", "tasks.update": "Attività aggiornata", "tasks.delete": "Attività eliminata",
+    "blockers.create": "Blocco segnalato", "blockers.update": "Blocco aggiornato", "blockers.delete": "Blocco eliminato", "blockers.task_detached": "Blocco scollegato dall’attività eliminata",
     "jobs.create": "Commessa creata", "jobs.update": "Commessa aggiornata", "jobs.delete": "Commessa e ore eliminate",
     "time_entries.create": "Ore registrate", "time_entries.update": "Ore aggiornate", "time_entries.delete": "Ore eliminate",
     "assignments.create": "Utente abilitato", "assignments.update": "Abilitazione aggiornata", "assignments.delete": "Abilitazione revocata",
@@ -1901,8 +1929,9 @@
     "group_grants.create": "Gruppo abilitato", "group_grants.update": "Abilitazione gruppo aggiornata", "group_grants.delete": "Abilitazione gruppo revocata",
     "users.create": "Utente creato", "users.update": "Utente aggiornato", "system.migration": "Database aggiornato"
   };
-  const auditTypes = { job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", labor_rate: "Tariffa oraria", alert_rule: "Regola alert", group: "Gruppo", group_member: "Membro gruppo", job_role: "Ruolo commessa", group_grant: "Abilitazione gruppo", system: "Sistema" };
+  const auditTypes = { task: "Attività", blocker: "Blocco", job: "Commessa", time_entry: "Registrazione ore", assignment: "Abilitazione", user: "Utente", supplier: "Fornitore", contract: "Contratto", contract_document: "Documento contrattuale", labor_rate: "Tariffa oraria", alert_rule: "Regola alert", group: "Gruppo", group_member: "Membro gruppo", job_role: "Ruolo commessa", group_grant: "Abilitazione gruppo", system: "Sistema" };
   const auditLabels = {
+    task_id: "ID attività", assigned_user_id: "ID responsabile", assigned_user_name: "Responsabile", owner_name: "Responsabile", priority: "Priorità", impact: "Impatto", next_action: "Prossima azione", due_date: "Scadenza", revision: "Revisione", created_by: "ID autore", deleted_tasks: "Attività eliminate", deleted_blockers: "Blocchi eliminati",
     parent_id: "ID gruppo padre", group_id: "ID gruppo", group_name: "Gruppo", role_id: "ID ruolo commessa", role_code: "Codice ruolo", role_name: "Ruolo commessa", can_log_time: "Può registrare ore", builtin: "Ruolo predefinito", id: "ID", user_id: "ID utente", job_id: "ID commessa", owner_id: "ID autore", owner: "Account", email: "Email", name: "Nome", role: "Ruolo", active: "Accesso attivo",
     title: "Titolo", supplier_id: "ID fornitore", supplier_name: "Fornitore", contract_id: "ID contratto", contract_code: "Codice contratto", contract_title: "Contratto", vat_number: "Partita IVA", phone: "Telefono", address: "Indirizzo", notes: "Note", value_cents: "Valore", hourly_cents: "Tariffa oraria", currency: "Valuta", file_name: "Nome documento", byte_size: "Dimensione",
     type: "Tipo di controllo", run_time: "Orario giornaliero", enabled: "Regola attiva", recipient_user_ids: "ID destinatari nell’app", recipient_emails: "Destinatari email", recipient_email_count: "Numero destinatari email", recipient_user_count: "Numero destinatari nell’app", notifications_created: "Notifiche create", emails_queued: "Email in attesa", last_run_at: "Ultima esecuzione", last_run_on: "Giorno ultima esecuzione", next_run_at: "Prossima esecuzione", created_at: "Creata il", updated_at: "Aggiornata il",
@@ -1923,16 +1952,18 @@
     if (key === "byte_size") return fileSize(value);
     if (key === "role") return roles[value] || String(value);
     if (key === "status") {
-      const catalogue = entityType === "contract" ? contractStates : entityType === "job" ? states : null;
+      const catalogue = entityType === "task" ? workTaskStates : entityType === "blocker" ? workBlockerStates : entityType === "contract" ? contractStates : entityType === "job" ? states : null;
       return catalogue?.[value] || String(value);
     }
+    if (key === "priority" && entityType === "task") return workPriorities[value] || String(value);
+    if (key === "impact" && entityType === "blocker") return workImpacts[value] || String(value);
     if (key === "active") return value === true || value === 1 || value === "1" ? "Attivo" : "Disattivato";
     if (key === "is_common") return value === true || value === 1 || value === "1" ? "Sì" : "No";
     if (key === "enabled") return value === true || value === 1 || value === "1" ? "Attiva" : "Sospesa";
     if (key === "type" && entityType === "alert_rule") return alertTypes[value]?.label || String(value);
     if (["last_run_at", "next_run_at", "created_at", "updated_at"].includes(key) && entityType === "alert_rule") return alertDateTime(value, "—");
     if (key === "last_run_on" && validDate(String(value))) return dateLabel(value);
-    if (["date", "starts_on", "ends_on"].includes(key) && validDate(String(value))) return dateLabel(value);
+    if (["date", "starts_on", "ends_on", "due_date"].includes(key) && validDate(String(value))) return dateLabel(value);
     if (typeof value === "boolean") return value ? "Sì" : "No";
     return String(value);
   }
@@ -1948,7 +1979,7 @@
     function addFields(fields, prefix = "", depth = 0, fieldEntityType = entityType) {
       for (const [key, value] of Object.entries(fields)) {
         if (/password|hash|salt|token|secret/i.test(key)) continue;
-        const contextualLabel = fieldEntityType === "labor_rate" && key === "starts_on" ? "Valida dal" : fieldEntityType === "labor_rate" && key === "ends_on" ? "Valida al" : null;
+        const contextualLabel = fieldEntityType === "task" && key === "parent_id" ? "ID attività principale" : fieldEntityType === "blocker" && key === "owner_id" ? "ID responsabile" : fieldEntityType === "labor_rate" && key === "starts_on" ? "Valida dal" : fieldEntityType === "labor_rate" && key === "ends_on" ? "Valida al" : null;
         const label = prefix + (contextualLabel || auditLabels[key] || key.replaceAll("_", " "));
         if (value && typeof value === "object" && !Array.isArray(value) && depth < 3) {
           const nestedType = key === "contract" ? "contract" : key === "job" ? "job" : null;
@@ -2084,12 +2115,15 @@
       state.jobs = data.jobs;
       state.jobsReady = true;
       renderJobs();
+      renderWorkJobs();
+      if (state.activeTab === "work-board" && state.workJobId && !state.workBusy) return refreshWorkBoard();
     }).catch((error) => {
       if (request !== state.refreshRequest) return;
       if (!state.jobsReady) $("jobs-loading").textContent = "Le commesse non sono disponibili. Usa Riprova per ricaricare i dati.";
       showLoadError(error);
     });
     const tasks = [jobsTask, refreshEntries(), refreshNotifications()];
+    if (state.activeTab === "inventory" && !state.inventoryLoading) tasks.push(refreshInventory());
     if (can("manage_users")) tasks.push(refreshUsers());
     if (can("manage_suppliers")) tasks.push(refreshRegistry("suppliers"));
     if (can("manage_contracts")) tasks.push(refreshRegistry("contracts"));
@@ -2229,6 +2263,1406 @@
     if (validDate(value)) setDate(value);
   }
 
+  const workTaskStates = { todo: "Da fare", in_progress: "In corso", blocked: "Bloccato", in_review: "Da verificare", done: "Completato" };
+  const workPriorities = { low: "Bassa", normal: "Normale", high: "Alta", urgent: "Urgente" };
+  const workBlockerStates = { open: "Aperto", in_progress: "In gestione", resolved: "Risolto" };
+  const workImpacts = { low: "Basso", medium: "Medio", high: "Alto", critical: "Critico" };
+  Object.assign(state, { inventoryItems: [], inventoryReady: false, inventoryLoading: false, inventoryConfigured: null, inventorySummary: null, inventoryRequest: 0, inventoryEpoch: 0, inventoryCursor: null, inventoryRetryMore: false, inventoryEditorRequest: 0, inventoryEditingId: null, inventoryEditingAsset: null, inventoryConflict: false, inventoryDetailRequest: 0, inventoryDetailId: null, inventoryDetailAsset: null, inventoryHistoryRequest: 0, inventoryHistoryLoading: false, inventoryHistoryReady: false, inventoryHistoryCursor: null, inventoryHistoryRetryMore: false });
+  const inventoryStates = { available: "Disponibile", assigned: "Assegnato", maintenance: "In manutenzione", retired: "Dismesso", lost: "Smarrito" };
+  const inventoryFields = ["asset_tag", "name", "category", "serial_number", "manufacturer", "model", "status", "location", "assignee", "purchase_date", "warranty_until", "notes"];
+  const inventoryTypes = { it_device: "Dispositivo IT", network_device: "Apparato di rete", physical: "Bene fisico", software: "Software", license: "Licenza" };
+  const inventoryLicenseModels = { per_device: "Per dispositivo", per_user: "Per utente", concurrent: "Concorrente", site: "Per sede" };
+  const inventoryRenewalModes = { manual: "Manuale", automatic: "Automatico", none: "Nessun rinnovo" };
+  const inventoryTypeFields = {
+    it_device: [["hostname", "Nome host", 253], ["ip_address", "Indirizzo IP", 45], ["mac_address", "Indirizzo MAC", 17], ["operating_system", "Sistema operativo", 120]],
+    network_device: [["hostname", "Nome host", 253], ["ip_address", "Indirizzo IP", 45], ["mac_address", "Indirizzo MAC", 17], ["operating_system", "Sistema operativo / firmware", 120], ["network_role", "Ruolo di rete", 80], ["vlan", "VLAN", "number", 1, 4094], ["port_count", "Numero di porte", "number", 0, 65535]],
+    physical: [["asset_kind", "Tipo di bene", 80], ["department", "Reparto", 120], ["maintenance_due", "Prossima manutenzione", "date"]],
+    software: [["publisher", "Editore", 120], ["software_version", "Versione software", 80], ["edition", "Edizione", 80], ["software_kind", "Tipo di software", 80]],
+    license: [["license_model", "Modello di licenza", inventoryLicenseModels, "per_device"], ["seats_total", "Posti acquistati", "number", 1, 1000000, 1], ["expires_on", "Scadenza", "date"], ["renewal_on", "Data di rinnovo", "date"], ["renewal_mode", "Rinnovo", inventoryRenewalModes, "manual"], ["license_reference", "Riferimento della licenza", 120]]
+  };
+  const inventoryRelationNames = { installed_on: "Software installato", connected_to: "Collegamento di rete", licensed_to: "Assegnazione di licenza" };
+  const inventoryAssetCache = new Map();
+  const inventoryPickers = new Map();
+  Object.assign(state, { inventoryRelationsRequest: 0, inventoryRelationsReady: false, inventoryRelationsLoading: false, inventoryRelationsCursor: null, inventoryRelationsRetryMore: false, inventoryRelations: [], inventoryRelationBusy: false, inventoryRelationConflict: false });
+
+  function inventoryAssetType(asset) { return asset?.asset_type || "it_device"; }
+  function inventoryRemember(asset) { if (asset?.id) inventoryAssetCache.set(String(asset.id), asset); return asset; }
+  function inventoryAssetLabel(asset) { return asset ? asset.asset_tag + " · " + asset.name : ""; }
+
+  // Both pickers search and paginate the service, so every asset remains reachable.
+  function createInventoryPicker(key, hostId, label, types, context) {
+    const host = $(hostId);
+    const picker = { key, host, types, context, request: 0, cursor: null, loading: false, items: [], selected: null, retryMore: false, enabled: true };
+    const field = node("div", "work-field inventory-picker");
+    const heading = node("label", "", label + " *");
+    heading.htmlFor = key + "-choice";
+    const controls = node("div", "inventory-picker-controls");
+    picker.search = node("input"); picker.search.type = "search"; picker.search.maxLength = 160; picker.search.autocomplete = "off"; picker.search.placeholder = "Cerca per codice o nome…"; picker.search.setAttribute("aria-label", "Cerca " + label.toLowerCase());
+    picker.type = node("select"); picker.type.setAttribute("aria-label", "Tipologia del destinatario");
+    picker.find = node("button", "button button-secondary", "Cerca"); picker.find.type = "button";
+    picker.choice = node("select"); picker.choice.id = key + "-choice"; picker.choice.required = true;
+    picker.status = node("p", "field-help"); picker.status.setAttribute("role", "status");
+    picker.error = node("p", "dialog-error"); picker.error.hidden = true; picker.error.setAttribute("role", "alert");
+    picker.more = node("button", "row-button", "Carica altri risultati"); picker.more.type = "button"; picker.more.hidden = true;
+    controls.append(picker.search, picker.type, picker.find); field.append(heading, controls, picker.choice, picker.status, picker.error, picker.more); host.replaceChildren(field);
+    picker.render = () => {
+      const selected = picker.selected;
+      picker.choice.replaceChildren(new Option("Seleziona un asset…", ""));
+      const options = [...(selected ? [selected] : []), ...picker.items.filter((asset) => !selected || String(asset.id) !== String(selected.id))];
+      options.forEach((asset) => picker.choice.add(new Option(inventoryAssetLabel(asset), String(asset.id))));
+      picker.choice.value = selected ? String(selected.id) : "";
+      picker.more.hidden = !picker.cursor && !picker.retryMore;
+      picker.more.textContent = picker.retryMore ? "Riprova a caricare altri risultati" : "Carica altri risultati";
+      picker.find.disabled = picker.loading || !picker.enabled;
+      picker.more.disabled = picker.loading || !picker.enabled;
+      picker.choice.disabled = !picker.enabled;
+      picker.search.disabled = !picker.enabled;
+      picker.type.disabled = !picker.enabled;
+      picker.status.textContent = picker.loading ? "Ricerca degli asset…" : picker.items.length ? picker.items.length + " risultati caricati." : "Cerca un asset nell’inventario.";
+    };
+    picker.setTypes = (allowed, clear = false) => {
+      picker.request++; picker.loading = false; picker.cursor = null; picker.items = []; picker.types = allowed;
+      const previous = picker.type.value;
+      picker.type.replaceChildren(...allowed.map((type) => new Option(inventoryTypes[type], type)));
+      if (allowed.includes(previous)) picker.type.value = previous;
+      picker.type.hidden = allowed.length < 2;
+      if (clear || picker.selected && !allowed.includes(inventoryAssetType(picker.selected))) picker.selected = null;
+      picker.error.hidden = true; picker.retryMore = false; picker.render();
+    };
+    picker.setSelected = async (id) => {
+      const request = ++picker.request; const epoch = state.inventoryEpoch;
+      picker.selected = id ? inventoryAssetCache.get(String(id)) || { id, asset_tag: "#" + id, name: "Caricamento…", asset_type: types[0] } : null;
+      picker.render();
+      if (!id || inventoryAssetCache.has(String(id))) return;
+      try {
+        const data = await api("/api/inventory/assets/" + encodeURIComponent(id));
+        if (request !== picker.request || epoch !== state.inventoryEpoch || !context()) return;
+        picker.selected = inventoryRemember(data.asset); picker.render();
+      } catch (error) {
+        if (request !== picker.request || epoch !== state.inventoryEpoch || !context()) return;
+        picker.selected = { id, asset_tag: "#" + id, name: "Asset selezionato", asset_type: types[0] }; picker.render();
+        picker.error.textContent = "Non siamo riusciti a leggere il nome dell’asset selezionato. Puoi cercarlo di nuovo."; picker.error.hidden = false;
+      }
+    };
+    picker.load = async (more = false) => {
+      if (!picker.enabled || !context() || more && (picker.loading || !picker.cursor)) return;
+      const queryText = picker.search.value.trim();
+      if (new TextEncoder().encode(queryText).length > 160) { picker.search.setCustomValidity("Accorcia la ricerca."); picker.search.reportValidity(); return; }
+      const request = ++picker.request; const epoch = state.inventoryEpoch;
+      const query = new URLSearchParams({ q: queryText, asset_type: picker.type.value, limit: "30" });
+      if (more) query.set("after_id", picker.cursor); else { picker.items = []; picker.cursor = null; }
+      picker.loading = true; picker.retryMore = false; picker.error.hidden = true; picker.render();
+      const current = () => request === picker.request && epoch === state.inventoryEpoch && context();
+      try {
+        const data = await api("/api/inventory/assets?" + query);
+        if (!current()) return;
+        const known = new Set(picker.items.map((asset) => String(asset.id)));
+        data.items.forEach((asset) => {
+          inventoryRemember(asset);
+          if (!known.has(String(asset.id)) && (key !== "inventory-relation-picker" || String(asset.id) !== String(state.inventoryDetailId))) picker.items.push(asset);
+        });
+        picker.cursor = data.next_after_id || null;
+      } catch (error) {
+        if (!current()) return;
+        picker.retryMore = more; picker.error.textContent = inventoryMessage(error); picker.error.hidden = false;
+      } finally { if (current()) { picker.loading = false; picker.render(); } }
+    };
+    picker.choice.addEventListener("change", () => { picker.choice.setCustomValidity(""); picker.selected = [...picker.items, picker.selected].find((asset) => asset && String(asset.id) === picker.choice.value) || null; });
+    picker.search.addEventListener("input", () => { picker.search.setCustomValidity(""); picker.request++; picker.loading = false; picker.cursor = null; picker.items = []; picker.retryMore = false; picker.render(); });
+    picker.search.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); picker.load(); } });
+    picker.type.addEventListener("change", () => picker.load());
+    picker.find.addEventListener("click", () => picker.load()); picker.more.addEventListener("click", () => picker.load(true));
+    picker.setTypes(types); inventoryPickers.set(key, picker); return picker;
+  }
+
+  function buildInventoryTypedFields() {
+    const host = $("inventory-typed-fields");
+    Object.entries(inventoryTypeFields).forEach(([type, fields]) => {
+      const group = node("fieldset", "inventory-fields inventory-type-group"); group.id = "inventory-type-" + type;
+      group.append(node("legend", "", "Dettagli · " + inventoryTypes[type]));
+      const grid = node("div", "form-grid");
+      if (type === "license") { const pickerHost = node("div", "inventory-picker-wide"); pickerHost.id = "inventory-software-picker-host"; grid.append(pickerHost); }
+      fields.forEach(([name, label, kind, min, max, initial]) => {
+        const field = node("div", "work-field"); const labelNode = node("label", "", label + (name === "seats_total" ? " *" : "")); labelNode.htmlFor = "inventory-" + type + "-" + name;
+        const input = node(typeof kind === "object" ? "select" : "input"); input.id = labelNode.htmlFor; input.dataset.inventoryDetail = name;
+        if (typeof kind === "object") Object.entries(kind).forEach(([value, text]) => input.add(new Option(text, value)));
+        else { input.type = typeof kind === "number" ? "text" : kind; if (typeof kind === "number") input.maxLength = kind; if (kind === "number") { input.min = min; input.max = max; input.step = "1"; } if (kind === "date") { input.min = "0001-01-01"; input.max = "9999-12-31"; } input.autocomplete = "off"; }
+        if (name === "seats_total") input.required = true;
+        if (name === "mac_address") { input.pattern = "(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"; input.placeholder = "00:1A:2B:3C:4D:5E"; }
+        input.dataset.initial = initial ?? (typeof kind === "object" ? min : "") ?? "";
+        input.addEventListener("input", () => input.setCustomValidity(""));
+        field.append(labelNode, input); if (name === "license_reference") field.append(node("p", "field-help", "Inserisci un riferimento amministrativo; conserva le chiavi segrete nel sistema dedicato.")); grid.append(field);
+      });
+      group.append(grid); host.append(group);
+    });
+    createInventoryPicker("inventory-software-picker", "inventory-software-picker-host", "Software coperto", ["software"], () => $("inventory-dialog").open && isInventoryManager());
+    createInventoryPicker("inventory-relation-picker", "inventory-relation-target", "Dispositivo destinatario", ["it_device", "network_device"], () => $("inventory-detail-dialog").open && !$("inventory-relation-form").hidden && isInventoryManager());
+  }
+
+  function inventoryShowTypeFields() {
+    const selected = $("inventory-asset_type").value;
+    Object.keys(inventoryTypes).forEach((type) => { const group = $("inventory-type-" + type); group.hidden = selected !== type; group.disabled = selected !== type; });
+    const picker = inventoryPickers.get("inventory-software-picker"); picker.enabled = selected === "license"; picker.render();
+  }
+
+  function inventoryTypedValues() {
+    const type = $("inventory-asset_type").value; const details = {};
+    $("inventory-type-" + type).querySelectorAll("[data-inventory-detail]").forEach((input) => {
+      input.value = input.value.trim(); input.setCustomValidity("");
+      if (input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength) input.setCustomValidity("Accorcia il contenuto di questo campo.");
+      if (input.type === "date" && input.value && !validDate(input.value)) input.setCustomValidity("Inserisci una data valida.");
+      if (input.value !== "") details[input.dataset.inventoryDetail] = input.type === "number" ? Number(input.value) : input.value;
+    });
+    if (type === "license") {
+      const picker = inventoryPickers.get("inventory-software-picker");
+      picker.choice.setCustomValidity(picker.selected ? "" : "Seleziona il software coperto dalla licenza.");
+      if (picker.selected) details.software_id = Number(picker.selected.id);
+    }
+    return details;
+  }
+
+  function inventoryTypedDisplay(asset) {
+    const type = inventoryAssetType(asset), d = asset.details || {}, fields = [];
+    if (type === "license") { const software = inventoryAssetCache.get(String(d.software_id)); fields.push(["Software coperto", software ? inventoryAssetLabel(software) : d.software_id ? "Asset #" + d.software_id : ""]); }
+    (inventoryTypeFields[type] || []).forEach(([name, label, kind]) => { const value = d[name]; fields.push([label, typeof kind === "object" ? kind[value] || value : kind === "date" && value && validDate(value) ? dateLabel(value) : value]); });
+    if (type === "license" && asset.license_usage) {
+      const usage = asset.license_usage;
+      fields.push(["Posti assegnati", usage.allocated ?? 0], ["Posti disponibili", usage.available ?? 0], ["Validità della licenza", usage.expired ? "Scaduta" : "Valida"]);
+      if (["concurrent", "site"].includes(d.license_model)) fields.push(["Conteggio assegnazioni", "Assegnazioni registrate manualmente; non misura l’utilizzo simultaneo."]);
+    }
+    return fields;
+  }
+
+  let inventorySearchTimer;
+  Object.assign(state, { inventoryBackup: null, inventoryExporting: false, inventoryImportRequest: 0, inventoryImportBusy: false, inventoryImportPlan: null });
+
+  function isInventoryManager() { return state.session?.role === "manager"; }
+
+  function inventoryMessage(error) {
+    return error.status === 503 ? "Il servizio Asset inventory non è disponibile. Chiedi a un gestore di verificarne la configurazione e l’avvio, poi riprova." : error.message;
+  }
+
+  function resetInventory() {
+    clearTimeout(inventorySearchTimer);
+    state.inventoryEpoch++;
+    state.inventoryRequest++;
+    state.inventoryEditorRequest++;
+    state.inventoryDetailRequest++;
+    state.inventoryHistoryRequest++;
+    state.inventoryRelationsRequest++;
+    state.inventoryImportRequest++;
+    state.inventoryImportBusy = false; state.inventoryImportPlan = null; state.inventoryExporting = false; state.inventoryBackup = null;
+    busyDialogs.delete("inventory-import-dialog");
+    $("inventory-import-form").reset();
+    $("inventory-import-preview").hidden = true;
+    $("inventory-import-rows").replaceChildren();
+    if ($("inventory-import-dialog").open) $("inventory-import-dialog").close();
+    renderInventoryImport();
+    state.inventoryRelations = []; state.inventoryRelationsReady = false; state.inventoryRelationsCursor = null; state.inventoryRelationsLoading = false; state.inventoryRelationBusy = false; state.inventoryRelationConflict = false;
+    inventoryAssetCache.clear(); inventoryPickers.forEach((picker) => { picker.request++; picker.selected = null; picker.items = []; picker.loading = false; picker.cursor = null; picker.retryMore = false; picker.render(); });
+    busyDialogs.delete("inventory-detail-dialog");
+    $("inventory-relation-form").hidden = true; $("inventory-relations").replaceChildren();
+    Object.assign(state, { inventoryItems: [], inventoryReady: false, inventoryLoading: false, inventoryConfigured: null, inventorySummary: null, inventoryCursor: null, inventoryRetryMore: false, inventoryEditingId: null, inventoryEditingAsset: null, inventoryConflict: false, inventoryDetailId: null, inventoryDetailAsset: null, inventoryHistoryLoading: false, inventoryHistoryReady: false, inventoryHistoryCursor: null });
+    dialogBusy("inventory-dialog", false, "inventory-save", "Crea asset");
+    ["inventory-dialog", "inventory-detail-dialog"].forEach((id) => { if ($(id).open) $(id).close(); });
+    $("inventory-body").replaceChildren();
+    $("inventory-history").replaceChildren();
+    $("inventory-detail-data").replaceChildren();
+    $("inventory-search-form").reset();
+    $("inventory-search").setCustomValidity("");
+    $("inventory-form").reset();
+    $("inventory-error").hidden = true;
+    renderInventory();
+  }
+
+  function renderInventory() {
+    const manager = isInventoryManager();
+    $("inventory-new").hidden = !manager;
+    $("inventory-new").disabled = state.inventoryConfigured !== true;
+    $("inventory-import").hidden = !manager;
+    $("inventory-import").disabled = state.inventoryConfigured !== true || state.inventoryImportBusy;
+    $("inventory-export").disabled = state.inventoryConfigured !== true || state.inventoryExporting;
+    $("inventory-export").textContent = state.inventoryExporting ? "Esportazione…" : "Esporta CSV";
+    const backup = state.inventoryBackup;
+    $("inventory-backup-status").hidden = !manager || state.inventoryConfigured !== true;
+    $("inventory-backup-status").textContent = !backup?.enabled ? "Backup automatico non configurato." : backup.last_error ? "Backup automatico: " + backup.last_error + (backup.last_success ? " Ultima copia riuscita: " + inventoryTime(backup.last_success) + "." : "") : "Backup automatico ogni " + backup.interval_hours + " ore · " + backup.keep + " copie conservate. " + (backup.last_success ? "Ultima copia: " + inventoryTime(backup.last_success) + "." : "Prima copia in preparazione.") + (backup.next_due ? " Prossima: " + inventoryTime(backup.next_due) + "." : "");
+    $("inventory-refresh").disabled = state.inventoryLoading;
+    $("inventory-permission").textContent = manager ? "Gestore · Censisci i beni e aggiorna assegnazioni, stato e garanzie. Per dismettere un bene, scegli Dismesso." : "Consulta i beni aziendali e il loro storico. Un gestore può creare e aggiornare le schede.";
+    $("inventory-count").textContent = state.inventorySummary ? state.inventorySummary.total : "—";
+    $("inventory-summary").hidden = !state.inventorySummary;
+    ["total", ...Object.keys(inventoryStates)].forEach((key) => { $("inventory-" + key).textContent = state.inventorySummary ? state.inventorySummary[key] : "—"; });
+    const filtered = Boolean($("inventory-search").value.trim() || $("inventory-filter").value || $("inventory-type-filter").value);
+    $("inventory-clear").hidden = !filtered;
+    $("inventory-loading").hidden = !state.inventoryLoading;
+    $("inventory-loading").textContent = state.inventoryItems.length ? "Aggiornamento dell’inventario…" : "Caricamento dell’inventario…";
+    $("inventory-table-wrap").hidden = !state.inventoryItems.length;
+    $("inventory-empty").hidden = !state.inventoryReady || Boolean(state.inventoryItems.length) || state.inventoryLoading;
+    $("inventory-empty-title").textContent = filtered ? "Nessun bene per questi filtri." : "Il primo bene parte da qui.";
+    $("inventory-empty-description").textContent = filtered ? "Prova un’altra ricerca oppure azzera i filtri." : manager ? "Usa Nuovo asset per censire dotazioni, dispositivi e altri beni aziendali." : "Un gestore può censire dotazioni, dispositivi e altri beni aziendali.";
+    $("inventory-footer").hidden = !state.inventoryReady;
+    $("inventory-visible").textContent = state.inventoryItems.length + (state.inventoryItems.length === 1 ? " bene caricato" : " beni caricati") + (filtered ? " per i filtri selezionati." : " nell’inventario.");
+    $("inventory-more").hidden = !state.inventoryCursor;
+    $("inventory-more").disabled = state.inventoryLoading;
+    $("inventory-more").textContent = state.inventoryLoading ? "Caricamento…" : "Carica altri asset";
+    $("inventory-body").replaceChildren();
+    for (const asset of state.inventoryItems) {
+      const row = node("tr");
+      const identity = node("td", "inventory-identity");
+      identity.append(node("strong", "", asset.name), node("span", "", asset.asset_tag));
+      const category = node("td");
+      category.append(node("span", "inventory-type-badge", inventoryTypes[inventoryAssetType(asset)] || asset.asset_type), node("span", "inventory-cell-secondary", asset.category || "hardware"));
+      if (asset.serial_number) identity.append(node("span", "", "S/N " + asset.serial_number));
+      const status = node("td");
+      status.append(node("span", "inventory-status inventory-status-" + asset.status, inventoryStates[asset.status] || asset.status));
+      const assigned = node("td");
+      assigned.append(node("span", "inventory-cell-line", asset.assignee || "Non assegnato"), node("span", "inventory-cell-secondary", asset.location || "Sede non indicata"));
+      const actions = node("td");
+      const group = node("div", "inventory-row-actions");
+      group.append(action("Scheda", "Apri scheda e storico di " + asset.name, () => openInventoryDetail(asset.id)));
+      if (manager) group.append(action("Modifica", "Modifica " + asset.name, () => openInventoryEditor(asset.id)));
+      actions.append(group);
+      row.append(identity, category, status, assigned, actions);
+      $("inventory-body").append(row);
+    }
+    $("inventory-detail-edit").hidden = !manager || !state.inventoryDetailAsset;
+  }
+
+  async function refreshInventory(more = false) {
+    if (!state.session?.authenticated || more && (state.inventoryLoading || !state.inventoryCursor)) return;
+    clearTimeout(inventorySearchTimer);
+    const request = ++state.inventoryRequest;
+    const epoch = state.inventoryEpoch;
+    const cursor = more ? state.inventoryCursor : null;
+    const query = new URLSearchParams({ q: $("inventory-search").value.trim(), limit: "30" });
+    if ($("inventory-filter").value) query.set("status", $("inventory-filter").value);
+    if ($("inventory-type-filter").value) query.set("asset_type", $("inventory-type-filter").value);
+    if (new TextEncoder().encode(query.get("q")).length > 160) {
+      state.inventoryLoading = false;
+      $("inventory-search").setCustomValidity("La ricerca è troppo lunga. Accorciala e riprova.");
+      $("inventory-search").reportValidity();
+      renderInventory();
+      return;
+    }
+    if (cursor) query.set("after_id", cursor);
+    if (!more) {
+      state.inventoryItems = [];
+      state.inventoryReady = false;
+      state.inventoryCursor = null;
+    }
+    state.inventoryLoading = true;
+    state.inventoryRetryMore = more;
+    $("inventory-error").hidden = true;
+    renderInventory();
+    const current = () => request === state.inventoryRequest && epoch === state.inventoryEpoch;
+    try {
+      if (!more) {
+        const service = await api("/api/inventory/status");
+        if (!current()) return;
+        if (!service.configured) {
+          state.inventoryConfigured = false;
+          state.inventorySummary = null;
+          $("inventory-error-text").textContent = "Asset inventory non è ancora configurato. Chiedi a un gestore di collegare il servizio di inventario, poi riprova.";
+          $("inventory-error").hidden = false;
+          return;
+        }
+        state.inventoryConfigured = true;
+        state.inventoryBackup = service.backup || null;
+        state.inventorySummary = service.summary || null;
+      }
+      const data = await api("/api/inventory/assets?" + query);
+      if (!current()) return;
+      const known = new Set(state.inventoryItems.map((asset) => String(asset.id)));
+      state.inventoryItems.push(...data.items.filter((asset) => !known.has(String(asset.id))));
+      data.items.forEach(inventoryRemember);
+      state.inventorySummary = data.summary || state.inventorySummary;
+      state.inventoryCursor = data.next_after_id || null;
+      state.inventoryReady = true;
+      state.inventoryRetryMore = false;
+    } catch (error) {
+      if (!current()) return;
+      if (error.status === 503) { state.inventoryConfigured = false; state.inventorySummary = null; }
+      $("inventory-error-text").textContent = inventoryMessage(error);
+      $("inventory-error").hidden = false;
+    } finally {
+      if (current()) { state.inventoryLoading = false; renderInventory(); }
+    }
+  }
+
+  function inventoryDownload(content, filename) {
+    const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+    const link = node("a"); link.href = url; link.download = filename;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function exportInventory() {
+    if (!state.session?.authenticated || state.inventoryConfigured !== true || state.inventoryExporting) return;
+    const epoch = state.inventoryEpoch, email = state.session.email;
+    const current = () => epoch === state.inventoryEpoch && state.session?.email === email;
+    const query = new URLSearchParams({ limit: "100" });
+    if ($("inventory-search").value.trim()) query.set("q", $("inventory-search").value.trim());
+    if ($("inventory-filter").value) query.set("status", $("inventory-filter").value);
+    if ($("inventory-type-filter").value) query.set("asset_type", $("inventory-type-filter").value);
+    state.inventoryExporting = true; renderInventory();
+    const parts = []; let previous = null, size = 0, count = 0, complete = false;
+    try {
+      for (let page = 0; page < 1000; page++) {
+        const data = await api("/api/inventory/assets/export?" + query);
+        if (!current()) return;
+        if (typeof data.csv !== "string" || !Number.isInteger(data.exported) || data.exported < 0) throw new Error("Il server ha restituito un’esportazione non valida.");
+        const newline = data.csv.indexOf("\n");
+        if (newline < 0) throw new Error("L’esportazione non contiene le intestazioni CSV.");
+        const chunk = page ? data.csv.slice(newline + 1) : data.csv;
+        size += new TextEncoder().encode(chunk).length;
+        if (size > 20 * 1024 * 1024) throw new Error("L’esportazione supera 20 MiB. Restringi i filtri e riprova.");
+        parts.push(chunk); count += data.exported;
+        if (data.next_after_id === null) { complete = true; break; }
+        if (!Number.isSafeInteger(data.next_after_id) || data.next_after_id < 1 || previous !== null && data.next_after_id >= previous) throw new Error("Il server ha restituito una pagina CSV non valida.");
+        previous = data.next_after_id; query.set("after_id", String(previous));
+      }
+      if (!complete) throw new Error("Troppi asset da esportare insieme. Restringi i filtri e riprova.");
+      if (!current()) return;
+      inventoryDownload("\ufeff" + parts.join(""), "inventario-" + localDate(new Date()) + ".csv");
+      showNotice(`Esportazione completata: ${count} asset per i filtri selezionati.`);
+    } catch (error) { if (current()) showNotice(inventoryMessage(error), true); }
+    finally { if (current()) { state.inventoryExporting = false; renderInventory(); } }
+  }
+
+  function renderInventoryImport() {
+    const busy = state.inventoryImportBusy;
+    ["inventory-import-file", "inventory-import-mode", "inventory-import-template", "inventory-import-preview-button"].forEach((id) => { $(id).disabled = busy; });
+    $("inventory-import-preview-button").textContent = busy ? "Operazione in corso…" : "Controlla file";
+    $("inventory-import-commit").disabled = busy || !state.inventoryImportPlan?.can_commit;
+    $("inventory-import-dialog").setAttribute("aria-busy", String(busy));
+    if (busy) busyDialogs.add("inventory-import-dialog"); else busyDialogs.delete("inventory-import-dialog");
+  }
+
+  function invalidateInventoryImport() {
+    state.inventoryImportRequest++; state.inventoryImportPlan = null;
+    $("inventory-import-preview").hidden = true; $("inventory-import-rows").replaceChildren();
+    $("inventory-import-error").hidden = true; renderInventoryImport();
+  }
+
+  function openInventoryImport() {
+    if (!isInventoryManager() || state.inventoryConfigured !== true || state.inventoryImportBusy) return;
+    $("inventory-import-form").reset(); invalidateInventoryImport();
+    $("inventory-import-dialog").showModal(); $("inventory-import-file").focus();
+  }
+
+  async function previewInventoryImport(event) {
+    event.preventDefault();
+    if (!isInventoryManager() || state.inventoryImportBusy || !$("inventory-import-form").reportValidity()) return;
+    const file = $("inventory-import-file").files[0];
+    if (!file || file.size > 256 * 1024 || !file.size) { dialogError("inventory-import-error", new Error("Scegli un CSV non vuoto di al massimo 256 KiB.")); return; }
+    invalidateInventoryImport();
+    const request = ++state.inventoryImportRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryImportRequest && epoch === state.inventoryEpoch && isInventoryManager() && $("inventory-import-dialog").open;
+    const mode = $("inventory-import-mode").value;
+    state.inventoryImportBusy = true; renderInventoryImport();
+    try {
+      let csv;
+      try { csv = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer()); }
+      catch { throw new Error("Il file deve essere un CSV con codifica UTF-8."); }
+      if (!current()) return;
+      const data = await post("/api/inventory/import/preview", { csv, mode });
+      if (!current()) return;
+      if (!Array.isArray(data.items) || !data.summary || typeof data.can_commit !== "boolean" || data.can_commit && !/^[a-f0-9]{32}$/i.test(data.preview_id || "")) throw new Error("Il server ha restituito un’anteprima non valida.");
+      state.inventoryImportPlan = data;
+      $("inventory-import-summary").textContent = `${data.summary.total} righe · ${data.summary.create} da creare · ${data.summary.update} da aggiornare · ${data.summary.errors} con errori.`;
+      for (const row of data.items) {
+        const tr = node("tr");
+        tr.append(node("td", "", row.row), node("td", "", [row.asset_tag, row.name].filter(Boolean).join(" · ")), node("td", "", { create: "Crea", update: "Aggiorna", error: "Errore" }[row.action] || row.action), node("td", "", row.errors?.length ? row.errors.join(" · ") : "Pronto"));
+        $("inventory-import-rows").append(tr);
+      }
+      $("inventory-import-preview").hidden = false;
+    } catch (error) { if (current()) dialogError("inventory-import-error", new Error(inventoryMessage(error))); }
+    finally { if (current()) { state.inventoryImportBusy = false; renderInventoryImport(); } }
+  }
+
+  async function commitInventoryImport() {
+    const plan = state.inventoryImportPlan;
+    if (!isInventoryManager() || state.inventoryImportBusy || !plan?.can_commit) return;
+    const request = ++state.inventoryImportRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryImportRequest && epoch === state.inventoryEpoch && isInventoryManager() && $("inventory-import-dialog").open;
+    state.inventoryImportBusy = true; renderInventoryImport(); $("inventory-import-error").hidden = true;
+    try {
+      await post("/api/inventory/import/commit", { preview_id: plan.preview_id });
+      if (!current()) return;
+      state.inventoryImportBusy = false; renderInventoryImport();
+      $("inventory-import-dialog").close(); state.auditReady = false;
+      inventoryAssetCache.clear();
+      showNotice(`Importazione completata: ${plan.summary.create} asset creati e ${plan.summary.update} aggiornati.`);
+      refreshInventory();
+    } catch (error) {
+      if (!current()) return;
+      state.inventoryImportPlan = null;
+      dialogError("inventory-import-error", new Error(inventoryMessage(error) + " Controlla nuovamente il file prima di confermare."));
+    } finally { if (current()) { state.inventoryImportBusy = false; renderInventoryImport(); } }
+  }
+
+  $("inventory-export").addEventListener("click", exportInventory);
+  $("inventory-import").addEventListener("click", openInventoryImport);
+  $("inventory-import-form").addEventListener("submit", previewInventoryImport);
+  $("inventory-import-commit").addEventListener("click", commitInventoryImport);
+  ["inventory-import-file", "inventory-import-mode"].forEach((id) => $(id).addEventListener("change", invalidateInventoryImport));
+  $("inventory-import-dialog").addEventListener("close", invalidateInventoryImport);
+  $("inventory-import-template").addEventListener("click", () => inventoryDownload('\ufeff"asset_tag","name","asset_type","details"\r\n"IT-0001","Computer ufficio","it_device","{}"\r\n', "modello-inventario.csv"));
+
+  function inventoryDatesAndAssignment() {
+    const assigned = $("inventory-status").value === "assigned";
+    $("inventory-assignee").required = assigned;
+    $("inventory-assignee-required").hidden = !assigned;
+    $("inventory-assignee").setCustomValidity(assigned && !$("inventory-assignee").value.trim() ? "Indica la persona o il reparto a cui è assegnato il bene." : "");
+    const purchase = $("inventory-purchase_date").value;
+    const warranty = $("inventory-warranty_until").value;
+    $("inventory-warranty_until").min = validDate(purchase) ? purchase : "0001-01-01";
+    $("inventory-warranty_until").setCustomValidity(purchase && warranty && warranty < purchase ? "La garanzia deve terminare alla data di acquisto o dopo." : "");
+  }
+
+  function fillInventoryEditor(asset = null) {
+    $("inventory-form").reset();
+    inventoryFields.forEach((field) => { $("inventory-" + field).value = asset ? asset[field] || "" : field === "category" ? "hardware" : field === "status" ? "available" : ""; $("inventory-" + field).setCustomValidity(""); });
+    $("inventory-asset_type").value = inventoryAssetType(asset);
+    Object.entries(inventoryTypeFields).forEach(([type]) => $("inventory-type-" + type).querySelectorAll("[data-inventory-detail]").forEach((input) => { input.value = asset && inventoryAssetType(asset) === type ? asset.details?.[input.dataset.inventoryDetail] ?? input.dataset.initial : input.dataset.initial; input.setCustomValidity(""); }));
+    const softwarePicker = inventoryPickers.get("inventory-software-picker");
+    softwarePicker.request++; softwarePicker.items = []; softwarePicker.cursor = null; softwarePicker.loading = false; softwarePicker.retryMore = false; softwarePicker.error.hidden = true;
+    softwarePicker.setSelected(asset?.details?.software_id || null);
+    inventoryShowTypeFields(); inventoryRemember(asset);
+    state.inventoryEditingAsset = asset;
+    state.inventoryConflict = false;
+    $("inventory-editor-error").hidden = true;
+    $("inventory-editor-reload").hidden = true;
+    $("inventory-fields").disabled = false;
+    $("inventory-save").disabled = false;
+    $("inventory-dialog-title").textContent = asset ? "Modifica asset" : "Nuovo asset";
+    $("inventory-save").textContent = asset ? "Salva modifiche" : "Crea asset";
+    inventoryDatesAndAssignment();
+  }
+
+  function openInventoryEditor(id = null) {
+    if (!isInventoryManager() || state.inventoryConfigured !== true || busyDialogs.has("inventory-dialog")) return;
+    state.inventoryEditorRequest++;
+    state.inventoryEditingId = id;
+    fillInventoryEditor();
+    $("inventory-editor-loading").hidden = true;
+    if (!$("inventory-dialog").open) $("inventory-dialog").showModal();
+    if (id) loadInventoryEditor(); else $("inventory-asset_tag").focus();
+  }
+
+  async function loadInventoryEditor() {
+    if (!isInventoryManager() || !state.inventoryEditingId || busyDialogs.has("inventory-dialog")) return;
+    const id = state.inventoryEditingId;
+    const request = ++state.inventoryEditorRequest;
+    const epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryEditorRequest && epoch === state.inventoryEpoch && $("inventory-dialog").open && isInventoryManager();
+    $("inventory-dialog-title").textContent = "Modifica asset";
+    $("inventory-editor-loading").hidden = false;
+    $("inventory-editor-error").hidden = true;
+    $("inventory-editor-reload").hidden = true;
+    $("inventory-fields").disabled = true;
+    $("inventory-save").disabled = true;
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(id));
+      if (!current()) return;
+      fillInventoryEditor(data.asset);
+      $("inventory-name").focus();
+    } catch (error) {
+      if (!current()) return;
+      dialogError("inventory-editor-error", new Error(inventoryMessage(error)));
+      $("inventory-editor-reload").textContent = "Riprova a caricare la scheda aggiornata";
+      $("inventory-editor-reload").hidden = false;
+    } finally {
+      if (current()) $("inventory-editor-loading").hidden = true;
+    }
+  }
+
+  function inventoryTime(value) {
+    if (!value) return "—";
+    // SQLite timestamps without a suffix are UTC.
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value.replace(" ", "T") + "Z" : value;
+    const date = new Date(normalized);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString("it-IT");
+  }
+
+  function inventoryDetails(asset, timestamps = true) {
+    const details = node("dl", "inventory-detail-grid");
+    const fields = [["Codice inventario", asset.asset_tag], ["Nome", asset.name], ["Tipologia", inventoryTypes[inventoryAssetType(asset)] || asset.asset_type], ["Stato", inventoryStates[asset.status] || asset.status], ["Categoria", asset.category], ["Numero di serie", asset.serial_number], ["Produttore", asset.manufacturer], ["Modello", asset.model], ["Assegnato a", asset.assignee], ["Ubicazione", asset.location], ["Acquistato il", asset.purchase_date && validDate(asset.purchase_date) ? dateLabel(asset.purchase_date) : asset.purchase_date], ["Garanzia fino al", asset.warranty_until && validDate(asset.warranty_until) ? dateLabel(asset.warranty_until) : asset.warranty_until], ["Versione", asset.version]];
+    fields.push(...inventoryTypedDisplay(asset));
+    if (timestamps) fields.push(["Creato il", inventoryTime(asset.created_at)], ["Aggiornato il", inventoryTime(asset.updated_at)]);
+    fields.push(["Note", asset.notes]);
+    fields.forEach(([label, value]) => {
+      const item = node("div", label === "Note" ? "inventory-detail-wide" : "");
+      item.append(node("dt", "", label), node("dd", "", value === null || value === undefined || value === "" ? "—" : String(value)));
+      details.append(item);
+    });
+    return details;
+  }
+
+  function openInventoryDetail(id) {
+    if (state.inventoryRelationBusy) return;
+    state.inventoryDetailId = id;
+    state.inventoryDetailAsset = null;
+    resetInventoryRelations();
+    state.inventoryDetailRequest++;
+    state.inventoryHistoryRequest++;
+    state.inventoryHistoryReady = false;
+    state.inventoryHistoryLoading = false;
+    state.inventoryHistoryCursor = null;
+    $("inventory-detail-title").textContent = "Scheda asset";
+    $("inventory-detail-data").replaceChildren();
+    $("inventory-history").replaceChildren();
+    $("inventory-detail-content").hidden = true;
+    $("inventory-detail-edit").hidden = true;
+    if (!$("inventory-detail-dialog").open) $("inventory-detail-dialog").showModal();
+    loadInventoryDetail();
+  }
+
+  async function loadInventoryDetail() {
+    const id = state.inventoryDetailId;
+    if (!id) return;
+    const request = ++state.inventoryDetailRequest;
+    const epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryDetailRequest && epoch === state.inventoryEpoch && $("inventory-detail-dialog").open;
+    $("inventory-detail-loading").hidden = false;
+    $("inventory-detail-error").hidden = true;
+    $("inventory-detail-retry").hidden = true;
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(id));
+      if (!current()) return;
+      state.inventoryDetailAsset = inventoryRemember(data.asset);
+      $("inventory-detail-title").textContent = data.asset.name;
+      $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset));
+      $("inventory-detail-content").hidden = false;
+      $("inventory-detail-edit").hidden = !isInventoryManager();
+      renderInventoryRelationOptions();
+      loadInventoryRelations();
+      loadInventoryHistory();
+    } catch (error) {
+      if (!current()) return;
+      dialogError("inventory-detail-error", new Error(inventoryMessage(error)));
+      $("inventory-detail-retry").hidden = false;
+    } finally {
+      if (current()) $("inventory-detail-loading").hidden = true;
+    }
+  }
+
+  async function loadInventoryHistory(more = false) {
+    const id = state.inventoryDetailId;
+    if (!id || more && (state.inventoryHistoryLoading || !state.inventoryHistoryCursor)) return;
+    const request = ++state.inventoryHistoryRequest;
+    const epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryHistoryRequest && epoch === state.inventoryEpoch && id === state.inventoryDetailId && $("inventory-detail-dialog").open;
+    const query = new URLSearchParams({ limit: "20" });
+    if (more) query.set("after_id", state.inventoryHistoryCursor);
+    else { $("inventory-history").replaceChildren(); state.inventoryHistoryReady = false; state.inventoryHistoryCursor = null; }
+    state.inventoryHistoryLoading = true;
+    state.inventoryHistoryRetryMore = more;
+    $("inventory-history-loading").hidden = false;
+    $("inventory-history-error").hidden = true;
+    $("inventory-history-retry").hidden = true;
+    $("inventory-history-empty").hidden = true;
+    $("inventory-history-more").disabled = true;
+    $("inventory-history-more").hidden = !state.inventoryHistoryCursor;
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(id) + "/history?" + query);
+      if (!current()) return;
+      data.items.forEach((entry) => {
+        const item = node("li");
+        item.append(node("h4", "", (entry.action === "created" ? "Creazione" : "Aggiornamento") + " · versione " + entry.version), node("p", "inventory-history-meta", inventoryTime(entry.created_at) + " · utente #" + entry.actor_id));
+        if (entry.change?.relation) {
+          const operation = entry.change.operation === "relation_removed" ? "Relazione rimossa" : "Relazione aggiunta";
+          item.append(node("p", "inventory-history-summary", operation + " · " + inventoryRelationSummary(entry.change.relation)));
+        }
+        if (entry.snapshot) {
+          item.append(node("p", "inventory-history-summary", (inventoryStates[entry.snapshot.status] || entry.snapshot.status) + (entry.snapshot.assignee ? " · " + entry.snapshot.assignee : "") + (entry.snapshot.location ? " · " + entry.snapshot.location : "")));
+          const snapshot = node("details");
+          snapshot.append(node("summary", "", "Visualizza i dati di questa versione"), inventoryDetails(entry.snapshot, false));
+          item.append(snapshot);
+        }
+        $("inventory-history").append(item);
+      });
+      state.inventoryHistoryReady = true;
+      state.inventoryHistoryCursor = data.next_after_id || null;
+      state.inventoryHistoryRetryMore = false;
+      $("inventory-history-empty").hidden = Boolean($("inventory-history").children.length);
+    } catch (error) {
+      if (!current()) return;
+      dialogError("inventory-history-error", new Error(inventoryMessage(error)));
+      $("inventory-history-retry").hidden = false;
+    } finally {
+      if (current()) {
+        state.inventoryHistoryLoading = false;
+        $("inventory-history-loading").hidden = true;
+        $("inventory-history-more").disabled = false;
+        $("inventory-history-more").hidden = !state.inventoryHistoryCursor;
+      }
+    }
+  }
+
+  function resetInventoryRelations() {
+    state.inventoryRelationsRequest++; state.inventoryRelations = []; state.inventoryRelationsReady = false; state.inventoryRelationsCursor = null; state.inventoryRelationsLoading = false; state.inventoryRelationsRetryMore = false; state.inventoryRelationConflict = false;
+    $("inventory-relations").replaceChildren(); $("inventory-relation-form").reset(); $("inventory-relation-form").hidden = true;
+    $("inventory-relation-error").hidden = true; $("inventory-relation-reload").hidden = true; $("inventory-relations-error").hidden = true; $("inventory-relations-retry").hidden = true; $("inventory-relations-more").hidden = true;
+    const picker = inventoryPickers.get("inventory-relation-picker"); if (picker) { picker.request++; picker.selected = null; picker.items = []; picker.loading = false; picker.cursor = null; picker.retryMore = false; picker.render(); }
+  }
+
+  function inventoryRelationSummary(relation) {
+    const source = relation.source || relation.source_asset || inventoryAssetCache.get(String(relation.source_id));
+    const target = relation.target || relation.target_asset || inventoryAssetCache.get(String(relation.target_id));
+    const origin = source ? inventoryAssetLabel(source) : "Asset #" + relation.source_id;
+    const destination = target ? inventoryAssetLabel(target) : relation.target_id ? "Asset #" + relation.target_id : relation.assignee || "Destinatario non indicato";
+    let summary = (inventoryRelationNames[relation.relation_type] || relation.relation_type) + " · " + origin + " → " + destination;
+    if (relation.relation_type === "licensed_to") summary += " · " + relation.quantity + (Number(relation.quantity) === 1 ? " posto" : " posti");
+    if (relation.installed_version) summary += " · versione " + relation.installed_version;
+    if (relation.source_port || relation.target_port) summary += " · porte " + (relation.source_port || "—") + " → " + (relation.target_port || "—");
+    return summary;
+  }
+
+  function inventoryRelationAllowed(asset) {
+    const type = inventoryAssetType(asset);
+    return type === "software" ? ["installed_on"] : type === "license" ? ["licensed_to"] : ["it_device", "network_device"].includes(type) ? ["connected_to"] : [];
+  }
+
+  function renderInventoryRelationOptions() {
+    const asset = state.inventoryDetailAsset; if (!asset) return;
+    const allowed = inventoryRelationAllowed(asset), select = $("inventory-relation-type"), previous = select.value;
+    select.replaceChildren(...allowed.map((type) => new Option(inventoryRelationNames[type], type)));
+    if (allowed.includes(previous)) select.value = previous;
+    $("inventory-relation-new").hidden = !isInventoryManager() || !allowed.length;
+    $("inventory-relation-new").disabled = state.inventoryRelationBusy;
+    $("inventory-relation-help").textContent = inventoryAssetType(asset) === "license" ? "Registra i posti assegnati a dispositivi o persone secondo il modello della licenza. Le assegnazioni sono inserite manualmente." : "Consulta software installato, collegamenti di rete e licenze assegnate a questo bene.";
+    if (!allowed.length) $("inventory-relation-form").hidden = true;
+    inventoryRelationControls();
+  }
+
+  function inventoryRelationControls() {
+    const asset = state.inventoryDetailAsset; if (!asset) return;
+    const type = $("inventory-relation-type").value, model = asset.details?.license_model || "per_device";
+    const license = type === "licensed_to", flexible = license && ["concurrent", "site"].includes(model);
+    const user = license && (model === "per_user" || flexible && $("inventory-relation-recipient-kind").value === "user");
+    $("inventory-relation-recipient").hidden = !flexible;
+    $("inventory-relation-recipient-kind").disabled = !flexible;
+    $("inventory-relation-target").hidden = user;
+    $("inventory-relation-assignee-field").hidden = !user;
+    $("inventory-relation-assignee").disabled = !user; $("inventory-relation-assignee").required = user;
+    $("inventory-relation-quantity-field").hidden = !license; $("inventory-relation-quantity").disabled = !license;
+    $("inventory-relation-version-field").hidden = type !== "installed_on"; $("inventory-relation-installed-version").disabled = type !== "installed_on";
+    $("inventory-relation-ports").hidden = type !== "connected_to";
+    $("inventory-relation-source-port").disabled = type !== "connected_to"; $("inventory-relation-target-port").disabled = type !== "connected_to";
+    const picker = inventoryPickers.get("inventory-relation-picker"), types = type === "connected_to" ? ["network_device"] : ["it_device", "network_device"];
+    if (picker.types.join() !== types.join()) picker.setTypes(types);
+    picker.enabled = !user; picker.choice.required = !user; picker.render();
+    $("inventory-relation-fields").disabled = state.inventoryRelationBusy || state.inventoryRelationConflict;
+    $("inventory-relation-save").disabled = state.inventoryRelationBusy || state.inventoryRelationConflict || !isInventoryManager();
+    $("inventory-relation-cancel").disabled = state.inventoryRelationBusy;
+    $("inventory-detail-edit").disabled = state.inventoryRelationBusy;
+    $("inventory-relation-reload").disabled = state.inventoryRelationBusy;
+  }
+
+  function renderInventoryRelations() {
+    $("inventory-relations").replaceChildren();
+    state.inventoryRelations.forEach((relation) => {
+      const item = node("li", "inventory-relation-card"), heading = node("div", "inventory-relation-heading");
+      const outgoing = String(relation.source_id) === String(state.inventoryDetailId);
+      const source = relation.source || relation.source_asset, target = relation.target || relation.target_asset;
+      if (source) inventoryRemember(source); if (target) inventoryRemember(target);
+      const counterpart = outgoing ? target : source;
+      heading.append(node("strong", "", inventoryRelationNames[relation.relation_type] || relation.relation_type), node("span", "inventory-cell-secondary", outgoing ? "In uscita" : "In entrata"));
+      item.append(heading, node("p", "inventory-relation-summary", inventoryRelationSummary(relation)));
+      if (relation.notes) item.append(node("p", "inventory-history-summary", relation.notes));
+      const actions = node("div", "inventory-row-actions");
+      if (counterpart) { const open = action("Apri scheda collegata", "Apri " + counterpart.name, () => { if (!state.inventoryRelationBusy) openInventoryDetail(counterpart.id); }); open.disabled = state.inventoryRelationBusy; actions.append(open); }
+      if (outgoing && isInventoryManager()) {
+        const remove = action("Rimuovi relazione", "Rimuovi " + inventoryRelationNames[relation.relation_type], () => {
+          if (state.inventoryRelationBusy || state.inventoryRelationConflict) return;
+          const confirmation = node("div", "inventory-relation-confirm");
+          confirmation.append(node("p", "", "Rimuovere questa relazione? La rimozione resta nello storico. Potrai registrare una nuova relazione in seguito."));
+          const cancel = node("button", "button button-secondary", "Mantieni relazione"); cancel.type = "button"; cancel.addEventListener("click", () => { confirmation.remove(); remove.hidden = false; });
+          const confirm = node("button", "button button-danger", "Conferma rimozione"); confirm.type = "button"; confirm.addEventListener("click", () => mutateInventoryRelation(null, relation));
+          confirmation.append(cancel, confirm); item.append(confirmation); remove.hidden = true; confirm.focus();
+        }, true);
+        remove.disabled = state.inventoryRelationBusy || state.inventoryRelationConflict; actions.append(remove);
+      }
+      item.append(actions); $("inventory-relations").append(item);
+    });
+    $("inventory-relations-empty").hidden = !state.inventoryRelationsReady || Boolean(state.inventoryRelations.length) || state.inventoryRelationsLoading;
+    $("inventory-relations-more").hidden = !state.inventoryRelationsCursor;
+    $("inventory-relations-more").disabled = state.inventoryRelationsLoading || state.inventoryRelationBusy;
+  }
+
+  async function loadInventoryRelations(more = false) {
+    const id = state.inventoryDetailId;
+    if (!id || more && (state.inventoryRelationsLoading || !state.inventoryRelationsCursor)) return;
+    const request = ++state.inventoryRelationsRequest, epoch = state.inventoryEpoch;
+    const current = () => request === state.inventoryRelationsRequest && epoch === state.inventoryEpoch && String(id) === String(state.inventoryDetailId) && $("inventory-detail-dialog").open;
+    const query = new URLSearchParams({ limit: "30" }); if (more) query.set("after_id", state.inventoryRelationsCursor); else { state.inventoryRelations = []; state.inventoryRelationsReady = false; state.inventoryRelationsCursor = null; }
+    state.inventoryRelationsLoading = true; state.inventoryRelationsRetryMore = more;
+    $("inventory-relations-loading").hidden = false; $("inventory-relations-error").hidden = true; $("inventory-relations-retry").hidden = true; renderInventoryRelations();
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(id) + "/relations?" + query);
+      if (!current()) return;
+      const known = new Set(state.inventoryRelations.map((relation) => String(relation.id)));
+      state.inventoryRelations.push(...data.items.filter((relation) => !known.has(String(relation.id))));
+      state.inventoryRelationsCursor = data.next_after_id || null; state.inventoryRelationsRetryMore = false; state.inventoryRelationsReady = true;
+    } catch (error) {
+      if (!current()) return;
+      dialogError("inventory-relations-error", new Error(inventoryMessage(error))); $("inventory-relations-retry").hidden = false;
+    } finally { if (current()) { state.inventoryRelationsLoading = false; $("inventory-relations-loading").hidden = true; renderInventoryRelations(); } }
+  }
+
+  async function reloadInventoryRelationSource() {
+    if (state.inventoryRelationBusy || !state.inventoryDetailId) return;
+    const id = state.inventoryDetailId, epoch = state.inventoryEpoch, request = ++state.inventoryDetailRequest;
+    const current = () => epoch === state.inventoryEpoch && request === state.inventoryDetailRequest && $("inventory-detail-dialog").open && String(id) === String(state.inventoryDetailId);
+    $("inventory-relation-reload").disabled = true;
+    try {
+      const data = await api("/api/inventory/assets/" + encodeURIComponent(id)); if (!current()) return;
+      state.inventoryDetailAsset = inventoryRemember(data.asset); state.inventoryRelationConflict = false;
+      $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset)); $("inventory-detail-title").textContent = data.asset.name;
+      $("inventory-relation-reload").hidden = true; $("inventory-relation-error").hidden = true; $("inventory-relations-error").hidden = true;
+      renderInventoryRelationOptions(); loadInventoryRelations(); loadInventoryHistory();
+      showNotice("Scheda aggiornata. La relazione non è stata salvata: controlla i dati e riprova.");
+    } catch (error) { if (current()) dialogError("inventory-relations-error", new Error(inventoryMessage(error))); }
+    finally { if (current()) $("inventory-relation-reload").disabled = false; }
+  }
+
+  async function mutateInventoryRelation(fields, removing = null) {
+    const source = state.inventoryDetailAsset;
+    if (!source || state.inventoryRelationBusy || state.inventoryRelationConflict || !isInventoryManager()) return;
+    const id = source.id, epoch = state.inventoryEpoch, request = state.inventoryDetailRequest;
+    const current = () => epoch === state.inventoryEpoch && request === state.inventoryDetailRequest && String(id) === String(state.inventoryDetailId) && $("inventory-detail-dialog").open && isInventoryManager();
+    state.inventoryRelationBusy = true; busyDialogs.add("inventory-detail-dialog");
+    $("inventory-relation-error").hidden = true; $("inventory-relations-error").hidden = true; inventoryRelationControls(); renderInventoryRelations();
+    $("inventory-relations").querySelectorAll("button").forEach((button) => button.disabled = true);
+    const payload = { ...(fields || {}), version: String(source.version) };
+    const path = "/api/inventory/assets/" + encodeURIComponent(id) + "/relations" + (removing ? "/" + encodeURIComponent(removing.id) + "/remove" : "");
+    try {
+      const data = await post(path, payload); if (!current()) return;
+      state.inventoryDetailAsset = inventoryRemember(data.asset);
+      $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset));
+      $("inventory-relation-form").hidden = true; $("inventory-relation-form").reset();
+      const picker = inventoryPickers.get("inventory-relation-picker"); picker.setSelected(null);
+      showNotice(removing ? "Relazione rimossa e conservata nello storico." : "Relazione aggiunta all’inventario.");
+      loadInventoryRelations(); loadInventoryHistory(); refreshInventory();
+    } catch (error) {
+      if (!current()) return;
+      const errorId = removing ? "inventory-relations-error" : "inventory-relation-error";
+      if (error.status === 409) {
+        state.inventoryRelationConflict = true;
+        dialogError(errorId, new Error(inventoryMessage(error) + " I dati inseriti restano disponibili. Ricarica la scheda prima di riprovare."));
+        $("inventory-relation-reload").hidden = false;
+      } else dialogError(errorId, new Error(inventoryMessage(error)));
+    } finally {
+      if (epoch === state.inventoryEpoch) { state.inventoryRelationBusy = false; busyDialogs.delete("inventory-detail-dialog"); if (current()) { inventoryRelationControls(); renderInventoryRelations(); } }
+    }
+  }
+
+  buildInventoryTypedFields();
+  inventoryShowTypeFields();
+  $("inventory-relation-new").addEventListener("click", () => {
+    if (!isInventoryManager() || state.inventoryRelationBusy || !state.inventoryDetailAsset) return;
+    $("inventory-relation-form").hidden = false; inventoryRelationControls();
+    inventoryPickers.get("inventory-relation-picker").load(); $("inventory-relation-type").focus();
+  });
+  $("inventory-relation-cancel").addEventListener("click", () => { if (!state.inventoryRelationBusy) $("inventory-relation-form").hidden = true; });
+  $("inventory-relation-type").addEventListener("change", inventoryRelationControls);
+  $("inventory-relation-recipient-kind").addEventListener("change", inventoryRelationControls);
+  $("inventory-relations-retry").addEventListener("click", () => loadInventoryRelations(state.inventoryRelationsRetryMore));
+  $("inventory-relations-more").addEventListener("click", () => loadInventoryRelations(true));
+  $("inventory-relation-reload").addEventListener("click", reloadInventoryRelationSource);
+  $("inventory-relation-form").addEventListener("submit", (event) => {
+    event.preventDefault(); if (!isInventoryManager() || state.inventoryRelationBusy || state.inventoryRelationConflict) return;
+    const type = $("inventory-relation-type").value, picker = inventoryPickers.get("inventory-relation-picker"), user = !$("inventory-relation-assignee").disabled;
+    picker.choice.setCustomValidity(!user && !picker.selected ? "Seleziona un dispositivo destinatario." : "");
+    const inputs = ["assignee", "installed-version", "source-port", "target-port", "notes"];
+    inputs.forEach((name) => { const input = $("inventory-relation-" + name); if (!input.disabled) { input.value = input.value.trim(); input.setCustomValidity(input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength ? "Accorcia il contenuto di questo campo." : ""); } });
+    if (!$("inventory-relation-form").reportValidity()) return;
+    const fields = { relation_type: type, notes: $("inventory-relation-notes").value };
+    if (user) fields.assignee = $("inventory-relation-assignee").value; else fields.target_id = String(picker.selected.id);
+    if (type === "licensed_to") fields.quantity = $("inventory-relation-quantity").value;
+    if (type === "installed_on") fields.installed_version = $("inventory-relation-installed-version").value;
+    if (type === "connected_to") { fields.source_port = $("inventory-relation-source-port").value; fields.target_port = $("inventory-relation-target-port").value; }
+    mutateInventoryRelation(fields);
+  });
+
+  $("inventory-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!isInventoryManager() || busyDialogs.has("inventory-dialog") || state.inventoryConflict || $("inventory-fields").disabled) return;
+    inventoryFields.forEach((field) => { if (field !== "notes") $("inventory-" + field).value = $("inventory-" + field).value.trim(); });
+    inventoryDatesAndAssignment();
+    inventoryFields.forEach((field) => {
+      const input = $("inventory-" + field);
+      if (input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength) input.setCustomValidity("Il contenuto è troppo lungo. Accorcialo: i caratteri accentati e i simboli possono occupare più spazio.");
+    });
+    const typedDetails = inventoryTypedValues();
+    if (!$("inventory-form").reportValidity()) return;
+    const fields = Object.fromEntries(inventoryFields.map((field) => [field, $("inventory-" + field).value]));
+    fields.category = fields.category || "hardware";
+    fields.asset_type = $("inventory-asset_type").value;
+    fields.details = JSON.stringify(typedDetails);
+    for (const field of ["purchase_date", "warranty_until"]) {
+      if (fields[field] && !validDate(fields[field])) { dialogError("inventory-editor-error", new Error("Inserisci date valide.")); return; }
+    }
+    const editing = state.inventoryEditingAsset;
+    if (state.inventoryEditingId && !editing) return;
+    if (editing) fields.version = String(editing.version);
+    const epoch = state.inventoryEpoch;
+    const request = state.inventoryEditorRequest;
+    const current = () => epoch === state.inventoryEpoch && request === state.inventoryEditorRequest && isInventoryManager();
+    $("inventory-editor-error").hidden = true;
+    dialogBusy("inventory-dialog", true, "inventory-save", editing ? "Salva modifiche" : "Crea asset");
+    try {
+      await post("/api/inventory/assets" + (editing ? "/" + encodeURIComponent(editing.id) : ""), fields);
+      if (!current()) return;
+      $("inventory-dialog").close();
+      showNotice(editing ? "Scheda asset aggiornata. La versione precedente resta nello storico." : "Asset aggiunto all’inventario.");
+      refreshInventory();
+    } catch (error) {
+      if (!current() || !$("inventory-dialog").open) return;
+      if (error.status === 409 && editing && !/già presente/i.test(error.message)) {
+        state.inventoryConflict = true;
+        dialogError("inventory-editor-error", new Error(inventoryMessage(error) + " Le tue modifiche sono ancora visibili. Copiale se vuoi conservarle, poi ricarica la versione aggiornata prima di salvare."));
+        $("inventory-editor-reload").textContent = "Ricarica versione aggiornata e scarta le modifiche non salvate";
+        $("inventory-editor-reload").hidden = false;
+      } else dialogError("inventory-editor-error", new Error(inventoryMessage(error)));
+    } finally {
+      // Closing after a successful save invalidates editor requests; release its lock.
+      if (epoch === state.inventoryEpoch && (request === state.inventoryEditorRequest || !$("inventory-dialog").open)) {
+        dialogBusy("inventory-dialog", false, "inventory-save", editing ? "Salva modifiche" : "Crea asset");
+        $("inventory-save").disabled = state.inventoryConflict || !isInventoryManager();
+      }
+    }
+  });
+  $("inventory-new").addEventListener("click", () => openInventoryEditor());
+  $("inventory-refresh").addEventListener("click", () => refreshInventory());
+  $("inventory-retry").addEventListener("click", () => refreshInventory(state.inventoryRetryMore));
+  $("inventory-more").addEventListener("click", () => refreshInventory(true));
+  $("inventory-search-form").addEventListener("submit", (event) => { event.preventDefault(); refreshInventory(); });
+  $("inventory-search").addEventListener("input", () => {
+    clearTimeout(inventorySearchTimer);
+    $("inventory-search").setCustomValidity("");
+    // Invalidate immediately, before the debounce, so old results cannot win.
+    state.inventoryRequest++;
+    state.inventoryLoading = true;
+    state.inventoryReady = false;
+    state.inventoryItems = [];
+    state.inventoryCursor = null;
+    $("inventory-error").hidden = true;
+    renderInventory();
+    inventorySearchTimer = setTimeout(() => refreshInventory(), 300);
+  });
+  $("inventory-filter").addEventListener("change", () => refreshInventory());
+  $("inventory-type-filter").addEventListener("change", () => refreshInventory());
+  $("inventory-asset_type").addEventListener("change", () => { inventoryShowTypeFields(); const picker = inventoryPickers.get("inventory-software-picker"); if ($("inventory-asset_type").value === "license" && !picker.items.length && !picker.loading) picker.load(); });
+  $("inventory-clear").addEventListener("click", () => { $("inventory-search-form").reset(); $("inventory-search").setCustomValidity(""); refreshInventory(); $("inventory-search").focus(); });
+  inventoryFields.forEach((field) => $("inventory-" + field).addEventListener("input", () => { $("inventory-" + field).setCustomValidity(""); inventoryDatesAndAssignment(); }));
+  $("inventory-editor-reload").addEventListener("click", loadInventoryEditor);
+  $("inventory-dialog").addEventListener("close", () => {
+    state.inventoryEditorRequest++;
+    state.inventoryEditingId = null;
+    state.inventoryEditingAsset = null;
+    state.inventoryConflict = false;
+    const picker = inventoryPickers.get("inventory-software-picker"); picker.request++; picker.loading = false;
+  });
+  $("inventory-detail-retry").addEventListener("click", loadInventoryDetail);
+  $("inventory-history-retry").addEventListener("click", () => loadInventoryHistory(state.inventoryHistoryRetryMore));
+  $("inventory-history-more").addEventListener("click", () => loadInventoryHistory(true));
+  $("inventory-detail-edit").addEventListener("click", () => {
+    const id = state.inventoryDetailId;
+    if (!isInventoryManager() || !id) return;
+    $("inventory-detail-dialog").close();
+    openInventoryEditor(id);
+  });
+  $("inventory-detail-dialog").addEventListener("close", () => {
+    state.inventoryDetailRequest++;
+    state.inventoryHistoryRequest++;
+    state.inventoryDetailId = null;
+    state.inventoryDetailAsset = null;
+    state.inventoryHistoryLoading = false;
+    resetInventoryRelations();
+    inventoryPickers.forEach((picker) => { picker.request++; picker.loading = false; });
+    $("inventory-history").replaceChildren();
+    $("inventory-detail-data").replaceChildren();
+  });
+
+  Object.assign(state, { workJobId: "", workTasks: [], workBlockers: [], workAssignees: [], workPermissions: {}, workReady: false, workLoading: false, workRequest: 0, workEpoch: 0, workBusy: false, workEditingTask: null, workEditingBlocker: null, workDeleting: null });
+
+  function resetWorkBoard(clearSelection = false) {
+    state.workRequest++;
+    state.workEpoch++;
+    state.workReady = false;
+    state.workLoading = false;
+    state.workBusy = false;
+    state.workTasks = [];
+    state.workBlockers = [];
+    state.workAssignees = [];
+    state.workPermissions = {};
+    state.workEditingTask = null;
+    state.workEditingBlocker = null;
+    state.workDeleting = null;
+    if (clearSelection) state.workJobId = "";
+    ["work-task-dialog", "work-blocker-dialog", "work-delete-dialog"].forEach((id) => { if ($(id).open) $(id).close(); });
+    ["work-task-form", "work-blocker-form"].forEach((id) => $(id).reset());
+    ["work-task-assignee", "work-task-parent", "work-blocker-owner", "work-blocker-task", "work-task-board", "work-task-list", "work-blocker-list"].forEach((id) => $(id).replaceChildren());
+    ["work-content", "work-loading", "work-error", "work-new-task", "work-new-blocker"].forEach((id) => { $(id).hidden = true; });
+    $("work-scope").textContent = "";
+    $("work-summary").textContent = "";
+    ["work-task-dialog-description", "work-blocker-owner-help", "work-delete-description", "work-task-error", "work-blocker-error", "work-delete-error", "work-error-text"].forEach((id) => { $(id).textContent = ""; });
+    ["work-task-error", "work-blocker-error", "work-delete-error", "work-task-reload", "work-blocker-reload"].forEach((id) => { $(id).hidden = true; });
+    $("work-search").value = "";
+    $("work-no-job").hidden = Boolean(state.workJobId);
+    $("work-job").value = state.workJobId;
+    ["work-search", "work-status", "work-priority", "work-view", "work-blocker-filter"].forEach((id) => { $(id).disabled = false; });
+    $("work-job").disabled = !state.jobsReady;
+    $("work-refresh").disabled = !state.jobsReady;
+    $("work-content").setAttribute("aria-busy", "false");
+  }
+
+  function renderWorkJobs() {
+    const selected = state.workJobId;
+    const placeholder = node("option", "", state.jobsReady ? state.jobs.length ? "Seleziona una commessa" : "Nessuna commessa abilitata" : "Caricamento delle commesse…");
+    placeholder.value = "";
+    $("work-job").replaceChildren(placeholder);
+    for (const job of state.jobs) {
+      const option = node("option", "", `${job.code} · ${job.name}`);
+      option.value = String(job.id);
+      $("work-job").append(option);
+    }
+    if (selected && state.jobsReady && !state.jobs.some((job) => String(job.id) === selected)) {
+      resetWorkBoard(true);
+      if (state.activeTab === "work-board") showNotice("La commessa selezionata non è più disponibile. Scegli una commessa abilitata.", true);
+    }
+    $("work-job").value = state.workJobId;
+    $("work-job").disabled = !state.jobsReady || state.workBusy;
+    $("work-refresh").disabled = !state.jobsReady || state.workBusy || state.workLoading;
+    $("work-no-job-description").textContent = state.jobsReady && !state.jobs.length ? "Un gestore deve abilitarti a una commessa per consultarne il lavoro." : "Seleziona una commessa per consultarne le attività e i blocchi.";
+  }
+
+  function workContextCurrent(epoch, jobId) {
+    return epoch === state.workEpoch && jobId === state.workJobId && Boolean(state.session?.authenticated);
+  }
+
+  async function refreshWorkBoard() {
+    if (!state.workJobId || !state.jobsReady || !state.jobs.some((job) => String(job.id) === state.workJobId)) return;
+    const request = ++state.workRequest;
+    const jobId = state.workJobId;
+    const epoch = state.workEpoch;
+    state.workReady = false;
+    state.workLoading = true;
+    state.workTasks = [];
+    state.workBlockers = [];
+    state.workAssignees = [];
+    state.workPermissions = {};
+    $("work-content").hidden = true;
+    $("work-content").setAttribute("aria-busy", "true");
+    $("work-task-board").replaceChildren();
+    $("work-task-list").replaceChildren();
+    $("work-blocker-list").replaceChildren();
+    $("work-loading").hidden = false;
+    $("work-error").hidden = true;
+    $("work-no-job").hidden = true;
+    $("work-new-task").hidden = true;
+    $("work-new-blocker").hidden = true;
+    $("work-refresh").disabled = true;
+    $("work-scope").textContent = "";
+    try {
+      const data = await api("/api/work-board?job_id=" + encodeURIComponent(jobId));
+      if (request !== state.workRequest || !workContextCurrent(epoch, jobId)) return;
+      if (String(data.job_id) !== jobId || !Array.isArray(data.tasks) || !Array.isArray(data.blockers)) throw new Error("La risposta non corrisponde alla commessa selezionata. Riprova.");
+      state.workTasks = data.tasks;
+      state.workBlockers = data.blockers;
+      state.workAssignees = Array.isArray(data.assignees) ? data.assignees : [];
+      state.workPermissions = data.permissions || {};
+      state.workReady = true;
+      renderWorkBoard();
+    } catch (error) {
+      if (request !== state.workRequest || !workContextCurrent(epoch, jobId)) return;
+      $("work-error-text").textContent = error.message;
+      $("work-error").hidden = false;
+    } finally {
+      if (request === state.workRequest && workContextCurrent(epoch, jobId)) {
+        state.workLoading = false;
+        $("work-loading").hidden = true;
+        $("work-refresh").disabled = state.workBusy;
+        $("work-content").setAttribute("aria-busy", "false");
+      }
+    }
+  }
+
+  function workDateText(value) {
+    return value && validDate(value) ? dateLabel(value) : "Nessuna scadenza";
+  }
+
+  function workDetails(text) {
+    const details = node("details", "work-card-details");
+    details.append(node("summary", "", "Leggi la descrizione"), node("p", "work-card-description", text));
+    return details;
+  }
+
+  function workTaskCard(task) {
+    const card = node("article", "work-task-card");
+    card.dataset.taskId = String(task.id);
+    card.tabIndex = -1;
+    card.setAttribute("aria-label", task.title);
+    const tags = node("div", "work-card-tags");
+    tags.append(node("span", "work-card-id", `#${task.id}`), node("span", "work-card-tag", workTaskStates[task.status] || task.status), node("span", "work-card-tag priority-" + (Object.hasOwn(workPriorities, task.priority) ? task.priority : "normal"), "Priorità " + (workPriorities[task.priority] || task.priority)));
+    card.append(tags, node("h4", "", task.title));
+    if (task.parent_id) {
+      const parent = state.workTasks.find((item) => String(item.id) === String(task.parent_id));
+      card.append(node("p", "work-task-context", "Sottoattività di " + (parent ? parent.title : "#" + task.parent_id)));
+    }
+    card.append(node("p", "work-card-meta", "Responsabile: " + (task.assigned_user_name || "Da assegnare")), node("p", "work-card-meta", workDateText(task.due_date)));
+    if (task.description) card.append(workDetails(task.description));
+    const openBlockers = state.workBlockers.filter((item) => String(item.task_id) === String(task.id) && item.status !== "resolved").length;
+    if (openBlockers) card.append(node("p", "work-card-meta", `${openBlockers} ${openBlockers === 1 ? "blocco aperto" : "blocchi aperti"}`));
+    const actions = node("div", "work-card-actions");
+    if (task.can_edit) {
+      actions.append(action("Modifica", "Modifica l’attività " + task.title, () => openWorkTask(task)));
+      actions.append(action("+ Sottoattività", "Aggiungi una sottoattività a " + task.title, () => openWorkTask(null, task.id)));
+      actions.append(action("Elimina", "Elimina l’attività " + task.title, () => openWorkDelete("task", task), true));
+    }
+    if (state.workPermissions.report_blockers) actions.append(action("Segnala blocco", "Segnala un blocco per " + task.title, () => openWorkBlocker(null, task.id)));
+    if (task.can_update_status) {
+      const control = node("form", "work-task-status-control");
+      const id = "work-status-task-" + task.id + "-" + $("work-view").value;
+      const label = node("label", "", "Stato"); label.htmlFor = id;
+      const select = node("select"); select.id = id; select.setAttribute("aria-label", "Stato dell’attività " + task.title);
+      for (const [value, text] of Object.entries(workTaskStates)) { const option = node("option", "", text); option.value = value; select.append(option); }
+      select.value = task.status;
+      const save = node("button", "row-button", "Applica"); save.type = "submit"; save.disabled = true; save.setAttribute("aria-label", "Applica lo stato all’attività " + task.title);
+      select.disabled = state.workBusy;
+      select.addEventListener("change", () => { save.disabled = state.workBusy || select.value === task.status; });
+      control.addEventListener("submit", (event) => { event.preventDefault(); if (select.value !== task.status) updateWorkTaskStatus(task, select.value); });
+      control.append(label, select, save); actions.append(control);
+    }
+    if (actions.childElementCount) card.append(actions);
+    if (state.workBusy) card.querySelectorAll("button, select").forEach((element) => { element.disabled = true; });
+    return card;
+  }
+
+  function renderWorkBoard() {
+    if (!state.workReady) return;
+    $("work-content").hidden = false;
+    if (!state.workPermissions.manage_tasks && $("work-task-dialog").open) $("work-task-dialog").close();
+    if (!state.workPermissions.manage_tasks && $("work-delete-dialog").open) $("work-delete-dialog").close();
+    if ($("work-blocker-dialog").open && (state.workEditingBlocker ? !state.workBlockers.some((item) => item.id === state.workEditingBlocker.id && item.can_edit) : !state.workPermissions.report_blockers)) $("work-blocker-dialog").close();
+    $("work-new-task").hidden = !state.workPermissions.manage_tasks;
+    $("work-new-blocker").hidden = !state.workPermissions.report_blockers;
+    $("work-new-task").disabled = state.workBusy;
+    $("work-new-blocker").disabled = state.workBusy;
+    $("work-scope").textContent = state.workPermissions.manage_tasks ? "Gestisci attività e responsabili. I collaboratori abilitati aggiornano lo stato delle attività assegnate e segnalano i blocchi." : state.workPermissions.report_blockers ? "Consulta il lavoro della commessa, aggiorna lo stato delle attività assegnate a te e segnala o gestisci i tuoi blocchi." : "Sola consultazione: puoi leggere attività e blocchi della commessa.";
+    const query = $("work-search").value.trim().toLocaleLowerCase("it-IT");
+    const status = $("work-status").value;
+    const priority = $("work-priority").value;
+    const tasks = state.workTasks.filter((task) => (!status || task.status === status) && (!priority || task.priority === priority) && [task.title, task.description, task.assigned_user_name].some((value) => String(value || "").toLocaleLowerCase("it-IT").includes(query)));
+    const done = state.workTasks.filter((task) => task.status === "done").length;
+    $("work-summary").textContent = `${tasks.length} attività visibili su ${state.workTasks.length} · ${done} completate nella commessa`;
+    const listView = $("work-view").value === "list";
+    $("work-task-board").replaceChildren();
+    $("work-task-list").replaceChildren();
+    $("work-task-board").hidden = listView || !tasks.length;
+    $("work-task-list").hidden = !listView || !tasks.length;
+    $("work-tasks-empty").hidden = Boolean(tasks.length);
+    $("work-tasks-empty-title").textContent = state.workTasks.length ? "Nessuna attività corrisponde ai filtri." : "Il prossimo passo prende forma qui.";
+    $("work-tasks-empty-description").textContent = state.workTasks.length ? "Cambia la ricerca, lo stato o la priorità per ritrovare le attività." : state.workPermissions.manage_tasks ? "Crea la prima attività, assegna un responsabile e scegli una scadenza." : "Il gestore può creare la prima attività per questa commessa.";
+    if (listView) {
+      const matching = new Set(tasks.map((task) => String(task.id)));
+      const rendered = new Set();
+      const children = new Map();
+      for (const task of tasks) { const key = String(task.parent_id || ""); if (!children.has(key)) children.set(key, []); children.get(key).push(task); }
+      const appendBranch = (task, list, depth) => {
+        if (rendered.has(String(task.id))) return;
+        rendered.add(String(task.id));
+        const item = node("li"); item.append(workTaskCard(task)); list.append(item);
+        const descendants = children.get(String(task.id)) || [];
+        if (descendants.length) {
+          const nested = node("ol", depth < 4 ? "work-task-children" : "");
+          item.append(nested);
+          descendants.forEach((child) => appendBranch(child, nested, depth + 1));
+        }
+      };
+      const list = node("ol");
+      tasks.filter((task) => !task.parent_id || !matching.has(String(task.parent_id))).forEach((task) => appendBranch(task, list, 0));
+      tasks.forEach((task) => { if (!rendered.has(String(task.id))) appendBranch(task, list, 0); });
+      $("work-task-list").append(list);
+    } else {
+      for (const [value, label] of Object.entries(workTaskStates)) {
+        const column = node("section", "work-column"); column.dataset.status = value;
+        const title = node("h3", "work-column-heading", label);
+        const items = tasks.filter((task) => task.status === value);
+        title.append(node("span", "work-column-count", String(items.length)));
+        const list = node("ul", "work-column-items"); list.setAttribute("aria-label", label);
+        items.forEach((task) => { const item = node("li"); item.append(workTaskCard(task)); list.append(item); });
+        column.append(title, list);
+        if (!items.length) column.append(node("p", "work-list-empty", "Nessuna attività"));
+        $("work-task-board").append(column);
+      }
+    }
+    renderWorkBlockers();
+  }
+
+  function renderWorkBlockers() {
+    if (!state.workReady) return;
+    const filter = $("work-blocker-filter").value;
+    const blockers = state.workBlockers.filter((item) => filter === "all" || (filter === "resolved" ? item.status === "resolved" : item.status !== "resolved"));
+    $("work-blocker-list").replaceChildren();
+    $("work-blockers-empty").hidden = Boolean(blockers.length);
+    for (const blocker of blockers) {
+      const item = node("li", "work-blocker-card");
+      item.dataset.blockerId = String(blocker.id);
+      item.tabIndex = -1;
+      item.setAttribute("aria-label", blocker.title);
+      const tags = node("div", "work-card-tags");
+      tags.append(node("span", "work-card-id", "#" + blocker.id), node("span", "work-card-tag", workBlockerStates[blocker.status] || blocker.status), node("span", "work-card-tag impact-" + (Object.hasOwn(workImpacts, blocker.impact) ? blocker.impact : "medium"), "Impatto " + (workImpacts[blocker.impact] || blocker.impact)));
+      item.append(tags, node("h4", "", blocker.title));
+      const task = state.workTasks.find((task) => String(task.id) === String(blocker.task_id));
+      item.append(node("p", "work-card-meta", task ? "Attività: " + task.title : "Blocco della commessa"), node("p", "work-card-meta", "Responsabile: " + (blocker.owner_name || "Da assegnare") + " · " + workDateText(blocker.due_date)));
+      if (blocker.description) item.append(workDetails(blocker.description));
+      if (blocker.next_action) { const next = node("p", "work-blocker-action"); next.append(node("strong", "", "PROSSIMA AZIONE"), document.createTextNode(blocker.next_action)); item.append(next); }
+      const actions = node("div", "work-card-actions");
+      if (blocker.can_edit) actions.append(action("Gestisci", "Gestisci il blocco " + blocker.title, () => openWorkBlocker(blocker)));
+      if (state.workPermissions.manage_tasks) actions.append(action("Elimina", "Elimina il blocco " + blocker.title, () => openWorkDelete("blocker", blocker), true));
+      if (actions.childElementCount) item.append(actions);
+      if (state.workBusy) item.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      $("work-blocker-list").append(item);
+    }
+  }
+
+  function workSelect(id, items, value, emptyLabel, currentLabel = "") {
+    const select = $(id);
+    const empty = node("option", "", emptyLabel); empty.value = "";
+    select.replaceChildren(empty);
+    for (const item of items) { const option = node("option", "", item.name || item.title); option.value = String(item.id); select.append(option); }
+    if (value && !items.some((item) => String(item.id) === String(value))) {
+      const unavailable = node("option", "", (currentLabel || "#" + value) + " · accesso da verificare"); unavailable.value = String(value); select.append(unavailable);
+    }
+    select.value = value ? String(value) : "";
+  }
+
+  function openWorkTask(task = null, parentId = "") {
+    if (!state.workReady || !state.workPermissions.manage_tasks || task && !task.can_edit || state.workBusy || busyDialogs.has("work-task-dialog")) return;
+    state.workEditingTask = task;
+    $("work-task-form").reset();
+    $("work-task-error").hidden = true;
+    $("work-task-reload").hidden = true;
+    $("work-task-save").disabled = false;
+    $("work-task-dialog-title").textContent = task ? "Modifica attività" : parentId ? "Nuova sottoattività" : "Nuova attività";
+    $("work-task-save").textContent = task ? "Salva modifiche" : "Crea attività";
+    const job = state.jobs.find((job) => String(job.id) === state.workJobId);
+    $("work-task-dialog-description").textContent = `${job?.code || ""} · ${job?.name || ""}. Ogni attività ha un avanzamento indipendente dalle sue sottoattività.`;
+    ["title", "description", "status", "priority"].forEach((field) => { $("work-task-" + field).value = task?.[field] || (field === "status" ? "todo" : field === "priority" ? "normal" : ""); });
+    $("work-task-due").value = task?.due_date || "";
+    workSelect("work-task-assignee", state.workAssignees, task?.assigned_user_id, "Da assegnare", task?.assigned_user_name);
+    const excluded = new Set(task ? [String(task.id)] : []);
+    let changed = true;
+    while (changed) { changed = false; for (const item of state.workTasks) if (excluded.has(String(item.parent_id)) && !excluded.has(String(item.id))) { excluded.add(String(item.id)); changed = true; } }
+    workSelect("work-task-parent", state.workTasks.filter((item) => !excluded.has(String(item.id))), task?.parent_id || parentId, "Nessuna · attività principale");
+    $("work-task-dialog").showModal();
+    $("work-task-title").focus();
+  }
+
+  function openWorkBlocker(blocker = null, taskId = "") {
+    if (!state.workReady || state.workBusy || busyDialogs.has("work-blocker-dialog") || (blocker ? !blocker.can_edit : !state.workPermissions.report_blockers)) return;
+    state.workEditingBlocker = blocker;
+    $("work-blocker-form").reset();
+    $("work-blocker-error").hidden = true;
+    $("work-blocker-reload").hidden = true;
+    $("work-blocker-save").disabled = false;
+    $("work-blocker-dialog-title").textContent = blocker ? "Gestisci blocco" : "Segnala blocco";
+    $("work-blocker-dialog-description").textContent = "Descrivi l’impedimento e il prossimo passo per risolverlo. La risoluzione del blocco non cambia automaticamente lo stato dell’attività.";
+    $("work-blocker-save").textContent = blocker ? "Salva modifiche" : "Segnala blocco";
+    ["title", "description", "impact", "status"].forEach((field) => { $("work-blocker-" + field).value = blocker?.[field] || (field === "impact" ? "medium" : field === "status" ? "open" : ""); });
+    $("work-blocker-action").value = blocker?.next_action || "";
+    $("work-blocker-due").value = blocker?.due_date || "";
+    workSelect("work-blocker-task", state.workTasks, blocker?.task_id || taskId, "Intera commessa");
+    workSelect("work-blocker-owner", state.workAssignees, blocker?.owner_id, "Da assegnare", blocker?.owner_name);
+    $("work-blocker-owner-field").hidden = !state.workPermissions.manage_tasks;
+    $("work-blocker-owner-help").hidden = state.workPermissions.manage_tasks;
+    $("work-blocker-owner-help").textContent = blocker ? "Responsabile: " + (blocker.owner_name || "Da assegnare") + ". Un gestore può modificare il responsabile." : "Il blocco sarà assegnato a te. Un gestore può modificare il responsabile.";
+    $("work-blocker-dialog").showModal();
+    $("work-blocker-title").focus();
+  }
+
+  function openWorkDelete(kind, item) {
+    if (!state.workReady || !state.workPermissions.manage_tasks || state.workBusy || busyDialogs.has("work-delete-dialog")) return;
+    if (kind === "task" && state.workTasks.some((task) => String(task.parent_id) === String(item.id))) { showNotice("Questa attività contiene sottoattività. Spostale o eliminale prima di eliminare l’attività principale.", true); return; }
+    state.workDeleting = { kind, item };
+    $("work-delete-title").textContent = kind === "task" ? "Eliminare questa attività?" : "Eliminare questo blocco?";
+    $("work-delete-description").textContent = `“${item.title}” sarà eliminato definitivamente.` + (kind === "task" ? " Gli eventuali blocchi collegati resteranno nel registro della commessa. Le ore registrate non cambiano." : " L’operazione non può essere annullata dall’app.");
+    $("work-delete-error").hidden = true;
+    $("work-delete-save").disabled = false;
+    $("work-delete-dialog").showModal();
+  }
+
+  function focusWorkResult(kind, id = null, statusControl = false) {
+    if (state.activeTab !== "work-board" || document.querySelector("#work-task-dialog[open], #work-blocker-dialog[open], #work-delete-dialog[open]")) return;
+    const visible = (element) => element && !element.disabled && element.getClientRects().length > 0;
+    if (kind === "task" && statusControl && id !== null) {
+      const select = $("work-status-task-" + id + "-" + $("work-view").value);
+      if (visible(select)) { select.focus(); return; }
+    }
+    const cards = document.querySelectorAll(kind === "task" ? ".work-task-card" : ".work-blocker-card");
+    const card = [...cards].find((element) => element.dataset[kind === "task" ? "taskId" : "blockerId"] === String(id));
+    if (visible(card)) { card.focus(); return; }
+    const fallback = kind === "task" ? ["work-task-board", "work-task-list", "work-new-task", "work-job"] : ["work-blocker-filter", "work-job"];
+    for (const name of fallback) {
+      const element = $(name);
+      if (!visible(element)) continue;
+      if (name === "work-task-list") element.tabIndex = -1;
+      element.focus();
+      return;
+    }
+  }
+
+  function workSetBusy(busy) {
+    state.workBusy = busy;
+    $("work-job").disabled = busy || !state.jobsReady;
+    $("work-refresh").disabled = busy || state.workLoading || !state.jobsReady;
+    $("work-new-task").disabled = busy;
+    $("work-new-blocker").disabled = busy;
+    ["work-search", "work-status", "work-priority", "work-view", "work-blocker-filter"].forEach((id) => { $(id).disabled = busy; });
+    if (state.workReady) renderWorkBoard();
+  }
+
+  async function updateWorkTaskStatus(task, status) {
+    if (!state.workReady || !task.can_update_status || state.workBusy || !Object.hasOwn(workTaskStates, status)) return;
+    const epoch = state.workEpoch, jobId = state.workJobId;
+    workSetBusy(true);
+    try {
+      await post("/api/tasks/" + task.id, { status, revision: task.revision });
+      if (!workContextCurrent(epoch, jobId)) return;
+      state.auditReady = false;
+      showNotice("Stato dell’attività aggiornato.");
+      await refreshWorkBoard();
+    } catch (error) {
+      if (!workContextCurrent(epoch, jobId)) return;
+      showNotice(error.message, true);
+      await refreshWorkBoard();
+    } finally {
+      if (workContextCurrent(epoch, jobId)) {
+        workSetBusy(false);
+        focusWorkResult("task", task.id, true);
+      }
+    }
+  }
+
+  async function saveWorkDialog(kind) {
+    const taskKind = kind === "task";
+    const prefix = "work-" + kind;
+    const dialogId = prefix + "-dialog";
+    const edited = taskKind ? state.workEditingTask : state.workEditingBlocker;
+    if (state.workBusy || busyDialogs.has(dialogId) || !state.workReady || (taskKind ? !state.workPermissions.manage_tasks : edited ? !edited.can_edit : !state.workPermissions.report_blockers)) return;
+    ["title", "description"].forEach((field) => { $(prefix + "-" + field).value = $(prefix + "-" + field).value.trim(); });
+    const due = $(prefix + "-due");
+    due.setCustomValidity(due.value && !validDate(due.value) ? "Inserisci una data valida." : "");
+    if (!$(prefix + "-form").reportValidity()) return;
+    const fields = Object.fromEntries(["title", "description", "status"].map((field) => [field, $(prefix + "-" + field).value]));
+    fields.due_date = due.value;
+    if (edited) fields.revision = edited.revision; else fields.job_id = state.workJobId;
+    if (taskKind) {
+      fields.priority = $("work-task-priority").value;
+      fields.parent_id = $("work-task-parent").value;
+      fields.assigned_user_id = $("work-task-assignee").value;
+    } else {
+      fields.impact = $("work-blocker-impact").value;
+      fields.task_id = $("work-blocker-task").value;
+      fields.next_action = $("work-blocker-action").value.trim();
+      if (state.workPermissions.manage_tasks) fields.owner_id = $("work-blocker-owner").value;
+    }
+    const epoch = state.workEpoch, jobId = state.workJobId;
+    const label = edited ? "Salva modifiche" : taskKind ? "Crea attività" : "Segnala blocco";
+    let conflict = false;
+    let savedId = null;
+    $(prefix + "-error").hidden = true;
+    workSetBusy(true);
+    dialogBusy(dialogId, true, prefix + "-save", label);
+    try {
+      const result = await post("/api/" + (taskKind ? "tasks" : "blockers") + (edited ? "/" + edited.id : ""), fields);
+      if (!workContextCurrent(epoch, jobId)) return;
+      savedId = result.id || edited?.id || null;
+      state.auditReady = false;
+      $(dialogId).close();
+      showNotice(taskKind ? edited ? "Attività aggiornata." : "Attività creata." : edited ? "Blocco aggiornato." : "Blocco segnalato.");
+      await refreshWorkBoard();
+    } catch (error) {
+      if (!workContextCurrent(epoch, jobId)) return;
+      conflict = error.status === 409;
+      dialogError(prefix + "-error", error);
+      $(prefix + "-reload").hidden = !conflict;
+    } finally {
+      dialogBusy(dialogId, false, prefix + "-save", label);
+      if (workContextCurrent(epoch, jobId)) {
+        workSetBusy(false);
+        $(prefix + "-save").disabled = conflict;
+        if (!$(dialogId).open && savedId !== null) focusWorkResult(kind, savedId);
+        else if ($(dialogId).open && !$(prefix + "-error").hidden) { $(prefix + "-error").tabIndex = -1; $(prefix + "-error").focus(); }
+      }
+    }
+  }
+
+  $("work-job").addEventListener("change", () => {
+    const jobId = $("work-job").value;
+    if (state.workBusy) { $("work-job").value = state.workJobId; return; }
+    resetWorkBoard(true);
+    state.workJobId = jobId;
+    $("work-job").value = jobId;
+    $("work-no-job").hidden = Boolean(jobId);
+    ["work-search", "work-status", "work-priority"].forEach((id) => { $(id).value = ""; });
+    if (jobId) refreshWorkBoard();
+  });
+  ["work-refresh", "work-retry"].forEach((id) => $(id).addEventListener("click", async () => {
+    const epoch = state.workEpoch, jobId = state.workJobId;
+    if (jobId) await refreshWorkBoard(); else await refreshAll();
+    if (workContextCurrent(epoch, jobId) && state.activeTab === "work-board" && !$("work-refresh").disabled) $("work-refresh").focus();
+  }));
+  $("work-search").addEventListener("input", renderWorkBoard);
+  ["work-status", "work-priority", "work-view"].forEach((id) => $(id).addEventListener("change", renderWorkBoard));
+  $("work-blocker-filter").addEventListener("change", renderWorkBlockers);
+  $("work-new-task").addEventListener("click", () => openWorkTask());
+  $("work-new-blocker").addEventListener("click", () => openWorkBlocker());
+  ["task", "blocker"].forEach((kind) => {
+    $("work-" + kind + "-form").addEventListener("submit", (event) => { event.preventDefault(); saveWorkDialog(kind); });
+    $("work-" + kind + "-due").addEventListener("input", () => $("work-" + kind + "-due").setCustomValidity(""));
+    $("work-" + kind + "-reload").addEventListener("click", async () => {
+      const epoch = state.workEpoch, jobId = state.workJobId;
+      const edited = kind === "task" ? state.workEditingTask : state.workEditingBlocker;
+      $("work-" + kind + "-dialog").close();
+      await refreshWorkBoard();
+      if (workContextCurrent(epoch, jobId)) focusWorkResult(kind, edited?.id);
+    });
+    $("work-" + kind + "-dialog").addEventListener("close", () => { if (kind === "task") state.workEditingTask = null; else state.workEditingBlocker = null; $("work-" + kind + "-form").reset(); });
+  });
+  $("work-delete-dialog").addEventListener("close", () => { state.workDeleting = null; });
+  $("work-delete-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!state.workDeleting || !state.workReady || !state.workPermissions.manage_tasks || state.workBusy || busyDialogs.has("work-delete-dialog")) return;
+    const { kind, item } = state.workDeleting;
+    const epoch = state.workEpoch, jobId = state.workJobId;
+    let reloadFocus = false;
+    workSetBusy(true);
+    dialogBusy("work-delete-dialog", true, "work-delete-save", "Elimina");
+    try {
+      await post("/api/" + (kind === "task" ? "tasks" : "blockers") + "/" + item.id + "/delete", { revision: item.revision });
+      if (!workContextCurrent(epoch, jobId)) return;
+      state.auditReady = false;
+      $("work-delete-dialog").close();
+      reloadFocus = true;
+      showNotice(kind === "task" ? "Attività eliminata." : "Blocco eliminato.");
+      await refreshWorkBoard();
+    } catch (error) {
+      if (!workContextCurrent(epoch, jobId)) return;
+      if (error.status === 409) { $("work-delete-dialog").close(); reloadFocus = true; showNotice(error.message, true); await refreshWorkBoard(); }
+      else dialogError("work-delete-error", error);
+    } finally {
+      dialogBusy("work-delete-dialog", false, "work-delete-save", "Elimina");
+      if (workContextCurrent(epoch, jobId)) {
+        workSetBusy(false);
+        if (reloadFocus) focusWorkResult(kind, item.id);
+        else if ($("work-delete-dialog").open && !$("work-delete-error").hidden) { $("work-delete-error").tabIndex = -1; $("work-delete-error").focus(); }
+      }
+    }
+  });
+
   $("job-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!requirePermission("manage_jobs")) return;
@@ -2289,6 +3723,7 @@
     const id = state.editingAlertRule?.id;
     const email = state.session.email;
     const fields = { name: $("alert-rule-name").value, type: $("alert-rule-type").value, run_time: $("alert-rule-time").value, enabled: $("alert-rule-enabled").checked ? "1" : "0", recipient_user_ids: selected.map((checkbox) => checkbox.value).join(","), recipient_emails: emails.join(",") };
+    if (fields.type === "inventory_due") fields.days_before = $("alert-rule-days").value;
     $("alert-rule-error").hidden = true;
     dialogBusy("alert-rule-dialog", true, "alert-rule-save", id ? "Salva modifiche" : "Crea regola");
     try {

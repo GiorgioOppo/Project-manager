@@ -1,6 +1,6 @@
 # Roadmap di prodotto e stato di avanzamento
 
-Questa pagina aggiorna la lettura dei piani rispetto alla base applicativa documentata il **10 ottobre 2026**, schema **7**. Il [piano delle venti funzionalità](roadmap-20-funzionalita.md) e il [piano finanziario](piano-modulo-finanziario.md) conservano il disegno di dettaglio originario, redatto quando la base era lo schema 3. I numeri di schema, i conteggi e le descrizioni di «base attuale» presenti in quei piani sono riferimenti storici, non lo stato corrente.
+Questa pagina aggiorna la lettura dei piani rispetto alla base applicativa documentata il **11 ottobre 2026**, schema **9**. Il [piano delle venti funzionalità](roadmap-20-funzionalita.md) e il [piano finanziario](piano-modulo-finanziario.md) conservano il disegno di dettaglio originario, redatto quando la base era lo schema 3. I numeri di schema, i conteggi e le descrizioni di «base attuale» presenti in quei piani sono riferimenti storici, non lo stato corrente.
 
 Gli stati usati qui sono:
 
@@ -12,9 +12,34 @@ La presenza di una tabella, di un componente simile o di un addon non chiude da 
 
 ## Base già disponibile
 
-Sono implementati login, profili Gestore/Operatore, commesse e stati, accessi diretti e per gruppi gerarchici, ruoli operativi, commesse comuni, registro ore personale, fornitori, contratti/PDF e storico. Si sono aggiunte cinque viste di Analisi, tariffe di costo EUR, cancellazione definitiva delle commesse con ore collegate, alert giornalieri e notifiche.
+Sono implementati login, profili Gestore/Operatore, commesse e stati, accessi diretti e per gruppi gerarchici, ruoli operativi, commesse comuni, registro ore personale, fornitori, contratti/PDF e storico. Si sono aggiunte cinque viste di Analisi, tariffe di costo EUR, cancellazione definitiva delle commesse con ore collegate, alert giornalieri e notifiche. La prima consegna del modulo Attività aggiunge attività e sottoattività, Kanban e registro dei blocchi; la cancellazione della commessa comprende ora anche questi elementi.
 
 Gli addon email e Google Calendar sono realizzati come servizi C separati. Email attende la configurazione SMTP. Calendar espone già le API di sincronizzazione bidirezionale, ma attende OAuth e l’interfaccia di collegamento/consultazione. Entrambi sono quindi **parziali come percorso operativo per l’utente**, pur avendo il servizio tecnico implementato.
+
+## Nuovo percorso: attività e collaborazione
+
+La prima consegna comprende le tre priorità concordate: **attività e sottoattività, Kanban e registro dei blocchi**. I gestori organizzano il lavoro e scelgono responsabili, priorità e scadenze; i collaboratori aggiornano lo stato delle attività assegnate e segnalano o gestiscono i propri impedimenti. La [guida del modulo](attivita-kanban-e-blocchi.md) descrive comportamento e permessi.
+
+Questo percorso si aggiunge alle venti migliorie originarie senza sostituirne la numerazione.
+
+| Funzione proposta | Stato corrente | Evoluzione ancora da realizzare |
+| --- | --- | --- |
+| Attività e sottoattività | Implementato per organizzazione e avanzamento | Collegamento delle ore alla singola attività e checklist separate |
+| Bacheca Kanban | Implementato | Ulteriori preferenze di vista e automazioni solo se definite in un rilascio successivo |
+| Registro rischi e blocchi | Parziale | Blocchi implementati; rischi futuri con probabilità e misure preventive da sviluppare |
+| Dipendenze e cronoprogramma | Pianificato | Relazioni temporali, impatto dei ritardi e Gantt |
+| Carico di lavoro del team | Pianificato | Ore pianificate, disponibilità individuali, assenze e confronto con la capacità |
+| Discussioni e decisioni | Pianificato | Commenti, menzioni e decisioni motivate con visibilità per commessa |
+| Richieste di variazione | Pianificato | Valutazione e approvazione dell’impatto su lavoro, scadenze e budget |
+| Consegne e accettazione | Pianificato | Versioni, revisione, osservazioni e approvazione dei risultati |
+| Portale cliente | Pianificato | Accesso esterno limitato a contenuti e richieste esplicitamente condivisi |
+| Panoramica di tutte le commesse | Parziale | Analisi delle ore già presenti; riepilogo trasversale di attività, scadenze e blocchi da sviluppare |
+| Timer personale | Pianificato | Avvio/pausa, proposta da confermare e controllo delle sovrapposizioni |
+| Chiusura guidata della commessa | Pianificato | Checklist finale, blocco delle nuove registrazioni e riapertura motivata |
+
+La bacheca attuale usa scelte di stato con conferma, accessibili da tastiera. Stato di attività, genitori, figli e blocchi rimangono indipendenti; non sono presenti avanzamento percentuale calcolato, approvazioni formali o notifiche automatiche per assegnazioni e scadenze. Le revisioni proteggono le modifiche concorrenti di attività e blocchi, senza estendere automaticamente quel meccanismo a tutte le API storiche.
+
+I prossimi passi consigliati sono pianificazione del carico e dipendenze, dopo aver definito stime di lavoro, orari individuali e assenze. Il collegamento ore–attività richiederà un aggiornamento esplicito del registro e delle analisi; la nota testuale corrente non realizza quel collegamento.
 
 ## Le venti migliorie operative
 

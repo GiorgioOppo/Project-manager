@@ -17,7 +17,13 @@ import time
 from configure_proxy import read_env
 
 
+# Stable node identities are also DNS names, certificate SANs and saved seed keys.
+# Only Compose command arguments use the renamed service identifiers.
 NODES = ("db", "db2", "db3")
+NODE_SERVICES = {"db": "mysql-1", "db2": "mysql-2", "db3": "mysql-3"}
+LEGACY_SERVICES = frozenset(("db", "db2", "db3", "db-proxy", "documents", "squid",
+                             "nginx-proxy-manager", "mail-addon", "calendar-addon",
+                             "inventory-addon", "ticket-app"))
 GROUP_ID = "8de71c6b-d3bc-4287-9a2a-edf8436340b1"
 PROJECT = Path(__file__).resolve().parent.parent
 STATE_PATH = PROJECT / "data" / "cluster-state.json"
@@ -102,8 +108,41 @@ class Cluster:
             raise ClusterError("Operazione Docker/MySQL non riuscita" + suffix + ". Nessun comando viene ripetuto automaticamente.")
         return result
 
+    def require_service_migration_complete(self):
+        """Refuse to start beside old containers sharing the project's IPs/data."""
+        try:
+            # Resolved Compose configuration contains secrets: inspect only in
+            # memory and never include its payload in output or error messages.
+            config = json.loads(self.run(("config", "--format", "json"), timeout=30).stdout)
+            project = config.get("name") if isinstance(config, dict) else None
+            if not isinstance(project, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
+                raise ValueError
+            docker = self.command[:self.command.index("compose")]
+            result = subprocess.run(docker + [
+                "ps", "--all", "--filter", "label=com.docker.compose.project=" + project,
+                "--format", '{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}',
+            ], capture_output=True, env=self.environment, cwd=PROJECT, timeout=30)
+            if result.returncode:
+                raise ValueError
+            legacy = set()
+            for line in result.stdout.decode("utf-8").splitlines():
+                if not line:
+                    continue
+                labels = line.split("\t")
+                if len(labels) != 2:
+                    raise ValueError
+                container_project, service = labels
+                if container_project == project and service in LEGACY_SERVICES:
+                    legacy.add(service)
+        except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError):
+            raise ClusterError("Impossibile verificare la migrazione dei servizi; avvio interrotto senza modificare container.") from None
+        if legacy:
+            raise ClusterError("Container legacy presenti nello stesso progetto: " + ", ".join(sorted(legacy)) +
+                ". Completa prima la migrazione descritta in docs/tehnical/nomi-servizi-e-immagini.md. "
+                "Nessun container viene rimosso automaticamente.")
+
     def sql(self, node, query, *, check=True, timeout=30):
-        result = self.run(("exec", "-T", node, "sh", "-c",
+        result = self.run(("exec", "-T", NODE_SERVICES[node], "sh", "-c",
             'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --user=root --batch --raw --skip-column-names'),
             data=query.encode("utf-8"), timeout=timeout, check=check)
         if result.returncode:
@@ -151,7 +190,7 @@ class Cluster:
         fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
             with os.fdopen(fd, "wb") as stream:
-                self.run(("exec", "-T", node, "sh", "-c",
+                self.run(("exec", "-T", NODE_SERVICES[node], "sh", "-c",
                     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump --user=root '
                     '--single-transaction --routines --triggers --events --hex-blob '
                     '--set-gtid-purged=OFF --databases "$MYSQL_DATABASE"'), output=stream)
@@ -197,8 +236,9 @@ class Cluster:
             raise ClusterError("Group Replication non arrestato su " + node + "; nessun bootstrap eseguito.")
 
     def start_services(self):
+        self.require_service_migration_complete()
         print("Avvio del bilanciatore, dell’app e del reverse proxy…", flush=True)
-        self.run(("up", "--build", "-d", "db-proxy", "app", "nginx-proxy-manager"), timeout=600)
+        self.run(("up", "--build", "-d", "proxy-db", "app", "proxy-web"), timeout=600)
 
     def status(self):
         for node in NODES:
@@ -209,6 +249,7 @@ class Cluster:
             print(node + ": " + (result.replace("\t", " | ") if result else "non raggiungibile"), flush=True)
 
     def init(self):
+        self.require_service_migration_complete()
         state = load_state()
         if state.get("initialized"):
             print("Cluster già inizializzato: verifica e recupero senza importare dati.", flush=True)
@@ -221,7 +262,7 @@ class Cluster:
             state = {"group_id": GROUP_ID, "backup": str(backup), "seeded": {}}
             save_state(state)
         print("Avvio dei tre nodi MySQL…", flush=True)
-        self.run(("up", "-d", *NODES))
+        self.run(("up", "-d", *(NODE_SERVICES[node] for node in NODES)))
         self.wait_sql()
         self.verify_config()
         if any(self.local_state(node) == "ONLINE" for node in NODES):
@@ -289,10 +330,11 @@ class Cluster:
         self.start_services()
 
     def recover(self):
+        self.require_service_migration_complete()
         state = load_state()
         if not state.get("initialized"):
             raise ClusterError("Inizializzazione non conclusa: completa init prima del recupero.")
-        self.run(("up", "-d", *NODES))
+        self.run(("up", "-d", *(NODE_SERVICES[node] for node in NODES)))
         self.wait_sql()
         self.verify_config()
         online = [node for node in NODES if self.local_state(node) == "ONLINE"]

@@ -2,7 +2,7 @@
 
 [Indice prodotto](README.md) · [Guida utente](guida-utente.md) · [Guida gestore](guida-gestore.md)
 
-Le risposte descrivono il prodotto attuale al 10 ottobre 2026. Per le regole complete vedere [Processi e regole](processi-e-regole.md).
+Le risposte descrivono il prodotto attuale all’11 ottobre 2026. Per le regole complete vedere [Processi e regole](processi-e-regole.md).
 
 ## Accesso e commesse
 
@@ -26,6 +26,44 @@ Lo stato descrive la commessa, ma da solo non blocca le registrazioni. Il contro
 
 Sono il catalogo comune adottato per il progetto, configurabile dai gestori. Non sono un seed automatico obbligatorio del software: un’installazione nuova deve creare le commesse desiderate e abilitarne la casella Commessa comune. Gli account attivi creati in seguito potranno utilizzare le commesse comuni esistenti.
 
+## Attività e blocchi
+
+### Essere responsabile di un’attività mi dà accesso alla commessa?
+
+No. L’assegnazione indica chi segue il lavoro; l’abilitazione determina cosa può consultare o modificare. Per aggiornare lo stato devi essere responsabile dell’attività e avere un accesso Collaboratore valido oggi, oppure essere Gestore. La revoca impedisce gli aggiornamenti anche se il tuo nome resta associato.
+
+### Perché vedo la bacheca ma non posso creare attività?
+
+La creazione, l’organizzazione e la cancellazione delle attività spettano al Gestore. Il Collaboratore aggiorna lo stato delle proprie attività e segnala blocchi; il Lettore consulta soltanto. Sono le stesse abilitazioni della commessa, senza un nuovo ruolo globale.
+
+### Se completo il genitore, si completano anche le sottoattività?
+
+No. Ogni attività mantiene stato, responsabile e scadenza propri. Le sottoattività formano un albero fino a otto livelli; non sono ancora dipendenze temporali. Per eliminare il genitore occorre prima spostare o eliminare i figli.
+
+### Risolvere un blocco rimette l’attività In corso?
+
+No. Il registro degli impedimenti e lo stato Kanban sono indipendenti. Aggiorna entrambi quando necessario. Un blocco può anche riguardare tutta la commessa e può coesistere con altri impedimenti sulla stessa attività.
+
+### Chi può modificare un blocco?
+
+Il Gestore può gestirli tutti. L’operatore può aggiornarlo se ne è autore o responsabile e conserva un accesso Collaboratore. Il gestore può cambiare il responsabile senza cambiare l’autore. Solo il Gestore può eliminare il blocco o riassegnarlo.
+
+### Dove sono finiti i blocchi risolti?
+
+Il registro mostra inizialmente **Aperti e in gestione**. Nel filtro **Mostra blocchi**, scegli **Tutti** o **Risolti**. Gli elementi risolti continuano a contare nel limite di 500 blocchi per commessa; anche le attività completate contano nel rispettivo limite di 500.
+
+### Perché il salvataggio segnala una versione cambiata?
+
+Un’altra modifica ha aggiornato lo stesso elemento. L’app impedisce di sovrascriverla con una bozza basata su dati precedenti. Annota le tue variazioni, usa **Chiudi e ricarica la versione aggiornata** e confronta il contenuto prima di riprovare. Non è prevista una fusione automatica delle modifiche.
+
+### Posso registrare ore su una specifica attività o ricevere avvisi sulla sua scadenza?
+
+Questi collegamenti sono ancora da sviluppare. Le ore appartengono alla commessa e il campo **Attività svolta / nota** è descrittivo. Scadenze, assegnazioni e stati della bacheca non producono email o notifiche automatiche. Dipendenze, Gantt e pianificazione del carico restano nella roadmap.
+
+### Cosa accade ai blocchi se elimino un’attività?
+
+I blocchi restano nel registro della commessa e perdono il collegamento all’attività eliminata; la loro revisione cambia. Eliminare l’intera commessa rimuove invece anche attività, blocchi e ore. La [guida del modulo](attivita-kanban-e-blocchi.md) riassume tutti i casi.
+
 ## Registrazioni e analisi
 
 ### Come inserisco mezz’ora o un’ora e mezza?
@@ -42,7 +80,7 @@ Può consultare gli aggregati nelle analisi per periodo, commessa e utente. Il R
 
 ### Se perdo l’accesso a una commessa, perdo lo storico personale?
 
-La revoca dell’abilitazione conserva le ore precedenti e la loro consultazione personale. Una cancellazione definitiva della commessa elimina invece le ore collegate di tutti gli utenti. Prima di un’eliminazione, il gestore deve considerare l’effetto sui dati storici; l’app mostra una conferma dedicata.
+La revoca dell’abilitazione conserva le ore precedenti e la loro consultazione personale. Una cancellazione definitiva della commessa elimina invece attività, blocchi e ore collegate di tutti gli utenti. Prima di un’eliminazione, il gestore deve considerare l’effetto sui dati storici; l’app mostra una conferma dedicata.
 
 ### È possibile annullare una cancellazione definitiva?
 

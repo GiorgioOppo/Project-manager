@@ -1,7 +1,7 @@
 """Preserve NPM access controls while excluding OAuth callback secrets from logs.
 
 The isolated Nginx runtime test is opt-in and does not touch the running stack:
-PUNTO_DOCKER_TESTS=1 PUNTO_PROXY_IMAGE=projectmanament-nginx-proxy-manager ...
+PUNTO_DOCKER_TESTS=1 PUNTO_PROXY_IMAGE=punto/proxy-web:local ...
 """
 from contextlib import closing
 import http.client
@@ -155,7 +155,7 @@ class ProxyPrivacyNginxTests(unittest.TestCase):
         docker = shutil.which("docker") or "/Applications/Docker.app/Contents/Resources/bin/docker"
         if not Path(docker).exists():
             self.skipTest("Docker unavailable")
-        image = os.environ.get("PUNTO_PROXY_IMAGE", "projectmanament-nginx-proxy-manager")
+        image = os.environ.get("PUNTO_PROXY_IMAGE") or "punto/proxy-web:" + os.environ.get("PUNTO_IMAGE_TAG", "local")
         marker = "PUNTO_OAUTH_LOG_FIXTURE_30f4b1"
         with tempfile.TemporaryDirectory(prefix="punto-nginx-privacy-") as directory:
             data = Path(directory)

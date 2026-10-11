@@ -1,6 +1,6 @@
 # Interni del server C
 
-Stato verificato sul codice il **10 ottobre 2026**. Questo documento descrive il funzionamento implementato del processo `punto` e i contratti interni da rispettare quando lo si modifica. Per l'inventario dei container vedere [architettura](architettura.md); per i percorsi e i payload pubblici vedere [API app](api-app.md). Non sono state eseguite nuove prove runtime durante questa stesura.
+Stato verificato sul codice l’**11 ottobre 2026**. Questo documento descrive il funzionamento implementato del processo `punto` e i contratti interni da rispettare quando lo si modifica. Per l'inventario dei container vedere [architettura](architettura.md); per i percorsi e i payload pubblici vedere [API app](api-app.md). Non sono state eseguite nuove prove runtime durante questa stesura.
 
 Fonti principali: [server.c](../../src/server.c), [Makefile](../../Makefile), gli header in [src](../../src), [db_mysql.c](../../src/db_mysql.c), [calendar.c](../../calendar-addon/src/calendar.c), [mailer.c](../../addon/src/mailer.c).
 
@@ -15,15 +15,16 @@ Fonti principali: [server.c](../../src/server.c), [Makefile](../../Makefile), gl
 | [accounts.h](../../src/accounts.h) / `accounts.c` | Bootstrap, autenticazione, lettura account attivi e gestione utenti. | Hash/salt non entrano negli oggetti `Account` esposti agli altri moduli. |
 | [storage.h](../../src/storage.h) / `storage.c` | Preflight, migrazioni, health SQL, append e lettura audit. | `storage_audit()` riceve la connessione della mutazione, non usa la propria connessione di lettura. |
 | [organization.h](../../src/organization.h) / `organization.c` | Alberatura, ruoli locali, appartenenze, grant e calcolo autorizzazioni. | Il calcolo live dei permessi usa la connessione del chiamante e uno snapshot locale alla richiesta. |
+| [work_board.h](../../src/work_board.h) / `work_board.c` | Attività, sottoattività, Kanban e blocchi; query della bacheca e mutazioni. | Rilegge account/grant nel contesto corrente, controlla revisioni, profondità e audit sulla stessa connessione. |
 | [procurement.h](../../src/procurement.h) / `procurement.c` | Catalogo fornitori/contratti, manifesto documenti, coordinamento upload/download. | Verifica il ruolo prima di chiamare lo storage documentale. |
 | [documents.h](../../src/documents.h) / `documents.c` | Byte PDF in filesystem nativo o GridFS Docker, validazione chiavi e integrità. | Non conosce sessioni o ruoli: il chiamante deve già aver autorizzato l'operazione. |
 | [alerts.h](../../src/alerts.h) / `alerts.c` | Regole, destinatari, esecuzioni, notifiche, coda email e dispatch. | Il tempo è iniettabile con `alerts_tick_at(now)`; i confini business usano Europe/Rome. |
-| [mail_client.h](../../src/mail_client.h) / `mail_client.c` | HTTP privato verso mail-addon e classificazione degli esiti SMTP. | Non spedisce tramite SMTP direttamente; non inventa nuove chiavi a ogni tentativo. |
+| [mail_client.h](../../src/mail_client.h) / `mail_client.c` | HTTP privato verso `mail` e classificazione degli esiti SMTP. | Non spedisce tramite SMTP direttamente; non inventa nuove chiavi a ogni tentativo. |
 | [calendar_client.h](../../src/calendar_client.h) / `calendar_client.c` | Bridge autenticato per Calendar, allowlist campi, codifica e controllo risposte. | Riceve ID e legame sessione solo dal server; non espone bearer/secret al browser. |
 | [db.h](../../src/db.h) | Interfaccia SQL comune. | Le macro native mappano direttamente SQLite; MySQL implementa un adattatore limitato, non un ORM generale. |
 | [mysql_schema.h](../../src/mysql_schema.h) / `mysql_schema.c` | Preparazione DDL e controlli versione MySQL. | DDL e migrazioni versionate hanno fasi diverse, illustrate in [migrazioni e consistenza](migrazioni-e-consistenza.md). |
 
-I sei moduli `workspace`, `accounts`, `storage`, `organization`, `alerts`, `procurement` possiedono ciascuno una connessione SQL statica. Non esiste un pool di connessioni. Con HAProxy queste connessioni possono raggiungere membri MySQL differenti: un'operazione atomica deve rimanere su una sola connessione.
+I sette moduli `workspace`, `accounts`, `storage`, `organization`, `work_board`, `alerts`, `procurement` possiedono ciascuno una connessione SQL statica. Non esiste un pool di connessioni. Con HAProxy queste connessioni possono raggiungere membri MySQL differenti: un'operazione atomica deve rimanere su una sola connessione.
 
 ## Ordine reale di avvio
 
@@ -31,7 +32,7 @@ I sei moduli `workspace`, `accounts`, `storage`, `organization`, `alerts`, `proc
 2. Apre il client Calendar. Una configurazione totalmente assente è ammessa in sviluppo; una configurazione parziale/insicura interrompe l'avvio. Registra `calendar_client_close()` tramite `atexit`.
 3. Esegue `storage_preflight()`. In SQLite è un controllo di versione senza scritture; in MySQL include anche preparazione DDL dopo il controllo preliminare.
 4. Apre workspace, account e storage, in quest'ordine. In SQLite workspace crea le tabelle base; accounts crea/controlla l'utente iniziale; storage applica le migrazioni.
-5. Apre organizzazione, alert, procurement e documenti. `alerts_open()` imposta il fuso di processo a `Europe/Rome`, apre il client mail e rifiuta la configurazione mail parziale. L'inizializzazione del client MongoDB non certifica ancora la raggiungibilità del provider documentale.
+5. Apre organizzazione, attività/blocchi, alert, procurement e documenti. `alerts_open()` imposta il fuso di processo a `Europe/Rome`, apre il client mail e rifiuta la configurazione mail parziale. L'inizializzazione del client MongoDB non certifica ancora la raggiungibilità del provider documentale.
 6. Installa i gestori dei segnali, crea il socket IPv4, abilita `SO_REUSEADDR`, esegue `bind()` e `listen(...,16)`.
 7. Solo dopo queste fasi entra nel ciclo delle richieste e rende disponibile l'app.
 
@@ -67,7 +68,7 @@ Le chiamate Calendar di lettura stato/coda sono brevi, ma consenso, selezione e 
 
 `read_request()` accumula gli header fino a `\r\n\r\n`; richiede `HTTP/1.1`, un target che inizi con `/`, assenza di frammento `#`, Host presente e intestazioni senza controlli illegali. Header duplicati sensibili, `Content-Length` duplicato/non numerico, ogni `Transfer-Encoding`, NUL nei dati testuali e byte aggiuntivi oltre la richiesta dichiarata vengono rifiutati.
 
-Il buffer nasce con la capacità degli header e cresce solo fino alla dimensione ammessa del corpo. I limiti numerici sono nel [contratto HTTP](api-app.md). La particolare eccezione binaria riguarda soltanto il caricamento PDF riconosciuto dal percorso. Il server consuma il corpo limitato prima di rispondere al caso Host non autorizzato, per ridurre il rischio che la chiusura TCP con dati non letti nasconda l'errore HTTP.
+Il buffer nasce con la capacità degli header e cresce solo fino alla dimensione ammessa del corpo. I `POST` di attività/blocchi ammettono 64 KiB di form per sostenere i campi Unicode massimi anche dopo percent-encoding; gli altri corpi ordinari conservano il limite di 32 KiB. I limiti numerici sono nel [contratto HTTP](api-app.md). La particolare eccezione binaria riguarda soltanto il caricamento PDF riconosciuto dal percorso. Il server consuma il corpo limitato prima di rispondere al caso Host non autorizzato, per ridurre il rischio che la chiusura TCP con dati non letti nasconda l'errore HTTP.
 
 Ordine di routing:
 
@@ -76,7 +77,7 @@ Ordine di routing:
 3. Prova il router business (`workspace_route`), che autentica e controlla formato/origine prima del dispatch.
 4. Gestisce login, sessione, logout, asset statici e pagina `/app`; percorsi API sconosciuti ricevono errore.
 
-Il router business tratta per primi upload e download PDF, poi chiama in ordine organizzazione, procurement, account, audit/storage, alert e workspace. Questo ordine consente, per esempio, a `organization_handle()` di intercettare `/jobs/{id}/group-grants` prima del parser più generale delle commesse. Cambiare l'ordine può cambiare il significato di percorsi già validi.
+Il router business tratta per primi upload e download PDF, poi chiama in ordine organizzazione, procurement, account, audit/storage, alert, attività/blocchi e workspace. Questo ordine consente, per esempio, a `organization_handle()` di intercettare `/jobs/{id}/group-grants` prima del parser più generale delle commesse. Cambiare l'ordine può cambiare il significato di percorsi già validi.
 
 Ogni `*_handle()` restituisce `false` se il percorso non gli appartiene; `true` significa che il modulo ha gestito anche un eventuale errore. Non significa successo HTTP. Dopo un handler riuscito il router verifica che `response.body` esista; un body assente diventa errore interno e non viene dereferenziato.
 
@@ -87,6 +88,8 @@ Ogni `*_handle()` restituisce `false` se il percorso non gli appartiene; `true` 
 `workspace_handle()` riceve `actor_id`, email storica `owner` e ruolo dal server. Le query delle ore includono `user_id=actor_id`; anche un gestore modifica soltanto proprie registrazioni nel contratto corrente. I report sono la superficie separata per letture aggregate su più utenti.
 
 `organization_job_access()` usa un intero bitmask: `0` negato, `1` visibile, `3` visibile e consuntivabile, `-1` errore di database/grafo. L'accesso globale dei gestori è deciso dal chiamante; un ruolo locale non può elevarlo. `OrganizationAccess` è una fotografia della richiesta, mai una cache globale riutilizzata dopo cambi di gruppi o grant. Lo stato `jobs.status` non è un blocco automatico alla registrazione delle ore.
+
+`work_board_handle()` rilegge ruolo e stato dell’account e valuta `organization_job_access()` sulla propria connessione. Per le mutazioni la data odierna è calcolata dopo l’acquisizione della guardia: un’attesa che attraversa mezzanotte non mantiene valida una grant scaduta. La visibilità è richiesta anche per il creatore/responsabile di un blocco; avere un incarico non sostituisce un’abilitazione alla commessa. `revision` protegge update e cancellazioni, con `409` in caso di versione obsoleta.
 
 Per Calendar il router deriva `session_binding=SHA256(token_sessione)` e lo passa al client. Il client costruisce il percorso privato con l'ID autenticato e ammette solo i campi previsti dall'operazione. Cookie, codice OAuth e token addon hanno funzioni diverse: non devono essere sostituiti l'uno all'altro.
 
@@ -103,7 +106,7 @@ Per Calendar il router deriva `session_binding=SHA256(token_sessione)` e lo pass
 | Parametri SQL | Nativo secondo `DB_STATIC`/`DB_TRANSIENT`; adattatore MySQL copia i dati associati. | Usare `DB_TRANSIENT` per stringhe temporanee e non dipendere dalla maggiore permissività del backend MySQL. |
 | Byte PDF caricati | `documents_load()` assegna un buffer al chiamante; al fallimento garantisce `*data=NULL`. | Procurement/server controllano integrità e permesso; il server azzera il buffer prima del `free`. |
 | Connessioni SQL | Modulo che le ha aperte. | Chiudere statement prima della connessione; non usare la connessione di un altro modulo per completare una propria transazione. |
-| Oggetti json-c negli addon | Conta riferimenti; `json_object_object_add()`/array add trasferiscono il riferimento. | Quando si conserva un figlio mentre il padre sarà distrutto occorre `json_object_get()`; alla fine `json_object_put()`. |
+| Oggetti json-c negli addon, nel modulo attività/blocchi e nei client che li usano | Conta riferimenti; `json_object_object_add()`/array add trasferiscono il riferimento. | Quando si conserva un figlio mentre il padre sarà distrutto occorre `json_object_get()`; alla fine `json_object_put()`. |
 | Stringhe da curl/OpenSSL/driver | Regole della libreria che le alloca. | `curl_free`, `SSL_free`, `EVP_*_free`, `bson_destroy`/destroy dedicati non sono intercambiabili con `free`. |
 
 I builder JSON hanno limiti e flag di fallimento: dopo allocazione fallita non va emesso un JSON parziale come successo. Alcuni contenuti sensibili sono cancellati esplicitamente con `erase()` o `OPENSSL_cleanse()`; questo non equivale a garantire che ogni copia temporanea della memoria sia azzerata. La cifratura a riposo Calendar richiede comunque decifratura in memoria durante l'elaborazione.
@@ -123,8 +126,8 @@ Una transazione contiene lettura dei vincoli, scrittura business e `storage_audi
 | Processo | Concorrenza implementata |
 | --- | --- |
 | App `punto` | Un thread applicativo per HTTP e tick alert; stato statico di moduli e sessioni. Nessuna promessa di thread-safety aggiungendo soltanto pthread al listener. |
-| `mail-addon` | Un ciclo HTTPS sequenziale; SMTP può occupare quel ciclo. Ledger persistente prima della chiamata remota. |
-| `calendar-addon` | Un thread API sequenziale e un worker pthread; ognuno possiede una connessione SQLite distinta. `database`, `worker_connection`, `expected_provider`, `expected_generation` sono thread-local. Stop atomico condiviso, configurazione letta all'avvio. |
+| `mail` | Un ciclo HTTPS sequenziale; SMTP può occupare quel ciclo. Ledger persistente prima della chiamata remota. |
+| `calendar` | Un thread API sequenziale e un worker pthread; ognuno possiede una connessione SQLite distinta. `database`, `worker_connection`, `expected_provider`, `expected_generation` sono thread-local. Stop atomico condiviso, configurazione letta all'avvio. |
 
 Nell'app `SIGINT`/`SIGTERM` impostano il flag `stopping`; `SIGPIPE` è ignorato. Non viene avviata una nuova iterazione dopo lo stop, ma una chiamata già in corso può terminare o attendere il proprio timeout. Alla chiusura si liberano listener, client/addon, documenti, moduli SQL e sessioni. Il client Calendar ha una chiusura anche registrata con `atexit`; la funzione è scritta per essere richiamabile senza riutilizzare risorse già liberate.
 
@@ -141,4 +144,4 @@ Queste sono **linee guida di manutenzione**, ricavate dai confini esistenti; non
 5. Prima di aggiungere thread al server, progettare isolamento di sessioni, connessioni, scheduler, fuso globale e client curl. Lo stato statico corrente non costituisce tale progetto.
 6. Mantenere i test di rifiuto e di conservazione dati oltre al caso di successo. La mappa delle suite è in [sviluppo e test](sviluppo-test.md).
 
-Le regressioni rilevanti comprendono [lifecycle HTTP](../../tests/test_server.py), [identità delle ore e audit atomico](../../tests/test_assignments.py), [origine dietro proxy](../../tests/test_reverse_proxy.py), [snapshot dei report](../../tests/test_reports.py) e [isolamento del bridge Calendar](../../tests/test_calendar_client.py).
+Le regressioni rilevanti comprendono [lifecycle HTTP](../../tests/test_server.py), [identità delle ore e audit atomico](../../tests/test_assignments.py), [origine dietro proxy](../../tests/test_reverse_proxy.py), [snapshot dei report](../../tests/test_reports.py), [attività e blocchi](../../tests/test_work_board.py) e [isolamento del bridge Calendar](../../tests/test_calendar_client.py).

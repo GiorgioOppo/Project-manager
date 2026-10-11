@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MYSQL_SCHEMA_VERSION 7
+#define MYSQL_SCHEMA_VERSION 9
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -160,6 +160,57 @@ static bool ensure_email_statuses(Db *database) {
     return count>0 && (size_t)count<sizeof(ddl) && db_exec(database,ddl,NULL,NULL,NULL)==DB_OK;
 }
 
+static bool ensure_inventory_alerts(Db *database) {
+    DbStmt *statement = NULL;
+    bool okay = db_prepare_v2(database,
+        "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME='alert_rules' AND COLUMN_NAME='days_before'", -1, &statement, NULL) == DB_OK &&
+        db_step(statement) == DB_ROW;
+    bool has_days = okay && db_column_int64(statement, 0) == 1;
+    db_finalize(statement); statement = NULL;
+    if (!okay || (!has_days && db_exec(database,
+        "ALTER TABLE alert_rules ADD COLUMN days_before INT NOT NULL DEFAULT 30,"
+        "ADD CONSTRAINT alert_rules_days_before CHECK(days_before BETWEEN 1 AND 365)",
+        NULL,NULL,NULL) != DB_OK)) return false;
+    if (db_prepare_v2(database,
+        "SELECT t.CONSTRAINT_NAME,c.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS t "
+        "JOIN information_schema.CHECK_CONSTRAINTS c ON c.CONSTRAINT_SCHEMA=t.CONSTRAINT_SCHEMA "
+        "AND c.CONSTRAINT_NAME=t.CONSTRAINT_NAME WHERE t.CONSTRAINT_SCHEMA=DATABASE() "
+        "AND t.TABLE_NAME='alert_rules' AND t.CONSTRAINT_TYPE='CHECK'", -1, &statement, NULL) != DB_OK) return false;
+    char restriction[65] = {0};
+    bool found = false, expanded = false;
+    int result;
+    while ((result = db_step(statement)) == DB_ROW) {
+        const char *name = (const char *)db_column_text(statement,0);
+        const char *clause = (const char *)db_column_text(statement,1);
+        char normalized[512] = {0}; size_t used = 0;
+        if (!name || !clause) { okay = false; break; }
+        for (const char *p=clause; *p; p++) {
+            if (!strncmp(p,"_utf8mb4",8) || !strncmp(p,"_utf8mb3",8)) { p+=7; continue; }
+            if (*p=='\\' && p[1]=='\'') p++;
+            if (isspace((unsigned char)*p) || *p=='`' || *p=='(' || *p==')') continue;
+            if (used+1 >= sizeof(normalized)) { okay = false; break; }
+            normalized[used++]=(char)tolower((unsigned char)*p);
+        }
+        if (!okay) break;
+        if (strncmp(normalized,"typein",6)) continue;
+        if (found || strlen(name)>=sizeof(restriction) || !*name) { okay=false; break; }
+        for (const char *p=name; *p; p++) if (!isalnum((unsigned char)*p) && *p!='_') okay=false;
+        if (!okay) break;
+        found=true;
+        expanded = !strcmp(normalized,"typein'invalid_job','missing_hours','inventory_due'");
+        if (!expanded && strcmp(normalized,"typein'invalid_job','missing_hours'")) { okay=false; break; }
+        strcpy(restriction,name);
+    }
+    db_finalize(statement);
+    if (!okay || result != DB_DONE || !found) return false;
+    if (expanded) return true;
+    char ddl[512];
+    int length=snprintf(ddl,sizeof(ddl),"ALTER TABLE alert_rules DROP CHECK `%s`,"
+        "ADD CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due'))",restriction);
+    return length>0 && (size_t)length<sizeof(ddl) && db_exec(database,ddl,NULL,NULL,NULL)==DB_OK;
+}
+
 bool mysql_schema_prepare(void) {
     static const char *const tables[] = {
         "CREATE TABLE IF NOT EXISTS schema_metadata ("
@@ -234,6 +285,42 @@ bool mysql_schema_prepare(void) {
         "CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
         "CHECK(status IN ('planned','active','paused','completed','cancelled')),"
         "CHECK(is_common IN (0,1))"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS job_tasks ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,job_id BIGINT NOT NULL,parent_id BIGINT NULL,"
+        "assigned_user_id BIGINT NULL,title VARCHAR(160) NOT NULL,description VARCHAR(2000) NOT NULL DEFAULT '',"
+        "status VARCHAR(16) NOT NULL DEFAULT 'todo',priority VARCHAR(16) NOT NULL DEFAULT 'normal',"
+        "due_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,revision BIGINT NOT NULL DEFAULT 1,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "updated_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "UNIQUE KEY job_tasks_job_id(job_id,id),KEY job_tasks_job_status(job_id,status,id),"
+        "KEY job_tasks_parent(job_id,parent_id,id),KEY job_tasks_assignee(assigned_user_id,job_id,id),"
+        "CONSTRAINT job_tasks_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),"
+        "CONSTRAINT job_tasks_parent_fk FOREIGN KEY(job_id,parent_id) REFERENCES job_tasks(job_id,id),"
+        "CONSTRAINT job_tasks_assignee_fk FOREIGN KEY(assigned_user_id) REFERENCES users(id),"
+        "CHECK(CHAR_LENGTH(title)>=1),CHECK(status IN ('todo','in_progress','blocked','in_review','done')),"
+        "CHECK(priority IN ('low','normal','high','urgent')),CHECK(due_date IS NULL OR CHAR_LENGTH(due_date)=10),"
+        "CHECK(revision>=1)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS job_blockers ("
+        "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,job_id BIGINT NOT NULL,task_id BIGINT NULL,"
+        "title VARCHAR(160) NOT NULL,description VARCHAR(2000) NOT NULL DEFAULT '',"
+        "impact VARCHAR(16) NOT NULL DEFAULT 'medium',owner_id BIGINT NULL,status VARCHAR(16) NOT NULL DEFAULT 'open',"
+        "next_action VARCHAR(1000) NOT NULL DEFAULT '',due_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "created_by BIGINT NOT NULL,revision BIGINT NOT NULL DEFAULT 1,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "updated_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "KEY job_blockers_job_status(job_id,status,id),KEY job_blockers_task(job_id,task_id,id),"
+        "KEY job_blockers_owner(owner_id,job_id,id),"
+        "CONSTRAINT job_blockers_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),"
+        "CONSTRAINT job_blockers_task_fk FOREIGN KEY(job_id,task_id) REFERENCES job_tasks(job_id,id),"
+        "CONSTRAINT job_blockers_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),"
+        "CONSTRAINT job_blockers_creator_fk FOREIGN KEY(created_by) REFERENCES users(id),"
+        "CHECK(CHAR_LENGTH(title)>=1),CHECK(impact IN ('low','medium','high','critical')),"
+        "CHECK(status IN ('open','in_progress','resolved')),CHECK(due_date IS NULL OR CHAR_LENGTH(due_date)=10),"
+        "CHECK(revision>=1)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS time_entries ("
@@ -322,7 +409,10 @@ bool mysql_schema_prepare(void) {
         "last_run_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,"
         "last_run_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,last_event_id BIGINT NOT NULL DEFAULT 0,"
         "KEY alert_rules_owner(owner_id,id),CONSTRAINT alert_rules_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),"
-        "CHECK(type IN ('invalid_job','missing_hours')),CHECK(CHAR_LENGTH(run_time)=5),CHECK(enabled IN (0,1)),"
+        "days_before INT NOT NULL DEFAULT 30,"
+        "CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due')),"
+        "CONSTRAINT alert_rules_days_before CHECK(days_before BETWEEN 1 AND 365),"
+        "CHECK(CHAR_LENGTH(run_time)=5),CHECK(enabled IN (0,1)),"
         "CHECK(last_event_id>=0)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS alert_rule_users (rule_id BIGINT NOT NULL,user_id BIGINT NOT NULL,"
@@ -422,6 +512,7 @@ bool mysql_schema_prepare(void) {
     if (okay) okay = ensure_assignment_role(database);
     if (okay) okay = ensure_job_flags(database);
     if (okay) okay = ensure_email_statuses(database);
+    if (okay) okay = ensure_inventory_alerts(database);
     if (okay) okay = db_exec(database,
         "INSERT IGNORE INTO schema_metadata(id,version) VALUES(1,0)",
         NULL, NULL, NULL) == DB_OK;

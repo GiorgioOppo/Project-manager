@@ -1,0 +1,80 @@
+/* Attività e blocchi: shared workspace controls retain their existing styles. */
+.work-board-toolbar,.work-filters,.work-blockers-heading {
+  display:flex; align-items:end; gap:16px; flex-wrap:wrap;
+}
+.work-board-toolbar { padding:0 28px 10px; }
+.work-board-toolbar .work-field,.work-filters .work-field,.work-blockers-heading .work-field { margin:0; min-width:150px; }
+.work-board-toolbar .work-job-field { flex:1; min-width:220px; }
+.work-board-actions { display:flex; gap:8px; flex-wrap:wrap; padding-bottom:2px; }
+.work-board-scope,.work-board-summary { margin:0 28px 18px; color:#586953; line-height:1.7; }
+.work-filters { margin:0 28px 12px; padding:18px 0; border-top:1px solid #e4e7dd; }
+.work-filters .work-field { flex:1; }
+.work-filters .work-field:first-child { flex:1.5; }
+.work-kanban { display:grid; grid-template-columns:repeat(5,minmax(190px,1fr)); gap:12px; margin:0 28px 28px; overflow-x:auto; padding-bottom:12px; align-items:start; }
+.work-column { min-width:0; border:1px solid #dfe5d7; border-radius:9px; background:#f5f6ef; padding:12px 10px; }
+.work-column-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 12px; font-size:12px; color:#435940; }
+.work-column-count { min-width:22px; text-align:center; background:#e6ebdd; border-radius:20px; padding:3px 6px; font-size:11px; }
+.work-column[data-status=blocked] { border-top:3px solid #b97855; }
+.work-column[data-status=in_progress] { border-top:3px solid #6c8662; }
+.work-column[data-status=in_review] { border-top:3px solid #bd9d63; }
+.work-column[data-status=done] { border-top:3px solid #8e9c89; }
+.work-column-items,.work-blocker-list { list-style:none; margin:0; padding:0; }
+.work-task-card,.work-blocker-card { border:1px solid #e0e5d9; border-radius:7px; background:#fffefa; padding:13px; overflow-wrap:anywhere; }
+.work-column-items>li+li { margin-top:10px; }
+.work-task-card h4,.work-blocker-card h4 { margin:9px 0; color:#30472f; font-size:13px; line-height:1.5; }
+.work-card-tags,.work-card-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; }
+.work-card-tag { border:1px solid #dce3d3; padding:3px 6px; border-radius:4px; font-size:10px; color:#4b6141; background:#eef2e8; }
+.work-card-tag.priority-urgent,.work-card-tag.impact-critical { color:#8a3f29; background:#faebe3; border-color:#edd0c0; }
+.work-card-tag.priority-high,.work-card-tag.impact-high { color:#815323; background:#fbf1de; border-color:#eadcb9; }
+.work-card-id { color:#617059; font-size:10px; }
+.work-card-meta { margin:7px 0; color:#596851; font-size:11px; line-height:1.6; }
+.work-card-description { color:#5b6757; line-height:1.7; margin:9px 0; font-size:12px; white-space:pre-wrap; }
+.work-card-description-preview { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.work-card-details { margin:10px 0; }
+.work-card-details summary { cursor:pointer; color:#536c46; font-size:11px; padding:4px 0; }
+.work-card-details summary:focus-visible { outline:3px solid #e6947d; outline-offset:3px; }
+.work-card-actions { margin-top:13px; padding-top:9px; border-top:1px solid #edf0e5; }
+.work-card-actions .row-button { padding:6px 0; font-size:11px; white-space:normal; text-align:left; }
+.work-task-status-control { width:100%; display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
+.work-task-status-control label { width:100%; font-size:10px; color:#596b50; }
+.work-task-status-control select { min-width:0; flex:1; max-width:100%; padding:7px; border:1px solid #d6dfcc; border-radius:4px; background:#fffefa; color:#385031; font-size:11px; }
+.work-list-empty { margin:8px 0; color:#64735c; font-size:12px; line-height:1.7; }
+.work-task-list { margin:0 28px 28px; }
+.work-task-list>ol,.work-task-children { list-style:none; padding:0; margin:0; }
+.work-task-list li { margin:10px 0; }
+.work-task-children { border-left:2px solid #dce4d1; margin-left:15px; padding-left:16px; }
+.work-task-list .work-task-card h4 { margin:7px 0; font-size:14px; }
+.work-task-list .work-card-description-preview { -webkit-line-clamp:2; }
+.work-task-list .work-task-status-control { width:auto; }
+.work-task-list .work-task-status-control label { width:auto; }
+.work-task-list .work-card-actions { gap:8px 18px; }
+.work-task-context { font-size:11px; color:#66715d; margin:4px 0; }
+.work-blockers { border-top:1px solid #e2e7da; padding:24px 28px 28px; }
+.work-blockers-heading { justify-content:space-between; margin-bottom:14px; }
+.work-blockers-heading h3 { margin:4px 0; font-size:20px; font-weight:500; color:#30492c; }
+.work-blockers .work-board-scope { margin:0 0 18px; }
+.work-blocker-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.work-blocker-card .work-card-description { margin-bottom:8px; }
+.work-blocker-action { border-left:2px solid #dce4d1; padding:6px 0 6px 10px; color:#506247; white-space:pre-wrap; font-size:12px; line-height:1.7; }
+.work-blocker-action strong { display:block; font-size:10px; font-weight:600; margin-bottom:3px; }
+#work-task-reload,#work-blocker-reload { margin-bottom:18px; }
+.work-kanban[hidden],.work-task-list[hidden],.work-board-actions button[hidden],#work-content[hidden] { display:none; }
+@media (max-width:1050px) {
+  .work-blocker-list { grid-template-columns:1fr; }
+  .work-kanban { grid-template-columns:repeat(5,220px); }
+}
+@media (max-width:760px) {
+  .work-board-toolbar { padding:0 18px 10px; align-items:stretch; }
+  .work-board-toolbar .work-job-field { min-width:100%; }
+  .work-board-scope,.work-board-summary { margin-left:18px; margin-right:18px; }
+  .work-filters { margin-left:18px; margin-right:18px; gap:12px; }
+  .work-filters .work-field,.work-filters .work-field:first-child { flex:1 1 calc(50% - 12px); min-width:120px; }
+  .work-kanban { margin-left:18px; margin-right:18px; grid-template-columns:repeat(5,minmax(230px,75vw)); }
+  .work-task-list { margin-left:18px; margin-right:18px; }
+  .work-task-children { margin-left:5px; padding-left:8px; }
+  .work-blockers { padding:22px 18px; }
+  .work-blockers-heading { align-items:stretch; }
+  .work-blockers-heading .work-field { flex:1; }
+  #work-task-dialog .form-grid,#work-blocker-dialog .form-grid { grid-template-columns:1fr; gap:0; }
+}
+@media (prefers-reduced-motion:reduce) { .work-kanban { scroll-behavior:auto; } }

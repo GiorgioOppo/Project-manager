@@ -24,6 +24,8 @@
 #include "organization.h"
 #include "alerts.h"
 #include "calendar_client.h"
+#include "inventory_client.h"
+#include "work_board.h"
 
 #ifdef __APPLE__
 #include <Security/SecRandom.h>
@@ -35,6 +37,7 @@
 
 #define HEADER_LIMIT 16384
 #define BODY_LIMIT 32768
+#define WORK_BOARD_BODY_LIMIT 65536
 #define LOGIN_BODY_LIMIT 8192
 #define SESSION_LIMIT 64
 #define TOKEN_BYTES 32
@@ -388,10 +391,16 @@ static int read_request(int fd, char **allocation, size_t *capacity, Request *re
             errno = 0;
             char *number_end;
             unsigned long long number = strtoull(value, &number_end, 10);
+            bool work_board_form = strcmp(request->method, "POST") == 0 &&
+                (strcmp(request->target, "/api/tasks") == 0 || strncmp(request->target, "/api/tasks/", 11) == 0 ||
+                 strcmp(request->target, "/api/blockers") == 0 || strncmp(request->target, "/api/blockers/", 14) == 0);
+            bool inventory_import = strcmp(request->method,"POST")==0 &&
+                strcmp(request->target,"/api/inventory/import/preview")==0;
             size_t body_limit = strncmp(request->target, "/api/login", 10) == 0
                 ? LOGIN_BODY_LIMIT :
                 (strcmp(request->method, "POST") == 0 && pdf_upload_target(request->target)
-                    ? DOCUMENTS_MAX_BYTES : BODY_LIMIT);
+                    ? DOCUMENTS_MAX_BYTES : work_board_form ? WORK_BOARD_BODY_LIMIT :
+                      inventory_import ? 1024U*1024U : BODY_LIMIT);
             if (errno || *number_end || number > body_limit) return 413;
             request->content_length = (size_t)number;
             request->has_content_length = true;
@@ -743,6 +752,88 @@ static bool calendar_route(int fd, Request *request, const char *query) {
     return true;
 }
 
+static bool inventory_identifier(const char *number, const char **end, DbInt *value) {
+    if (*number < '0' || *number > '9') return false;
+    *end = number;
+    while (**end >= '0' && **end <= '9') (*end)++;
+    char *parsed;
+    errno = 0;
+    long long identifier = strtoll(number, &parsed, 10);
+    if (errno || identifier <= 0 || parsed != *end) return false;
+    *value = (DbInt)identifier;
+    return true;
+}
+
+static bool inventory_route(int fd, Request *request, const char *query) {
+    if (strncmp(request->target, "/api/inventory/", 15)) return false;
+    bool get = !strcmp(request->method, "GET");
+    bool post = !strcmp(request->method, "POST");
+    bool head = !strcmp(request->method, "HEAD");
+    const char *resource = request->target + 15;
+    InventoryOperation operation;
+    DbInt item_id = 0, relation_id = 0;
+    if (!strcmp(resource, "status")) {
+        if (!get) { error_response_head(fd, 405, head); return true; }
+        operation = INVENTORY_STATUS;
+    } else if (!strcmp(resource, "assets")) {
+        if (!get && !post) { error_response_head(fd, 405, head); return true; }
+        operation = post ? INVENTORY_CREATE : INVENTORY_ASSETS;
+    } else if (!strcmp(resource,"assets/export") || !strcmp(resource,"due")) {
+        if (!get) { error_response_head(fd,405,head); return true; }
+        operation = !strcmp(resource,"due") ? INVENTORY_DUE : INVENTORY_EXPORT;
+    } else if (!strcmp(resource,"import/preview") || !strcmp(resource,"import/commit")) {
+        if (!post) { error_response_head(fd,405,head); return true; }
+        operation = !strcmp(resource,"import/preview") ? INVENTORY_IMPORT_PREVIEW : INVENTORY_IMPORT_COMMIT;
+    } else if (!strncmp(resource, "assets/", 7)) {
+        const char *end;
+        if (!inventory_identifier(resource + 7, &end, &item_id)) {
+            error_response_head(fd, 404, head); return true;
+        }
+        bool read_only = false, write_only = false;
+        if (!*end) operation = post ? INVENTORY_UPDATE : INVENTORY_DETAIL;
+        else if (!strcmp(end, "/history")) { operation = INVENTORY_HISTORY; read_only = true; }
+        else if (!strcmp(end, "/relations")) operation = post ? INVENTORY_RELATION_CREATE : INVENTORY_RELATIONS;
+        else if (!strncmp(end, "/relations/", 11)) {
+            const char *suffix;
+            if (!inventory_identifier(end + 11, &suffix, &relation_id) || strcmp(suffix, "/remove")) {
+                error_response_head(fd, 404, head); return true;
+            }
+            operation = INVENTORY_RELATION_REMOVE;
+            write_only = true;
+        } else { error_response_head(fd, 404, head); return true; }
+        if ((!get && !post) || (read_only && !get) || (write_only && !post)) {
+            error_response_head(fd, 405, head); return true;
+        }
+    } else { error_response_head(fd, 404, head); return true; }
+    Session *session = find_session(request->cookie);
+    Account account;
+    int found = session ? accounts_lookup(session->user_id, &account) : 0;
+    if (found <= 0) {
+        if (found < 0) error_response(fd, 503);
+        else json(fd, 401, "{\"ok\":false,\"error\":\"Accedi per continuare.\"}", NULL);
+        return true;
+    }
+    if (post && (strcmp(account.role, "manager") || !same_origin(request))) {
+        error_response(fd, 403); return true;
+    }
+    if (post) {
+        const char type[] = "application/x-www-form-urlencoded";
+        if (strncmp(request->content_type, type, sizeof(type) - 1) ||
+            (request->content_type[sizeof(type) - 1] && request->content_type[sizeof(type) - 1] != ';')) {
+            error_response(fd, 415); return true;
+        }
+    }
+    if ((get && request->content_length) || (post && *query)) {
+        error_response(fd, 400); return true;
+    }
+    InventoryResponse response = {0};
+    inventory_client_call(operation, item_id, relation_id, account.id, get ? query : request->body, &response);
+    if (!response.body) error_response(fd, 500);
+    else json(fd, response.status, response.body, NULL);
+    inventory_response_free(&response);
+    return true;
+}
+
 static bool workspace_route(int fd, Request *request, const char *query) {
     const char *target = request->target;
     if (strcmp(target, "/api/jobs") != 0 && strncmp(target, "/api/jobs/", 10) != 0 &&
@@ -754,7 +845,9 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         strcmp(target, "/api/job-roles") != 0 && strncmp(target, "/api/job-roles/", 15) != 0 &&
         strncmp(target, "/api/contract-documents/", 24) != 0 &&
         strcmp(target, "/api/labor-rates") != 0 && strncmp(target, "/api/labor-rates/", 17) != 0 &&
-        strcmp(target, "/api/reports") != 0 &&
+        strcmp(target, "/api/reports") != 0 && strcmp(target, "/api/work-board") != 0 &&
+        strcmp(target, "/api/tasks") != 0 && strncmp(target, "/api/tasks/", 11) != 0 &&
+        strcmp(target, "/api/blockers") != 0 && strncmp(target, "/api/blockers/", 14) != 0 &&
         strcmp(target, "/api/alert-rules") != 0 && strncmp(target, "/api/alert-rules/", 17) != 0 &&
         strcmp(target, "/api/notifications") != 0 && strncmp(target, "/api/notifications/", 19) != 0 &&
         strcmp(target, "/api/audit") != 0)
@@ -849,6 +942,8 @@ static bool workspace_route(int fd, Request *request, const char *query) {
     if (!handled) handled = storage_handle(request->method, target, query, account.role, &response);
     if (!handled) handled = alerts_handle(request->method, target, query, request->body,
                                           account.id, account.role, &response);
+    if (!handled) handled = work_board_handle(request->method, target, query, request->body,
+                                              account.id, account.role, &response);
     if (!handled) handled = workspace_handle(request->method, target, query, request->body,
                                              account.id, account.email, account.role, &response);
     if (!handled) {
@@ -882,6 +977,7 @@ static void route(int fd, Request *request) {
     char *query = strchr(request->target, '?');
     if (query) *query++ = '\0';
     if (calendar_route(fd, request, query ? query : "")) return;
+    if (inventory_route(fd, request, query ? query : "")) return;
     if (workspace_route(fd, request, query ? query : "")) return;
     const char *target = request->target;
     bool get = strcmp(request->method, "GET") == 0;
@@ -922,6 +1018,8 @@ static void route(int fd, Request *request) {
         {"/app.js", "app.js", "text/javascript; charset=utf-8"},
         {"/workspace.css", "workspace.css", "text/css; charset=utf-8"},
         {"/reports.css", "reports.css", "text/css; charset=utf-8"},
+        {"/work-board.css", "work-board.css", "text/css; charset=utf-8"},
+        {"/inventory.css", "inventory.css", "text/css; charset=utf-8"},
         {"/favicon.svg", "favicon.svg", "image/svg+xml"}
     };
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
@@ -1002,6 +1100,13 @@ int main(void) {
     if (atexit(calendar_client_close) != 0) {
         calendar_client_close(); return 1;
     }
+    if (!inventory_client_open()) {
+        fprintf(stderr, "Configurazione Asset inventory non valida. Controlla URL, token e certificato CA.\n");
+        return 1;
+    }
+    if (atexit(inventory_client_close) != 0) {
+        inventory_client_close(); return 1;
+    }
     if (!storage_preflight(database_path)) {
         fprintf(stderr, "Database non leggibile o creato da una versione più recente. Nessun aggiornamento eseguito.\n");
         return 1;
@@ -1022,9 +1127,9 @@ int main(void) {
         fprintf(stderr, "Impossibile configurare gruppi, ruoli e abilitazioni. Controlla database e permessi.\n");
         organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
-    if (!alerts_open(database_path) || !procurement_open(database_path) || !documents_open(database_path)) {
-        fprintf(stderr, "Impossibile configurare alert, contratti e archivio documentale. Controlla database e impostazioni dei servizi.\n");
-        alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+    if (!work_board_open(database_path) || !alerts_open(database_path) || !procurement_open(database_path) || !documents_open(database_path)) {
+        fprintf(stderr, "Impossibile configurare attività, alert, contratti e archivio documentale. Controlla database e impostazioni dei servizi.\n");
+        work_board_close(); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
     snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
@@ -1037,7 +1142,7 @@ int main(void) {
     (void)sigaction(SIGINT, &stop_action, NULL);
     (void)sigaction(SIGTERM, &stop_action, NULL);
     int server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server < 0) { perror("socket"); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
+    if (server < 0) { perror("socket"); work_board_close(); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1; }
     int reuse = 1;
     (void)setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     struct sockaddr_in address = {0};
@@ -1045,7 +1150,7 @@ int main(void) {
     address.sin_port = htons((uint16_t)port);
     address.sin_addr = bind_address;
     if (bind(server, (struct sockaddr *)&address, sizeof(address)) < 0 || listen(server, 16) < 0) {
-        perror("Avvio server"); close(server); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
+        perror("Avvio server"); close(server); work_board_close(); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     printf("\n  punto · Project management\n  http://127.0.0.1:%ld\n  Utenti e dati: %s\n\n", public_port, database_path);
     fflush(stdout);
@@ -1080,8 +1185,10 @@ int main(void) {
         close(client);
     }
     close(server);
+    work_board_close();
     alerts_close();
     calendar_client_close();
+    inventory_client_close();
     documents_close();
     procurement_close();
     organization_close();

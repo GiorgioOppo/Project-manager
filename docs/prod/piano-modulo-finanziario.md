@@ -1,6 +1,6 @@
 # Piano del modulo finanziario di punto
 
-> **Documento di progettazione, modulo finanziario completo da implementare.** La base iniziale era lo schema 3; il codice corrente usa lo schema 7 e offre valori contrattuali e stime del costo delle ore in EUR. Fatture, incassi, più società, più valute e canali fiscali descritti qui restano pianificati. Consulta [stato e roadmap](roadmap.md) per la distinzione fra disponibilità attuale e obiettivi.
+> **Documento di progettazione, modulo finanziario completo da implementare.** La base iniziale era lo schema 3; il codice corrente usa lo schema 9 e offre valori contrattuali e stime del costo delle ore in EUR. Fatture, incassi, più società, più valute e canali fiscali descritti qui restano pianificati. Consulta [stato e roadmap](roadmap.md) per la distinzione fra disponibilità attuale e obiettivi.
 
 Il modulo finanziario coprirà il percorso dalla previsione economica della commessa alla fattura, alla partita aperta e al suo regolamento. Il primo rilascio finanziario includerà già **fatturazione e incassi**, **più società**, **più valute** e **società con sede fiscale in paesi diversi**. Questi requisiti entrano nelle fondamenta del modello e nel collaudo della prima consegna.
 

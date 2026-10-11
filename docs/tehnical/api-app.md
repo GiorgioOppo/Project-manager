@@ -1,8 +1,8 @@
 # API dell'applicazione
 
-Contratto verificato sul codice il **10 ottobre 2026**, schema dati 7. Le API usano il prefisso `/api` sull'origine pubblica dell'app, per esempio `https://progetti.tuaazienda.it`. I nomi e i metodi sotto sono quelli implementati: l'aggiornamento usa `POST`, non `PUT` o `PATCH`.
+Contratto verificato sul codice l’**11 ottobre 2026**, schema dati 9. Le API usano il prefisso `/api` sull'origine pubblica dell'app, per esempio `https://progetti.tuaazienda.it`. I nomi e i metodi sotto sono quelli implementati: l'aggiornamento usa `POST`, non `PUT` o `PATCH`.
 
-Fonti: [router HTTP](../../src/server.c), [utenti](../../src/accounts.c), [commesse, ore, report, tariffe](../../src/workspace.c), [organizzazione](../../src/organization.c), [fornitori e contratti](../../src/procurement.c), [alert](../../src/alerts.c), [audit](../../src/storage.c), [bridge calendario](../../src/calendar_client.c). Tipi persistenti nel [modello dati](modello-dati.md); chiamate interne in [API addon](api-addon.md).
+Fonti: [router HTTP](../../src/server.c), [utenti](../../src/accounts.c), [commesse, ore, report, tariffe](../../src/workspace.c), [organizzazione](../../src/organization.c), [attività e blocchi](../../src/work_board.c), [fornitori e contratti](../../src/procurement.c), [alert](../../src/alerts.c), [audit](../../src/storage.c), [bridge calendario](../../src/calendar_client.c). Tipi persistenti nel [modello dati](modello-dati.md); chiamate interne in [API addon](api-addon.md).
 
 ## Convenzioni HTTP
 
@@ -10,7 +10,7 @@ Fonti: [router HTTP](../../src/server.c), [utenti](../../src/accounts.c), [comme
 - I `POST` login, business e calendario richiedono `Content-Type: application/x-www-form-urlencoded`; i valori devono essere codificati percent-encoding. Anche un `POST` senza campi deve dichiarare questo formato. Il caricamento PDF usa `application/pdf` binario, non multipart. Logout è un caso separato: il router verifica metodo/origine e non legge campi dal corpo.
 - Gli ID sono interi positivi, i minuti e i centesimi sono interi decimali senza separatori. Le date sono `YYYY-MM-DD`; i flag in ingresso sono generalmente `0`/`1`.
 - Parametri sconosciuti o duplicati vengono rifiutati. Le query non elencate nel singolo endpoint sono rifiutate dai moduli business; non aggiungere arbitrariamente paginazione o filtri. Le mutazioni con `DELETE` richiedono corpo vuoto.
-- Il parser HTTP richiede richieste ben formate, limita header a 16 KiB, corpo ordinario a 32 KiB, login a 8 KiB e PDF a 10 MiB. Non supporta `Transfer-Encoding`/chunked. Il target HTTP ha un buffer di 8192 byte. È prevista una richiesta per connessione (`Connection: close`).
+- Il parser HTTP richiede richieste ben formate, limita header a 16 KiB, corpo ordinario a 32 KiB, login a 8 KiB e PDF a 10 MiB. I `POST` sulle collezioni `/api/tasks` e `/api/blockers`, sui relativi elementi `/{id}` e sulle cancellazioni `/{id}/delete` ammettono 64 KiB di form. Non supporta `Transfer-Encoding`/chunked. Il target HTTP ha un buffer di 8192 byte. È prevista una richiesta per connessione (`Connection: close`).
 - Header delle risposte: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` e CSP restrittiva.
 - Le risposte di errore business hanno normalmente `{"ok":false,"error":"messaggio"}`. Non fare affidamento sul testo italiano come codice stabile: i codici macchina dell'addon Calendar sono un contratto distinto.
 
@@ -90,7 +90,7 @@ Nome UTF-8 1–120 caratteri; email validata/canonicalizzata e univoca; password
 | `GET /api/jobs` | Gestore: tutte; lavoratore: comuni e abilitate. | Nessuna query. | `200 {"jobs":[...]}`. |
 | `POST /api/jobs` | Gestore. | `code`, `name`, `client`, `description`, `status`, facoltativi `contract_id`, `is_common`. | `201 {"ok":true,"id":...}`. |
 | `POST /api/jobs/{id}` | Gestore. | Stessi campi. Codice, nome e stato vanno inviati; `contract_id`/`is_common` omessi conservano il valore precedente. | `200 {"ok":true,"id":...}`. |
-| `DELETE /api/jobs/{id}` | Gestore. | Corpo vuoto. | `200 {"ok":true}`; elimina anche ore, assegnazioni e grant della commessa. |
+| `DELETE /api/jobs/{id}` | Gestore. | Corpo vuoto. | `200 {"ok":true}`; elimina anche attività, blocchi, ore, assegnazioni e grant della commessa. |
 | `GET /api/time-entries?date=YYYY-MM-DD` | Utente autenticato. | `date` obbligatoria; nessun `user_id`. | `200 {"entries":[...],"total_minutes":...}` delle **sole proprie ore**, anche per il gestore. |
 | `POST /api/time-entries` | Gestore o lavoratore autorizzato. | `job_id`, `date`, `minutes`, `note` facoltativa. | `201 {"ok":true,"id":...}`; proprietario derivato dalla sessione. |
 | `POST /api/time-entries/{id}` | Gestore, solo proprie registrazioni. | `job_id`, `date`, `minutes`, `note` facoltativa. | `200 {"ok":true,"id":...}`. |
@@ -103,6 +103,35 @@ Ogni voce di `jobs` contiene `id`, `code`, `name`, `client`, `description`, `sta
 Ore: 1–1440 minuti per riga, massimo 1440 minuti totali e 1000 registrazioni per utente/giorno, nota fino a 1000 caratteri. Ogni voce restituita include `id`, `job_id`, `job_code`, `job_name`, `date`, `minutes`, `note`, `owner`, `user_id`. Il backend non accetta `owner`/`user_id` da un form ore.
 
 Per il lavoratore l'abilitazione a consuntivare deve risultare valida sia oggi sia nella data lavorata, e consentire `can_log_time`. I ruoli locali vengono combinati con assegnazioni dirette, gruppi antenati e commesse comuni secondo [processi e regole](../prod/processi-e-regole.md). Un ID commessa inesistente viene rifiutato e può produrre un evento per l'alert `invalid_job`; non vengono salvate ore orfane.
+
+## Attività, sottoattività, Kanban e blocchi
+
+La bacheca richiede una commessa visibile oggi. Il gestore modifica tutte le attività; un collaboratore attuale cambia soltanto lo stato delle attività assegnate a lui. I blocchi possono essere creati da gestori e collaboratori, poi modificati dal gestore oppure da un collaboratore che ne sia autore o responsabile. Soltanto il gestore riassegna o elimina. Un lettore consulta soltanto. La responsabilità di un elemento non concede automaticamente accesso alla commessa.
+
+| Metodo e percorso | Ingresso | Risposta |
+| --- | --- | --- |
+| `GET /api/work-board?job_id=N` | Unica query `job_id`, obbligatoria; corpo vuoto. | `200 {"ok":true,"job_id":N,"tasks":[],"blockers":[],"assignees":[],"permissions":{...}}`. |
+| `POST /api/tasks` | `job_id`, `title`; facoltativi `parent_id`, `assigned_user_id`, `description`, `status`, `priority`, `due_date`. | `201 {"ok":true,"id":N,"revision":1}`. |
+| `POST /api/tasks/{id}` | `revision` obbligatoria e campi modificati, escluso `job_id`. Il collaboratore invia soltanto `status` e `revision`. | `200` con `ok`, `id` e revisione incrementata. |
+| `POST /api/tasks/{id}/delete` | Solo `revision`; gestore. | `200` con `ok`, `id` e ultima revisione eliminata; `409` se ha figli. |
+| `POST /api/blockers` | `job_id`, `title`; facoltativi `task_id`, `description`, `impact`, `owner_id`, `status`, `next_action`, `due_date`. | `201` con `ok`, `id`, `revision=1`. Per un collaboratore il responsabile è sempre lui stesso. |
+| `POST /api/blockers/{id}` | `revision` e campi modificati, escluso `job_id`; solo il gestore può cambiare `owner_id`. | `200` con `ok`, `id` e revisione incrementata. |
+| `POST /api/blockers/{id}/delete` | Solo `revision`; gestore. | `200` con `ok`, `id` e ultima revisione eliminata. |
+
+Nessuna query è ammessa sulle mutazioni. I campi duplicati/sconosciuti, `job_id` su update, `revision` su create, identità autore o timestamp inviati dal client sono rifiutati. Gli aggiornamenti sono parziali: i campi omessi conservano il valore precedente. ID opzionale o data vuoti azzerano il riferimento; in risposta il valore è `null`.
+
+| Risorsa | Campi restituiti oltre a `id` e `job_id` |
+| --- | --- |
+| Attività | `parent_id`, `assigned_user_id`, `assigned_user_name`, `title`, `description`, `status`, `priority`, `due_date`, `revision`, `created_at`, `updated_at`, `can_edit`, `can_update_status`. |
+| Blocco | `task_id`, `title`, `description`, `impact`, `owner_id`, `owner_name`, `status`, `next_action`, `due_date`, `created_by`, `revision`, `created_at`, `updated_at`, `can_edit`. |
+| Assegnatario selezionabile | `id`, `name`; elenco solo per gestori, `assignees:[]` per operatori. Sono eleggibili gestori attivi e collaboratori attivi abilitati oggi alla commessa. |
+| Permessi della bacheca | `manage_tasks` e `report_blockers`, booleani. Le autorizzazioni effettive di ogni elemento sono nei rispettivi flag. |
+
+Titolo 1–160 caratteri UTF-8; descrizione fino a 2000; prossima azione fino a 1000. Scadenza facoltativa `YYYY-MM-DD` valida; timestamp UTC `YYYY-MM-DDTHH:MM:SSZ`. Stato attività: `todo` (default), `in_progress`, `blocked`, `in_review`, `done`; priorità: `low`, `normal` (default), `high`, `urgent`. Stato blocco: `open` (default), `in_progress`, `resolved`; impatto: `low`, `medium` (default), `high`, `critical`. Gli stati di blocco, attività, padre e commessa restano indipendenti.
+
+Ogni commessa ammette 500 attività e 500 blocchi; la creazione oltre il limite produce `409`. Le sottoattività hanno al massimo otto livelli inclusa la radice, senza cicli e nella stessa commessa. Anche un blocco può riferirsi soltanto a un’attività della propria commessa. Il nuovo assegnatario deve essere eleggibile oggi; un assegnatario precedente invariato può essere conservato anche dopo una revoca, senza concedergli permessi.
+
+Una `revision` superata produce `409` senza sovrascrivere i dati; rileggere la bacheca prima di decidere la modifica. La cancellazione di un’attività senza figli mantiene i blocchi, svuota `task_id` e ne incrementa le revisioni nella stessa transazione. L’audit registra `tasks.create/update/delete`, `blockers.create/update/delete` e `blockers.task_detached`. Elementi inesistenti e non visibili restituiscono lo stesso `404` generico. Dettagli in [implementazione attività/blocchi](attivita-kanban-e-blocchi.md).
 
 ## Assegnazioni dirette, gruppi e ruoli locali
 
@@ -191,7 +220,9 @@ Risposta comune: `ok`, `view`, `from`, `to`, `today`, `scope` (`all`/`personal`)
 | `GET /api/notifications` | Utente autenticato, proprie notifiche. | `200 {"notifications":[...],"unread_count":...}`; ultime 100, nessun cursore. |
 | `POST /api/notifications/{id}/read` | Destinatario autorizzato, corpo vuoto. | `200 {"ok":true}`; ripetere non cambia il primo `read_at`. |
 
-Campi regola: `name` (1–120 caratteri), `type=invalid_job|missing_hours`, `run_time=HH:MM`, `enabled=0|1`, `recipient_user_ids` elenco separato da virgole, `recipient_emails` elenco separato da virgole o righe. Almeno un destinatario, massimo 50 utenti e 50 email senza duplicati; massimo 100 regole per gestore. I destinatari interni devono essere utenti esistenti e attivi; un worker riceve soltanto notifiche relative a sé stesso. Non c'è endpoint di cancellazione regola: disabilitarla mantiene lo storico.
+Campi regola: `name` (1–120 caratteri), `type=invalid_job|missing_hours|inventory_due`, `run_time=HH:MM`, `enabled=0|1`, `recipient_user_ids` elenco separato da virgole, `recipient_emails` elenco separato da virgole o righe. Almeno un destinatario, massimo 50 utenti e 50 email senza duplicati; massimo 100 regole per gestore. I destinatari interni devono essere utenti esistenti e attivi; per gli alert sulle ore un worker riceve soltanto notifiche relative a sé stesso; `inventory_due` notifica a tutti i destinatari selezionati le scadenze del catalogo globale. Non c'è endpoint di cancellazione regola: disabilitarla mantiene lo storico.
+
+`inventory_due` accetta `days_before` 1–365 (predefinito 30), segnala garanzie, manutenzioni, scadenze e rinnovi anche superati, esclude beni dismessi/smarriti e deduplica per regola, destinatario, asset, campo, data e anticipo. Se l’inventario è indisponibile non consuma l’esecuzione. Dettagli nel [contratto inventory](asset-inventory.md).
 
 `missing_hours` controlla 480 minuti per ogni lunedì–venerdì, con 48 ore di tolleranza e avanzamento persistente dei giorni già esaminati; non sottrae automaticamente ferie o festività. `invalid_job` osserva tentativi rifiutati su ID inesistenti. L'orario giornaliero usa `Europe/Rome`; lo scheduler dell'app verifica circa ogni 30 secondi e può eseguire dopo l'ora prevista se l'app era occupata. L'esecuzione giornaliera è tracciata per evitare duplicazioni. Le risposte di lista includono ultimo/prossimo run e destinatari; nessuna credenziale SMTP viene esposta.
 
@@ -269,6 +300,6 @@ Gli ID sono segnaposto: recuperarli dalle liste prima delle mutazioni. Nessun es
 
 Il server C principale gestisce le connessioni in sequenza e fa girare lo scheduler nello stesso processo. La sincronizzazione remota Calendar ha un worker separato nell'addon, ma chiamate sincrone a provider/SMTP e download possono comunque incidere sulla latenza dell'app. L'app non è attualmente un cluster di processi con sessioni condivise.
 
-Le mutazioni business e l'audit sono transazionali, con controllo di certificazione MySQL tramite `cluster_write_guard`. Non esistono ETag/versioni per gli aggiornamenti delle commesse: due aggiornamenti serializzati possono applicarsi entrambi e l'ultimo può sostituire campi del precedente. Non sono previsti webhook pubblici, OpenAPI generato, GraphQL, token API personali, endpoint fatture o collegamento automatico evento→commessa/ore.
+Le mutazioni business e l'audit sono transazionali, con controllo di certificazione MySQL tramite `cluster_write_guard`. Attività e blocchi hanno una `revision` obbligatoria su update/delete, verificata nella stessa transazione; gli editor obsoleti ricevono `409`. Non esistono ETag/versioni per gli aggiornamenti delle commesse: due aggiornamenti serializzati possono applicarsi entrambi e l'ultimo può sostituire campi del precedente. Non sono previsti webhook pubblici, OpenAPI generato, GraphQL, token API personali, endpoint fatture o collegamento automatico evento→commessa/ore.
 
-Test di contratto e regressione: [suite](../../tests), in particolare `test_server.py`, `test_roles.py`, `test_workspace.py`, `test_groups.py`, `test_assignments.py`, `test_procurement.py`, `test_alerts.py`, `test_reports.py`, `test_labor_rates.py` e [test bridge calendario](../../tests/test_calendar_client.py). Per l'esecuzione della suite vedere [sviluppo e test](sviluppo-test.md).
+Test di contratto e regressione: [suite](../../tests), in particolare `test_server.py`, `test_roles.py`, `test_workspace.py`, `test_groups.py`, `test_assignments.py`, `test_procurement.py`, `test_alerts.py`, `test_reports.py`, `test_labor_rates.py`, [test attività/blocchi](../../tests/test_work_board.py) e [test bridge calendario](../../tests/test_calendar_client.py). Per l'esecuzione della suite vedere [sviluppo e test](sviluppo-test.md).

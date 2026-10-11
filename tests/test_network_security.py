@@ -20,7 +20,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 try:
-    from manage_cluster import Cluster, NODES, sql_literal
+    from manage_cluster import Cluster, NODES, NODE_SERVICES, sql_literal
 finally:
     sys.path.pop(0)
 
@@ -40,7 +40,7 @@ class NetworkSecurityTests(unittest.TestCase):
         cls.containers = {
             item["Config"]["Labels"]["com.docker.compose.service"]: item for item in containers
         }
-        required = {"app", "mail-addon", "calendar-addon", "nginx-proxy-manager", "squid", "db-proxy", "documents", *NODES}
+        required = {"app", "mail", "calendar", "inventory", "proxy-web", "proxy-egress", "proxy-db", "mongodb", *NODE_SERVICES.values()}
         if required - cls.containers.keys():
             raise RuntimeError("Required Compose services are not running")
         network_ids = {network["NetworkID"] for item in containers
@@ -50,7 +50,7 @@ class NetworkSecurityTests(unittest.TestCase):
             logical_name = (network.get("Labels") or {}).get("com.docker.compose.network")
             if logical_name:
                 cls.networks[logical_name] = network
-        if {"public", "private_app", "backend_app", "app_egress", "mail_api", "calendar_api", "proxy_wan"} - cls.networks.keys():
+        if {"public", "private_app", "backend_app", "app_egress", "mail_api", "calendar_api", "inventory_api", "proxy_wan"} - cls.networks.keys():
             raise RuntimeError("The requested Compose networks are not present")
         cls.http_port = int(cls.cluster.values.get("NPM_HTTP_PORT", "80"))
 
@@ -64,6 +64,7 @@ class NetworkSecurityTests(unittest.TestCase):
         return json.loads(result.stdout)
 
     def address(self, service, network):
+        service = NODE_SERVICES.get(service, service)
         actual_name = self.networks[network]["Name"]
         value = self.containers[service]["NetworkSettings"]["Networks"][actual_name]["IPAddress"]
         self.assertTrue(value, service + " has no IPv4 address on " + network)
@@ -71,7 +72,8 @@ class NetworkSecurityTests(unittest.TestCase):
 
     def probe(self, service, destination, port):
         """Return TCP reachability; distinguish connection denial from missing tools."""
-        if service == "nginx-proxy-manager":
+        service = NODE_SERVICES.get(service, service)
+        if service == "proxy-web":
             arguments = ("node", "-e",
                 "const net=require('net');let done=false;"
                 "function end(code){if(!done){done=true;socket.destroy();process.exit(code);}}"
@@ -79,7 +81,7 @@ class NetworkSecurityTests(unittest.TestCase):
                 "socket.setTimeout(2500);socket.on('connect',()=>end(0));"
                 "socket.on('timeout',()=>end(17));socket.on('error',()=>end(17));",
                 destination, str(port))
-        elif service == "db-proxy":
+        elif service == "proxy-db":
             arguments = ("python3", "-c",
                 "import socket,sys\n"
                 "try:\n s=socket.create_connection((sys.argv[1],int(sys.argv[2])),2.5);s.close()\n"
@@ -91,7 +93,7 @@ class NetworkSecurityTests(unittest.TestCase):
                          'exec 3<>"/dev/tcp/$1/$2"', "probe", destination, str(port))
         result = self.cluster.run(("exec", "-T", service, *arguments), check=False, timeout=10)
         self.assertNotIn(result.returncode, (126, 127), "Probe tools unavailable in " + service)
-        if service in ("app", "mail-addon", "calendar-addon", "squid", "documents", *NODES):
+        if service in ("app", "mail", "calendar", "inventory", "proxy-egress", "mongodb", *NODE_SERVICES.values()):
             self.assertIn(result.returncode, (0, 1, 124), "Unexpected TCP probe failure in " + service)
         else:
             self.assertIn(result.returncode, (0, 17), "Unexpected TCP probe failure in " + service)
@@ -103,7 +105,7 @@ class NetworkSecurityTests(unittest.TestCase):
         HTTP errors must come from the policy, not a DNS/network failure. Do not
         use --insecure: the allow-path test must also complete upstream TLS.
         """
-        proxy = "http://squid:3128" if service in ("app", "mail-addon", "calendar-addon") else "http://" + self.address("squid", "app_egress") + ":3128"
+        proxy = "http://squid:3128" if service in ("app", "mail", "calendar") else "http://" + self.address("proxy-egress", "app_egress") + ":3128"
         result = self.cluster.run(("exec", "-T", service, "curl", "--silent", "--show-error",
             "--connect-timeout", "4", "--max-time", "12", "--proxy", proxy,
             "--noproxy", "", "--output", "/dev/null", "--write-out", "%{http_code}\t%{http_connect}",
@@ -127,14 +129,15 @@ class NetworkSecurityTests(unittest.TestCase):
 
     def test_01_exact_memberships_internal_networks_and_published_ports(self):
         expected = {
-            "nginx-proxy-manager": {"public", "private_app"},
-            "app": {"private_app", "backend_app", "app_egress", "mail_api", "calendar_api"},
-            "mail-addon": {"mail_api", "app_egress"},
-            "calendar-addon": {"calendar_api", "app_egress"},
-            "squid": {"app_egress", "proxy_wan"},
-            "db-proxy": {"backend_app"},
-            "documents": {"backend_app"},
-            **{node: {"backend_app"} for node in NODES},
+            "proxy-web": {"public", "private_app"},
+            "app": {"private_app", "backend_app", "app_egress", "mail_api", "calendar_api", "inventory_api"},
+            "mail": {"mail_api", "app_egress"},
+            "calendar": {"calendar_api", "app_egress"},
+            "inventory": {"inventory_api"},
+            "proxy-egress": {"app_egress", "proxy_wan"},
+            "proxy-db": {"backend_app"},
+            "mongodb": {"backend_app"},
+            **{node: {"backend_app"} for node in NODE_SERVICES.values()},
         }
         for service, logical_networks in expected.items():
             actual = set(self.containers[service]["NetworkSettings"]["Networks"])
@@ -161,15 +164,16 @@ class NetworkSecurityTests(unittest.TestCase):
         self.assertTrue(self.networks["app_egress"]["Internal"])
         self.assertTrue(self.networks["mail_api"]["Internal"])
         self.assertTrue(self.networks["calendar_api"]["Internal"])
+        self.assertTrue(self.networks["inventory_api"]["Internal"])
         self.assertFalse(self.networks["proxy_wan"]["Internal"])
-        for name in ("private_app", "backend_app", "app_egress", "mail_api", "calendar_api"):
+        for name in ("private_app", "backend_app", "app_egress", "mail_api", "calendar_api", "inventory_api"):
             options = self.networks[name].get("Options") or {}
             self.assertEqual(options.get("com.docker.network.bridge.gateway_mode_ipv4"), "isolated", name)
 
-        for service in ("app", "mail-addon", "calendar-addon", "squid", "db-proxy", "documents", *NODES):
+        for service in ("app", "mail", "calendar", "inventory", "proxy-egress", "proxy-db", "mongodb", *NODE_SERVICES.values()):
             bindings = self.containers[service]["HostConfig"].get("PortBindings") or {}
             self.assertFalse(any(bindings.values()), service + " publishes a host port")
-        npm_ports = self.containers["nginx-proxy-manager"]["HostConfig"].get("PortBindings") or {}
+        npm_ports = self.containers["proxy-web"]["HostConfig"].get("PortBindings") or {}
         self.assertEqual(set(npm_ports), {"80/tcp", "443/tcp", "81/tcp"})
         expected_ports = {"80/tcp": self.http_port,
                           "443/tcp": int(self.cluster.values.get("NPM_HTTPS_PORT", "443")),
@@ -184,17 +188,17 @@ class NetworkSecurityTests(unittest.TestCase):
     def test_02_allowed_proxy_path_and_denied_cross_network_paths(self):
         app_private = self.address("app", "private_app")
         app_backend = self.address("app", "backend_app")
-        self.assertTrue(self.probe("nginx-proxy-manager", app_private, 8080),
+        self.assertTrue(self.probe("proxy-web", app_private, 8080),
                         "NPM cannot reach the app on private_app")
-        self.assertFalse(self.probe("db-proxy", app_backend, 8080),
+        self.assertFalse(self.probe("proxy-db", app_backend, 8080),
                          "The app HTTP listener is reachable from backend_app")
         for node in NODES:
-            self.assertFalse(self.probe("nginx-proxy-manager", self.address(node, "backend_app"), 3306),
+            self.assertFalse(self.probe("proxy-web", self.address(node, "backend_app"), 3306),
                              "NPM can reach a database directly: " + node)
-            self.assertTrue(self.probe("db-proxy", self.address(node, "backend_app"), 3306),
+            self.assertTrue(self.probe("proxy-db", self.address(node, "backend_app"), 3306),
                             "The DB proxy cannot reach " + node)
-        document_address = self.address("documents", "backend_app")
-        self.assertFalse(self.probe("nginx-proxy-manager", document_address, 27017),
+        document_address = self.address("mongodb", "backend_app")
+        self.assertFalse(self.probe("proxy-web", document_address, 27017),
                          "NPM can reach MongoDB directly")
         self.assertTrue(self.probe("app", document_address, 27017),
                         "The app cannot reach MongoDB")
@@ -210,11 +214,11 @@ class NetworkSecurityTests(unittest.TestCase):
 
     def test_03_direct_external_egress_is_only_available_to_nginx_and_squid(self):
         destination = os.environ.get("PUNTO_NETWORK_TEST_EGRESS_IP", "1.1.1.1")
-        for service in ("nginx-proxy-manager", "squid"):
+        for service in ("proxy-web", "proxy-egress"):
             self.assertTrue(self.probe(service, destination, 443),
                             "The external TCP control endpoint is unavailable to " + service +
                             "; egress denial is inconclusive")
-        for service in ("app", "mail-addon", "calendar-addon", "db-proxy", "documents", *NODES):
+        for service in ("app", "mail", "calendar", "inventory", "proxy-db", "mongodb", *NODE_SERVICES.values()):
             self.assertFalse(self.probe(service, destination, 443),
                              service + " has unexpected public egress")
 
@@ -223,7 +227,7 @@ class NetworkSecurityTests(unittest.TestCase):
         sessions = 0
         for node in NODES:
             self.assertEqual(self.cluster.sql(node, "SELECT @@require_secure_transport;"), "1", node)
-            plaintext = self.cluster.run(("exec", "-T", node, "sh", "-c",
+            plaintext = self.cluster.run(("exec", "-T", NODE_SERVICES[node], "sh", "-c",
                 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --protocol=TCP --host=127.0.0.1 '
                 # Let caching_sha2_password finish its RSA exchange so the test
                 # observes the server's transport policy, not client error 2061.
@@ -259,7 +263,7 @@ class NetworkSecurityTests(unittest.TestCase):
                          "The application listener is not bound to private_app")
 
     def test_06_app_cannot_reach_nginx_administration_but_host_loopback_can(self):
-        npm_private = self.address("nginx-proxy-manager", "private_app")
+        npm_private = self.address("proxy-web", "private_app")
         for port in (81, 3000):
             self.assertFalse(self.probe("app", npm_private, port),
                              "The app can reach NPM administration port " + str(port))
@@ -274,13 +278,13 @@ class NetworkSecurityTests(unittest.TestCase):
             connection.close()
 
     def test_07_mongodb_requires_tls_and_authenticates_scoped_application_user(self):
-        result = self.cluster.run(("exec", "-T", "documents", "mongosh", "--quiet",
+        result = self.cluster.run(("exec", "-T", "mongodb", "mongosh", "--quiet",
             "--host", "documents", "--tls", "--tlsCAFile", "/etc/mongo/tls/ca.crt",
             "--eval", "const d=db.getSiblingDB(process.env.DOC_DB_NAME);"
             "d.auth(process.env.DOC_DB_USER,process.env.DOC_DB_PASSWORD);"
             "d.getCollectionNames();quit(0);"), check=False, timeout=15)
         self.assertEqual(result.returncode, 0, "MongoDB TLS and application authentication failed")
-        plaintext = self.cluster.run(("exec", "-T", "documents", "mongosh", "--quiet",
+        plaintext = self.cluster.run(("exec", "-T", "mongodb", "mongosh", "--quiet",
             "mongodb://documents:27017/?serverSelectionTimeoutMS=2000&tls=false",
             "--eval", "db.runCommand({ping:1});"), check=False, timeout=10)
         self.assertNotEqual(plaintext.returncode, 0, "MongoDB accepted plaintext transport")
@@ -292,22 +296,22 @@ class NetworkSecurityTests(unittest.TestCase):
         self.assertEqual(environment.get("NO_PROXY"), environment.get("no_proxy"))
         bypass = set((environment.get("NO_PROXY") or "").split(","))
         self.assertTrue({"localhost", "127.0.0.1", "::1", "app", "db-proxy", "db", "db2", "db3", "documents",
-                         self.address("app", "private_app"), "mail-addon", "mail-api", "calendar-addon", "calendar-api"} <= bypass,
+                         self.address("app", "private_app"), "mail-addon", "mail-api", "calendar-addon", "calendar-api", "inventory-addon", "inventory-api"} <= bypass,
                         "Local health/database paths are missing from NO_PROXY")
         self.assertNotIn("*", bypass, "NO_PROXY disables all proxy use")
-        squid_private = self.address("squid", "app_egress")
+        squid_private = self.address("proxy-egress", "app_egress")
         self.assertTrue(self.probe("app", squid_private, 3128), "The app cannot reach Squid")
-        self.assertFalse(self.probe("squid", self.address("app", "app_egress"), 8080),
+        self.assertFalse(self.probe("proxy-egress", self.address("app", "app_egress"), 8080),
                          "Squid can reach the app HTTP listener on app_egress")
-        self.assertFalse(self.probe("squid", self.address("app", "private_app"), 8080),
+        self.assertFalse(self.probe("proxy-egress", self.address("app", "private_app"), 8080),
                          "Squid can reach private_app directly")
         for node in NODES:
-            self.assertFalse(self.probe("squid", self.address(node, "backend_app"), 3306),
+            self.assertFalse(self.probe("proxy-egress", self.address(node, "backend_app"), 3306),
                              "Squid can reach a database directly: " + node)
-        self.assertFalse(self.probe("squid", self.address("documents", "backend_app"), 27017),
+        self.assertFalse(self.probe("proxy-egress", self.address("mongodb", "backend_app"), 27017),
                          "Squid can reach MongoDB directly")
         for port in (81, 3000):
-            self.assertFalse(self.probe("squid", self.address("nginx-proxy-manager", "private_app"), port),
+            self.assertFalse(self.probe("proxy-egress", self.address("proxy-web", "private_app"), port),
                              "Squid can reach NPM administration port " + str(port))
 
     def test_09_proxy_rejects_plaintext_http_and_unapproved_hosts(self):
@@ -357,28 +361,51 @@ class NetworkSecurityTests(unittest.TestCase):
         # Squid is attached to the same private proxy network but is not an
         # authorized application source. Exercise its client ACL with a host
         # known to pass the domain policy, rather than a universally denied URL.
-        code, status, connect = self.proxy_request("https://" + host + "/", service="squid")
+        code, status, connect = self.proxy_request("https://" + host + "/", service="proxy-egress")
         self.assertNotEqual(code, 0)
         self.assertEqual(connect, 403, "Squid permits an unauthorized source to use the proxy")
 
     def test_12_app_resolves_internal_docker_names_without_external_dns(self):
+        # Service labels changed; both current service DNS and compatibility
+        # aliases must resolve so existing TLS certificates and URLs still work.
         internal_names = {
-            "squid": "app_egress",
-            "mail-api": "mail_api",
-            "calendar-api": "calendar_api",
-            "nginx-proxy-manager": "private_app",
-            "db-proxy": "backend_app",
-            "documents": "backend_app",
-            **{node: "backend_app" for node in NODES},
+            "proxy-egress": ("app_egress", "proxy-egress"),
+            "squid": ("app_egress", "proxy-egress"),
+            "mail": ("mail_api", "mail"),
+            "mail-addon": ("mail_api", "mail"),
+            "mail-api": ("mail_api", "mail"),
+            "calendar": ("calendar_api", "calendar"),
+            "calendar-addon": ("calendar_api", "calendar"),
+            "calendar-api": ("calendar_api", "calendar"),
+            "inventory": ("inventory_api", "inventory"),
+            "inventory-addon": ("inventory_api", "inventory"),
+            "inventory-api": ("inventory_api", "inventory"),
+            "proxy-web": ("private_app", "proxy-web"),
+            "nginx-proxy-manager": ("private_app", "proxy-web"),
+            "proxy-db": ("backend_app", "proxy-db"),
+            "db-proxy": ("backend_app", "proxy-db"),
+            "mongodb": ("backend_app", "mongodb"),
+            "documents": ("backend_app", "mongodb"),
+            **{name: ("backend_app", service) for node, service in NODE_SERVICES.items()
+               for name in (node, service)},
         }
-        for name, network in internal_names.items():
+        # Generic addon names can resolve on either shared network. Dedicated
+        # API aliases must still resolve exclusively to the API interface.
+        egress_aliases = {"mail", "mail-addon", "calendar", "calendar-addon"}
+        for name, (network, service) in internal_names.items():
             with self.subTest(name=name):
                 result = self.cluster.run(("exec", "-T", "app", "timeout", "8", "getent", "ahostsv4", name),
                                           check=False, timeout=12)
                 self.assertEqual(result.returncode, 0, "Docker name resolution failed for " + name)
                 addresses = {line.split()[0].decode("ascii") for line in result.stdout.splitlines() if line.split()}
-                self.assertEqual(addresses, {self.address({"mail-api": "mail-addon", "calendar-api": "calendar-addon"}.get(name, name), network)},
-                                 "Docker DNS returned an unexpected network address for " + name)
+                expected = {self.address(service, network)}
+                if name in egress_aliases:
+                    expected.add(self.address(service, "app_egress"))
+                    self.assertTrue(addresses and addresses <= expected,
+                                    "Docker DNS returned an unexpected network address for " + name)
+                else:
+                    self.assertEqual(addresses, expected,
+                                     "Docker DNS returned an unexpected network address for " + name)
         # An internal-only Docker container retains service discovery while its
         # embedded resolver has no external forwarding path. Check behavior,
         # rather than mandating a particular /etc/resolv.conf or dns setting.
@@ -418,38 +445,38 @@ class NetworkSecurityTests(unittest.TestCase):
             'curl --silent --noproxy "*" --connect-timeout 3 --max-time 5 '
             '--cacert "$MAIL_API_CA_FILE" --resolve "$1:8090:$2" '
             '--output /dev/null "https://$1:8090/healthz"', "mail-api-hostname-check",
-            "wrong-mail-api.invalid", self.address("mail-addon", "mail_api")),
+            "wrong-mail-api.invalid", self.address("mail", "mail_api")),
             check=False, timeout=10)
         self.assertEqual(result.returncode, 60, "The client accepted a mail API certificate for another hostname")
 
     def test_14_mail_addon_has_no_database_or_public_listener_access(self):
-        api_address = self.address("mail-addon", "mail_api")
+        api_address = self.address("mail", "mail_api")
         self.assertTrue(self.probe("app", api_address, 8090), "The app cannot reach the mail API")
-        self.assertFalse(self.probe("app", self.address("mail-addon", "app_egress"), 8090),
+        self.assertFalse(self.probe("app", self.address("mail", "app_egress"), 8090),
                          "The mail API is listening on the proxy interface")
-        for service in ("nginx-proxy-manager", "db-proxy", "squid"):
+        for service in ("proxy-web", "proxy-db", "proxy-egress"):
             self.assertFalse(self.probe(service, api_address, 8090),
                              service + " can reach the isolated mail API")
         for node in NODES:
-            self.assertFalse(self.probe("mail-addon", self.address(node, "backend_app"), 3306),
+            self.assertFalse(self.probe("mail", self.address(node, "backend_app"), 3306),
                              "The mail add-on can reach a database directly: " + node)
-        self.assertFalse(self.probe("mail-addon", self.address("documents", "backend_app"), 27017),
+        self.assertFalse(self.probe("mail", self.address("mongodb", "backend_app"), 27017),
                          "The mail add-on can reach MongoDB")
-        self.assertFalse(self.probe("mail-addon", self.address("app", "mail_api"), 8080),
+        self.assertFalse(self.probe("mail", self.address("app", "mail_api"), 8080),
                          "The app listener is exposed on mail_api")
-        container = self.containers["mail-addon"]
+        container = self.containers["mail"]
         self.assertTrue(container["HostConfig"]["ReadonlyRootfs"], "The mail add-on filesystem is writable")
         self.assertNotIn(container["Config"].get("User"), (None, "", "0", "root", "0:0"),
                          "The mail add-on runs as root")
 
     def test_15_mail_addon_proxy_scope_does_not_inherit_calendar_access(self):
-        self.assertTrue(self.probe("mail-addon", self.address("squid", "app_egress"), 3128),
+        self.assertTrue(self.probe("mail", self.address("proxy-egress", "app_egress"), 3128),
                         "The mail add-on cannot reach Squid")
         for url in ("https://accounts.google.com/", "https://oauth2.googleapis.com/",
                     "https://www.googleapis.com/", "https://smtp-denied.invalid:465/",
                     "https://smtp-denied.invalid:587/", "https://1.1.1.1:465/"):
             with self.subTest(url=url):
-                code, _, connect = self.proxy_request(url, service="mail-addon")
+                code, _, connect = self.proxy_request(url, service="mail")
                 self.assertNotEqual(code, 0)
                 self.assertEqual(connect, 403, "The mail add-on bypassed its SMTP-only proxy policy")
         for port in (465, 587):
@@ -458,12 +485,12 @@ class NetworkSecurityTests(unittest.TestCase):
             self.assertEqual(connect, 403, "The app inherited the mail add-on's SMTP ports")
 
     def test_16_mail_addon_resolves_only_internal_docker_names(self):
-        result = self.cluster.run(("exec", "-T", "mail-addon", "timeout", "8", "getent", "ahostsv4", "squid"),
+        result = self.cluster.run(("exec", "-T", "mail", "timeout", "8", "getent", "ahostsv4", "squid"),
                                   check=False, timeout=12)
         self.assertEqual(result.returncode, 0, "The mail add-on cannot resolve Squid internally")
         addresses = {line.split()[0].decode("ascii") for line in result.stdout.splitlines() if line.split()}
-        self.assertEqual(addresses, {self.address("squid", "app_egress")})
-        result = self.cluster.run(("exec", "-T", "mail-addon", "timeout", "8", "getent", "ahostsv4",
+        self.assertEqual(addresses, {self.address("proxy-egress", "app_egress")})
+        result = self.cluster.run(("exec", "-T", "mail", "timeout", "8", "getent", "ahostsv4",
                                    "accounts.google.com"), check=False, timeout=12)
         self.assertEqual(result.returncode, 2,
                          "The mail add-on has external DNS or denial verification was inconclusive")
@@ -497,31 +524,31 @@ class NetworkSecurityTests(unittest.TestCase):
             'curl --silent --noproxy "*" --connect-timeout 3 --max-time 5 '
             '--cacert "$CALENDAR_API_CA_FILE" --resolve "$1:8091:$2" '
             '--output /dev/null "https://$1:8091/healthz"', "calendar-api-hostname-check",
-            "wrong-calendar-api.invalid", self.address("calendar-addon", "calendar_api")),
+            "wrong-calendar-api.invalid", self.address("calendar", "calendar_api")),
             check=False, timeout=10)
         self.assertEqual(result.returncode, 60, "The calendar API accepted a certificate for another hostname")
 
     def test_18_calendar_addon_has_no_database_public_or_mail_api_access(self):
-        api_address = self.address("calendar-addon", "calendar_api")
+        api_address = self.address("calendar", "calendar_api")
         self.assertEqual(api_address, "172.30.70.2")
-        self.assertEqual(self.address("calendar-addon", "app_egress"), "172.30.40.12")
+        self.assertEqual(self.address("calendar", "app_egress"), "172.30.40.12")
         self.assertEqual(self.address("app", "calendar_api"), "172.30.70.10")
         self.assertTrue(self.probe("app", api_address, 8091), "The app cannot reach the calendar API")
-        self.assertFalse(self.probe("app", self.address("calendar-addon", "app_egress"), 8091),
+        self.assertFalse(self.probe("app", self.address("calendar", "app_egress"), 8091),
                          "The calendar API listens on its outbound interface")
-        for service in ("nginx-proxy-manager", "db-proxy", "squid", "mail-addon"):
+        for service in ("proxy-web", "proxy-db", "proxy-egress", "mail"):
             self.assertFalse(self.probe(service, api_address, 8091),
                              service + " can reach the isolated calendar API")
         for node in NODES:
-            self.assertFalse(self.probe("calendar-addon", self.address(node, "backend_app"), 3306),
+            self.assertFalse(self.probe("calendar", self.address(node, "backend_app"), 3306),
                              "The calendar add-on can reach a database: " + node)
-        self.assertFalse(self.probe("calendar-addon", self.address("documents", "backend_app"), 27017),
+        self.assertFalse(self.probe("calendar", self.address("mongodb", "backend_app"), 27017),
                          "The calendar add-on can reach MongoDB")
-        self.assertFalse(self.probe("calendar-addon", self.address("mail-addon", "mail_api"), 8090),
+        self.assertFalse(self.probe("calendar", self.address("mail", "mail_api"), 8090),
                          "The calendar add-on can reach the mail API")
-        self.assertFalse(self.probe("calendar-addon", self.address("app", "calendar_api"), 8080),
+        self.assertFalse(self.probe("calendar", self.address("app", "calendar_api"), 8080),
                          "The app listener is exposed on calendar_api")
-        container = self.containers["calendar-addon"]
+        container = self.containers["calendar"]
         self.assertTrue(container["HostConfig"]["ReadonlyRootfs"], "The calendar filesystem is writable")
         self.assertEqual(container["Config"].get("User"), "10004:10004")
         environment = dict(value.partition("=")[::2] for value in container["Config"]["Env"])
@@ -539,9 +566,9 @@ class NetworkSecurityTests(unittest.TestCase):
         self.assertNotIn("/run/secrets/google_client_secret", app_mounts, "The app received the Google OAuth client secret")
 
     def test_19_calendar_proxy_allows_only_exact_google_https_hosts(self):
-        self.assertTrue(self.probe("calendar-addon", self.address("squid", "app_egress"), 3128),
+        self.assertTrue(self.probe("calendar", self.address("proxy-egress", "app_egress"), 3128),
                         "The calendar add-on cannot reach Squid")
-        code, status, connect = self.proxy_request("https://" + self.allowed_proxy_host() + "/", service="calendar-addon")
+        code, status, connect = self.proxy_request("https://" + self.allowed_proxy_host() + "/", service="calendar")
         self.assertEqual(connect, 200, "Squid denied the calendar add-on's approved Google destination")
         self.assertEqual(code, 0, "The calendar add-on did not verify upstream TLS")
         self.assertGreaterEqual(status, 200)
@@ -551,23 +578,112 @@ class NetworkSecurityTests(unittest.TestCase):
                     "https://unapproved.accounts.google.com/", "https://accounts.google.com.attacker.invalid/",
                     "https://1.1.1.1/", "https://169.254.169.254/"):
             with self.subTest(url=url):
-                code, _, connect = self.proxy_request(url, service="calendar-addon")
+                code, _, connect = self.proxy_request(url, service="calendar")
                 self.assertNotEqual(code, 0)
                 self.assertEqual(connect, 403, "The calendar add-on bypassed its Google-only proxy policy")
-        code, status, connect = self.proxy_request("http://accounts.google.com/", service="calendar-addon")
+        code, status, connect = self.proxy_request("http://accounts.google.com/", service="calendar")
         self.assertEqual((code, status, connect), (0, 403, 0), "Plaintext outbound HTTP was permitted")
 
     def test_20_calendar_addon_resolves_only_internal_docker_names(self):
-        result = self.cluster.run(("exec", "-T", "calendar-addon", "timeout", "8", "getent", "ahostsv4", "squid"),
+        result = self.cluster.run(("exec", "-T", "calendar", "timeout", "8", "getent", "ahostsv4", "squid"),
                                   check=False, timeout=12)
         self.assertEqual(result.returncode, 0, "The calendar add-on cannot resolve Squid internally")
         addresses = {line.split()[0].decode("ascii") for line in result.stdout.splitlines() if line.split()}
-        self.assertEqual(addresses, {self.address("squid", "app_egress")})
-        result = self.cluster.run(("exec", "-T", "calendar-addon", "timeout", "8", "getent", "ahostsv4",
+        self.assertEqual(addresses, {self.address("proxy-egress", "app_egress")})
+        result = self.cluster.run(("exec", "-T", "calendar", "timeout", "8", "getent", "ahostsv4",
                                    "accounts.google.com"), check=False, timeout=12)
         self.assertEqual(result.returncode, 2,
                          "The calendar add-on has external DNS or denial verification was inconclusive")
         self.assertFalse(result.stdout.strip(), "The calendar add-on resolved an external address directly")
+
+
+    def test_21_inventory_api_requires_tls_and_service_authentication(self):
+        environment = dict(value.partition("=")[::2]
+                           for value in self.containers["app"]["Config"]["Env"])
+        self.assertEqual(environment.get("INVENTORY_API_URL"), "https://inventory-api:8092")
+        self.assertEqual(environment.get("INVENTORY_API_TOKEN_FILE"), "/run/secrets/inventory-api-token")
+        self.assertEqual(environment.get("INVENTORY_API_CA_FILE"), "/etc/punto/tls/ca.crt")
+        for path, expected_status in (("/healthz", 200), ("/v1/status", 401)):
+            result = self.cluster.run(("exec", "-T", "app", "sh", "-c",
+                'curl --silent --show-error --noproxy "*" --connect-timeout 3 --max-time 5 '
+                '--cacert "$INVENTORY_API_CA_FILE" --output /dev/null --write-out "%{http_code}" '
+                '"$INVENTORY_API_URL$1"', "inventory-api-check", path), check=False, timeout=10)
+            self.assertEqual(result.returncode, 0, "The inventory API TLS handshake failed")
+            self.assertEqual(result.stdout.decode("ascii").strip(), str(expected_status), path)
+        result = self.cluster.run(("exec", "-T", "app", "sh", "-c",
+            'token=$(cat "$INVENTORY_API_TOKEN_FILE") || exit 1; '
+            'curl --silent --show-error --noproxy "*" --connect-timeout 3 --max-time 5 '
+            '--cacert "$INVENTORY_API_CA_FILE" --header "Authorization: Bearer $token" '
+            '--write-out "\\n%{http_code}" "$INVENTORY_API_URL/v1/status"'), check=False, timeout=10)
+        self.assertEqual(result.returncode, 0, "Authenticated inventory API TLS request failed")
+        payload, status = result.stdout.rsplit(b"\n", 1)
+        self.assertEqual(status.strip(), b"200", "The app's inventory credential was rejected")
+        self.assertIs(json.loads(payload).get("configured"), True)
+        result = self.cluster.run(("exec", "-T", "app", "sh", "-c",
+            'curl --silent --noproxy "*" --connect-timeout 3 --max-time 5 '
+            '--cacert "$INVENTORY_API_CA_FILE" --resolve "$1:8092:$2" '
+            '--output /dev/null "https://$1:8092/healthz"', "inventory-api-hostname-check",
+            "wrong-inventory-api.invalid", self.address("inventory", "inventory_api")),
+            check=False, timeout=10)
+        self.assertEqual(result.returncode, 60, "The inventory API accepted a certificate for another hostname")
+
+    def test_22_inventory_has_only_its_private_api_and_dedicated_data(self):
+        api_address = self.address("inventory", "inventory_api")
+        self.assertEqual(api_address, "172.30.80.2")
+        self.assertEqual(self.address("app", "inventory_api"), "172.30.80.10")
+        self.assertEqual({entry.get("Subnet") for entry in self.networks["inventory_api"]["IPAM"]["Config"]},
+                         {"172.30.80.0/24"})
+        self.assertTrue(self.probe("app", api_address, 8092), "The app cannot reach the inventory API")
+        for service in ("proxy-web", "proxy-db", "proxy-egress", "mail", "calendar"):
+            self.assertFalse(self.probe(service, api_address, 8092),
+                             service + " can reach the isolated inventory API")
+        for node in NODES:
+            self.assertFalse(self.probe("inventory", self.address(node, "backend_app"), 3306),
+                             "The inventory add-on can reach a database: " + node)
+        for service, network, port in (("mongodb", "backend_app", 27017),
+                                       ("mail", "mail_api", 8090),
+                                       ("calendar", "calendar_api", 8091),
+                                       ("proxy-egress", "app_egress", 3128),
+                                       ("app", "inventory_api", 8080)):
+            self.assertFalse(self.probe("inventory", self.address(service, network), port),
+                             "The inventory add-on can reach " + service + ":" + str(port))
+        container = self.containers["inventory"]
+        self.assertTrue(container["HostConfig"]["ReadonlyRootfs"], "The inventory filesystem is writable")
+        self.assertEqual(container["Config"].get("User"), "10005:10005")
+        environment = dict(value.partition("=")[::2] for value in container["Config"]["Env"])
+        self.assertEqual(environment.get("INVENTORY_BIND"), api_address)
+        self.assertEqual(environment.get("INVENTORY_ALLOWED_CLIENT"), self.address("app", "inventory_api"))
+        self.assertEqual(environment.get("INVENTORY_BACKUP_DIR"), "/var/backups/punto-inventory")
+        self.assertFalse(any(name.startswith(("DB_", "DOC_DB_", "MYSQL_", "HTTP_PROXY", "HTTPS_PROXY"))
+                             for name in environment), "The inventory add-on received database or proxy configuration")
+        mounted = {item["Destination"] for item in container.get("Mounts", [])}
+        self.assertTrue({"/run/secrets/inventory-api-token", "/var/lib/punto-inventory",
+                         "/var/backups/punto-inventory"} <= mounted)
+        archives = {item["Destination"]: item.get("Source") for item in container.get("Mounts", [])}
+        self.assertNotEqual(archives["/var/lib/punto-inventory"], archives["/var/backups/punto-inventory"],
+                            "The inventory live archive and backups share one volume")
+        self.assertEqual({path for path in mounted if path.startswith("/run/secrets/")},
+                         {"/run/secrets/inventory-api-token"}, "The inventory add-on received unrelated credentials")
+        app_mounts = {item["Destination"] for item in self.containers["app"].get("Mounts", [])}
+        self.assertNotIn("/var/lib/punto-inventory", app_mounts, "The app received the inventory archive")
+        self.assertNotIn("/var/backups/punto-inventory", app_mounts, "The app received inventory backups")
+        for service in ("mail", "calendar", "proxy-egress", "proxy-db", "mongodb", *NODE_SERVICES.values()):
+            other_mounts = {item["Destination"] for item in self.containers[service].get("Mounts", [])}
+            self.assertNotIn("/run/secrets/inventory-api-token", other_mounts, service)
+            self.assertNotIn("/var/lib/punto-inventory", other_mounts, service)
+            self.assertNotIn("/var/backups/punto-inventory", other_mounts, service)
+
+    def test_23_inventory_resolves_its_app_without_external_dns(self):
+        result = self.cluster.run(("exec", "-T", "inventory", "timeout", "8", "getent", "ahostsv4", "app"),
+                                  check=False, timeout=12)
+        self.assertEqual(result.returncode, 0, "The inventory add-on cannot resolve the app internally")
+        addresses = {line.split()[0].decode("ascii") for line in result.stdout.splitlines() if line.split()}
+        self.assertEqual(addresses, {self.address("app", "inventory_api")})
+        result = self.cluster.run(("exec", "-T", "inventory", "timeout", "8", "getent", "ahostsv4",
+                                   "accounts.google.com"), check=False, timeout=12)
+        self.assertEqual(result.returncode, 2,
+                         "The inventory add-on has external DNS or denial verification was inconclusive")
+        self.assertFalse(result.stdout.strip(), "The inventory add-on resolved an external address directly")
 
 
 if __name__ == "__main__":

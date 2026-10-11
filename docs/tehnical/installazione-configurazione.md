@@ -1,12 +1,12 @@
 # Installazione e configurazione
 
-Guida verificata sui file del repository il **10 ottobre 2026**. I comandi presuppongono la directory radice del progetto. [Architettura](architettura.md) e [rete e sicurezza](rete-sicurezza.md) descrivono cosa viene avviato; il [README principale](../../README.md) offre l'ingresso rapido.
+Guida verificata sui file del repository il **11 ottobre 2026**. I comandi presuppongono la directory radice del progetto. [Architettura](architettura.md) e [rete e sicurezza](rete-sicurezza.md) descrivono cosa viene avviato; il [README principale](../../README.md) offre l'ingresso rapido.
 
 ## Requisiti
 
 Per Docker sono necessari Docker Engine **28 o successivo**, Docker Compose **2.36.0 o successivo**, Python 3 e OpenSSL. Le reti richiedono il gateway bridge `isolated`, `gw_priority` e `interface_name`. Su macOS il daemon è quello Linux di Docker Desktop. Gli script del cluster scelgono normalmente il contesto `desktop-linux` su macOS; accettano `--docker-context` per cambiarlo.
 
-Occorrono spazio persistente per tre copie SQL, GridFS e gli archivi addon, oltre a una destinazione di backup. Le subnet `172.30.10.0/24` fino a `172.30.70.0/24` definite in Compose devono essere libere. Cambiarle richiede l'allineamento di Compose, listener, allowlist, controlli e SAN dei certificati; non basta modificare una sola subnet.
+Occorrono spazio persistente per tre copie SQL, GridFS e gli archivi addon, oltre a una destinazione di backup. Le subnet `172.30.10.0/24` fino a `172.30.80.0/24` definite in Compose devono essere libere. Cambiarle richiede l'allineamento di Compose, listener, allowlist, controlli e SAN dei certificati; non basta modificare una sola subnet.
 
 Le porte host predefinite sono 80 e 443 per l'app attraverso NPM e `127.0.0.1:81` per l'amministrazione. Nessun servizio database o addon pubblica una porta sull'host.
 
@@ -70,6 +70,7 @@ Il modello completo è [.env.docker.example](../../.env.docker.example). Le cred
 
 | Variabile modificabile | Significato e valore non segreto di esempio |
 | --- | --- |
+| `PUNTO_IMAGE_TAG` | Tag comune delle immagini locali del progetto; `local` se assente o vuoto |
 | `PUNTO_EMAIL` | Email del primo gestore, per esempio `admin@example.test` |
 | `PUNTO_PASSWORD` | Password iniziale del gestore; 8–1024 byte UTF-8, obbligatoria in Compose |
 | `PUBLIC_ORIGINS` | Origini accettate dal controllo Host/Origin |
@@ -122,7 +123,9 @@ ID, redirect e segreto Google vanno configurati insieme; configurazioni parziali
 
 ## Aggiornamento dei servizi esistenti
 
-Prima di aggiornare, salvare un backup coerente come descritto in [operazioni](operazioni-backup-ripristino.md), conservare le credenziali e verificare se il nuovo codice contiene migrazioni. Lo schema corrente è 7; avviare una versione precedente non esegue una migrazione inversa.
+Prima di aggiornare, salvare un backup coerente come descritto in [operazioni](operazioni-backup-ripristino.md), conservare le credenziali e verificare se il nuovo codice contiene migrazioni. Lo schema corrente è 9; avviare una versione precedente non esegue una migrazione inversa.
+
+Se l’installazione usa ancora i precedenti nomi Compose, seguire prima la [migrazione della nomenclatura](nomi-servizi-e-immagini.md). Le identità nuove non devono partire accanto ai vecchi container con gli stessi IP e volumi.
 
 Per una modifica solo applicativa:
 
@@ -135,8 +138,8 @@ Per l'aggiunta o l'aggiornamento congiunto dei servizi di integrazione sulle ret
 
 ```sh
 python3 scripts/configure_network.py --env-file .env.docker prepare
-docker compose --env-file .env.docker build squid mail-addon calendar-addon app nginx-proxy-manager
-docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait squid mail-addon calendar-addon app nginx-proxy-manager
+docker compose --env-file .env.docker build proxy-egress mail calendar inventory app proxy-web
+docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait proxy-egress mail calendar inventory app proxy-web
 ```
 
 Le ricreazioni interrompono temporaneamente le connessioni; quella dell'app invalida le sessioni in memoria. `--no-deps` evita la ricreazione implicita dei database, ma presuppone che le dipendenze siano già disponibili. Ricompilare e ricreare soltanto i servizi effettivamente modificati quando l'intervento è più ristretto.

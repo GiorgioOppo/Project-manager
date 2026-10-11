@@ -10,6 +10,12 @@ Il profilo dell’account stabilisce i poteri nello spazio; il ruolo sulla comme
 | --- | --- | --- |
 | Consultare commesse | Tutte | Comuni o con abilitazione valida oggi |
 | Creare, modificare ed eliminare commesse | Sì | No |
+| Leggere attività e blocchi | Tutte le commesse | Comuni o con abilitazione valida oggi, anche Lettore |
+| Creare, organizzare ed eliminare attività | Sì | No |
+| Cambiare stato di un’attività | Tutte | Solo quelle assegnate a sé, con accesso Collaboratore valido oggi |
+| Segnalare un blocco | Sì | Con accesso Collaboratore valido oggi |
+| Modificare un blocco | Tutti, compreso il responsabile | Solo se autore o responsabile e ancora Collaboratore; non cambia il responsabile |
+| Eliminare un blocco | Sì | No |
 | Registrare le proprie ore | Su tutte le commesse esistenti | Su commesse comuni o con abilitazione alla registrazione valida oggi e nella giornata lavorata |
 | Leggere il proprio registro | Sì | Sì, anche dopo revoca dell’abilitazione |
 | Modificare o eliminare le proprie ore | Sì | No |
@@ -55,13 +61,27 @@ Gli stati dei contratti sono Bozza, Attivo, Scaduto, Chiuso e Annullato. Anche q
 | Revocare un grant | Conservate e consultabili dall’autore | Rimosso quel percorso; altri possono rimanere | La commessa rimane |
 | Disattivare un utente | Conservate negli aggregati e nello storico | Login bloccato | Account conservato |
 | Eliminare una propria registrazione, da Gestore | Rimossa quella riga | Invariati | Evento nello Storico |
-| Eliminare una commessa | Rimosse tutte le ore collegate di tutti gli utenti | Rimosse abilitazioni dirette e di gruppo della commessa | Utenti, gruppi, ruoli e contratti conservati; riepilogo nello Storico |
+| Eliminare una commessa | Rimosse tutte le ore collegate di tutti gli utenti | Rimosse abilitazioni dirette e di gruppo della commessa | Rimosse attività e blocchi; utenti, gruppi, ruoli e contratti conservati; riepilogo nello Storico |
 
-La cancellazione della commessa è definitiva nell’app e viene eseguita in un’unica transazione con la rimozione dei collegamenti e delle ore. Lo Storico non è un cestino. La conservazione richiesta dal futuro modulo finanziario introdurrà regole ulteriori per le fonti valorizzate o fatturate; tali regole non sono già attive.
+La cancellazione della commessa è definitiva nell’app e viene eseguita in un’unica transazione con la rimozione di collegamenti, ore, attività e blocchi. Lo Storico non è un cestino. La conservazione richiesta dal futuro modulo finanziario introdurrà regole ulteriori per le fonti valorizzate o fatturate; tali regole non sono già attive.
+
+### Attività, gerarchia e impedimenti
+
+L’attività appartiene a una sola commessa, immutabile dopo la creazione. Il genitore eventuale deve appartenere alla stessa commessa: sono vietati cicli e gerarchie oltre otto livelli, contando la radice come primo. Spostare un ramo deve rispettare il limite anche per tutti i suoi discendenti. La parentela organizza il lavoro ma non costituisce una dipendenza temporale.
+
+Gli stati delle attività sono Da fare, In corso, Bloccato, Da verificare e Completato; le priorità sono Bassa, Normale, Alta e Urgente. Stati del genitore, dei figli e della commessa rimangono indipendenti. Il gestore può cambiare tutti i dettagli; il Collaboratore assegnato può aggiornare solo lo stato. Per le attività si verifica l’accesso valido **oggi**; la scadenza non è una data lavorata né un’ulteriore condizione del grant.
+
+Un blocco riguarda una commessa e, facoltativamente, una sua attività. Ha impatto Basso, Medio, Alto o Critico; stato Aperto, In gestione o Risolto; responsabile, prossima azione e scadenza facoltativi. Un operatore ne diventa inizialmente responsabile. L’autore o il responsabile possono aggiornarlo finché Collaboratori; solo un gestore può cambiarne il responsabile o eliminarlo. Il cambio di responsabile non cambia l’autore.
+
+Assegnare una persona richiede che sia attiva e Gestore o Collaboratore di quella commessa. Un riferimento preesistente può restare anche dopo disattivazione o revoca, ma non concede accesso. Il cambio del responsabile deve scegliere una persona attualmente abilitata. La bacheca non rende visibili contratti, PDF o ore personali altrui.
+
+Ogni modifica o eliminazione di un’attività o blocco esistente verifica una revisione. Una revisione non più corrente produce un conflitto senza sovrascrittura automatica. Anche lo scollegamento dei blocchi da un’attività eliminata cambia la loro revisione. Le modifiche e gli eventi di Storico sono atomici.
+
+L’eliminazione dell’attività è rifiutata se ha figli; i blocchi collegati vengono conservati e scollegati. L’eliminazione della commessa elimina invece tutte le attività e i blocchi. Segnalare o risolvere un blocco non cambia lo stato dell’attività; completare un’attività non registra ore e non genera notifiche automatiche. La [guida del modulo](attivita-kanban-e-blocchi.md) descrive i comandi dell’interfaccia.
 
 ## 4. Regole del registro ore
 
-Ogni registrazione contiene persona, commessa, giornata, minuti e nota facoltativa. La persona è ricavata dalla sessione e identificata in modo stabile; non è un campo liberamente modificabile dal browser.
+Ogni registrazione contiene persona, commessa, giornata, minuti e nota facoltativa. La nota non è un collegamento a una delle attività del Kanban. La persona è ricavata dalla sessione e identificata in modo stabile; non è un campo liberamente modificabile dal browser.
 
 - Durata per riga: da 1 a 1440 minuti.
 - Totale per persona e giornata: massimo 1440 minuti, sommando tutte le commesse.
@@ -91,7 +111,7 @@ Il limite per file è 10 MiB e sono ammessi fino a 1000 documenti per contratto.
 
 I filtri data includono il primo e l’ultimo giorno e ammettono al massimo 366 giorni. Una data singola usa lo stesso valore in Dal e Al. I conteggi derivano da tutte le registrazioni filtrate; i gruppi di risultato sono limitati a 1000 e un superamento produce un errore esplicito.
 
-Il gestore può aggregare più persone, anche disattivate. L’operatore vede soltanto se stesso, compreso il proprio storico su commesse revocate. Le note delle attività non sono incluse nei report. Conservare o condividere un URL con filtri non concede permessi aggiuntivi.
+Il gestore può aggregare più persone, anche disattivate. L’operatore vede soltanto se stesso, compreso il proprio storico su commesse revocate. Le note delle registrazioni non sono incluse nei report; le attività del Kanban non sono aggregate nelle analisi delle ore. Conservare o condividere un URL con filtri non concede permessi aggiuntivi.
 
 ### Valore contratti
 
@@ -164,6 +184,9 @@ Le notifiche e gli orari degli alert sono mostrati in Europe/Rome; lo Storico vi
 | Gruppi | 200, massimo 16 livelli |
 | Ruoli sulle commesse | 100 complessivi |
 | Commesse | 1000 |
+| Attività | 500 per commessa, incluse le completate; massimo 8 livelli |
+| Blocchi | 500 per commessa, inclusi i risolti |
+| Testi attività e blocchi | Titolo fino a 160 caratteri, descrizione fino a 2000, prossima azione fino a 1000 |
 | Fornitori | 1000 |
 | Contratti | 1000 |
 | PDF | 10 MiB per file, 1000 per contratto |

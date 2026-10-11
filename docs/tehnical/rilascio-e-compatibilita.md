@@ -1,6 +1,6 @@
 # Rilascio e compatibilità
 
-Guida al rilascio locale dello stack presente il **10 ottobre 2026**. Distingue compilazione, aggiornamento dei processi, migrazione dei dati e ripristino. È una procedura operativa da eseguire quando si distribuisce una modifica; la scrittura del manuale non ha ricompilato né riavviato servizi.
+Guida al rilascio locale dello stack presente l’**11 ottobre 2026**. Distingue compilazione, aggiornamento dei processi, migrazione dei dati e ripristino. È una procedura operativa da eseguire quando si distribuisce una modifica; la scrittura del manuale non ha ricompilato né riavviato servizi.
 
 Fonti: [Makefile](../../Makefile), [Dockerfile app](../../Dockerfile), [Compose](../../compose.yaml), [migrazioni](../../src/storage.c), [schema MySQL](../../src/mysql_schema.c), [controller cluster](../../scripts/manage_cluster.py), [controller rete](../../scripts/configure_network.py), [addon email](../../addon/README.md) e [addon Calendar](../../calendar-addon/README.md).
 
@@ -10,17 +10,20 @@ Un rilascio deve dichiarare quali elementi modifica. L'immagine applicativa comp
 
 | Elemento | Versione/configurazione corrente | Relazione di compatibilità |
 | --- | --- | --- |
-| App C | Compilazione C11 con warning come errori | Schema applicativo massimo 7; API e frontend distribuiti insieme |
+| App C | Compilazione C11 con warning come errori | Schema applicativo massimo 9; API e frontend distribuiti insieme |
 | Backend MySQL | `mysql:8.4` | Tre membri con configurazione Group Replication coerente |
-| Schema applicativo SQL | 7 | Stessa versione logica per MySQL e SQLite, con DDL e migrazioni specifici |
+| Schema applicativo SQL | 9 | Stessa versione logica per MySQL e SQLite, con DDL e migrazioni specifici |
 | Proxy SQL | `haproxy:3.2-alpine` e monitor Python | Controlla modalità multi-primary, quorum e TLS dei tre nodi |
 | MongoDB | `mongo:8.0`, GridFS `contract_pdfs` | Dati PDF collegati al manifesto SQL, senza transazione distribuita |
 | NPM | Base `jc21/nginx-proxy-manager:2.16.0` con patch locali | Entry point amministrativo e generazione configurazioni sono verificati dalla build |
 | Squid | Pacchetto Debian Trixie nell'immagine del progetto | ACL, IP e allowlist devono coincidere con le reti Compose |
-| Addon email | Binario C separato; ledger SQLite `deliveries` | Contratto HTTPS `/v1`, outbox SQL schema 7 e namespace stabile |
+| Addon email | Binario C separato; ledger SQLite `deliveries` | Contratto HTTPS `/v1`, stati outbox introdotti dallo schema 7, conservati nello schema 9, e namespace stabile |
 | Addon Calendar | Binario C separato; SQLite `user_version=1` | Contratto HTTPS `/v1`, chiave AES e identificativi utenti persistenti |
-| Reti | Sette bridge, IP e interfacce espliciti | Docker Engine ≥28, Compose ≥2.36.0 e SAN coerenti |
+| Addon inventory | Binario C separato; archivio SQLite versione 3 | Contratto HTTPS `/v1`, schede e revisioni persistenti |
+| Reti | Otto bridge, IP e interfacce espliciti | Docker Engine ≥28, Compose ≥2.36.0 e SAN coerenti |
 | TLS privato | CA locale e leaf per servizio | Nomi/IP/CA verificati; file attesi dai mount |
+
+Le immagini locali seguono `punto/<servizio>:${PUNTO_IMAGE_TAG:-local}` e `pull_policy: build`; non vengono prelevate dal namespace omonimo di un registry. La [guida nomenclatura](nomi-servizi-e-immagini.md) descrive il cambio di identità Compose, separato dalla migrazione SQL.
 
 I tag MySQL, MongoDB, HAProxy e Debian non sono tutti fissati a un digest immutabile. Una ricompilazione in un momento successivo può usare pacchetti o immagini diversi. Il progetto non contiene un manifesto automatico completo delle versioni effettivamente scaricate: registrarne gli identificativi prima e dopo un rilascio quando serve riproducibilità.
 
@@ -103,15 +106,19 @@ Il comando usa l'immagine già compilata. Non ricrea SQL o MongoDB; interrompe l
 Se cambia anche NPM, compilarlo prima e ricrearlo in modo esplicito dopo l'app. Per un insieme più ampio di servizi usare soltanto quelli realmente modificati:
 
 ```sh
-docker compose --env-file .env.docker build squid mail-addon calendar-addon app nginx-proxy-manager
-docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait squid mail-addon calendar-addon app nginx-proxy-manager
+docker compose --env-file .env.docker build proxy-egress mail calendar inventory app proxy-web
+docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait proxy-egress mail calendar inventory app proxy-web
 ```
 
 Questa seconda sequenza è per un rilascio congiunto dei componenti elencati; non è obbligatoria per ogni modifica. `--no-deps` richiede che le dipendenze escluse siano già disponibili. Le chiavi e i certificati mancanti vanno predisposti prima dei container, con la procedura documentata, non creando file vuoti per soddisfare i mount.
 
 ## Migrazioni: percorso applicato e limiti
 
-L'app rifiuta database che dichiarino una versione superiore a quella supportata. Per SQLite legge `PRAGMA user_version`; per MySQL controlla `schema_metadata`. I dati attuali usano versione 7. Calendar gestisce separatamente la propria versione 1 e rifiuta versioni superiori; il ledger email non ha una numerazione `user_version` gestita come quella Calendar.
+L'app rifiuta database che dichiarino una versione superiore a quella supportata. Per SQLite legge `PRAGMA user_version`; per MySQL controlla `schema_metadata`. Il codice corrente porta i dati alla versione 9; la versione effettivamente distribuita va letta nell’ambiente di destinazione. Calendar gestisce separatamente la propria versione 1 e rifiuta versioni superiori; il ledger email non ha una numerazione `user_version` gestita come quella Calendar.
+
+Il rilascio inventory aggiunge lo schema applicativo 9 (`inventory_due`, `days_before`), senza nuove tabelle dell’app, e lo schema indipendente inventory 3 (anteprime CSV). Richiede app, servizio inventory e interfaccia aggiornati insieme. Conservare backup di entrambi gli archivi; la verifica nativa non certifica la migrazione del cluster MySQL.
+
+Il rilascio attività/blocchi passa da schema 7 a 8, aggiungendo due tabelle senza trasformare le commesse o le ore esistenti. Richiede il binario nuovo insieme a `app.html`, `app.js` e `work-board.css`; gli addon mantengono i propri formati. Prima della distribuzione verificare aggiornamento su copia, accessi Gestore/Collaboratore/Lettore, revisioni obsolete, gerarchie e cancellazioni. La verifica SQLite non prova da sola il DDL o le transazioni sul cluster MySQL. Vedere [specifica del modulo](attivita-kanban-e-blocchi.md).
 
 Le migrazioni applicative comprendono nuove tabelle, colonne, vincoli, trigger, dati iniziali e audit. Non basta copiare il DDL della documentazione per ottenere lo stesso aggiornamento. Le operazioni DDL MySQL e i passaggi del controller non sono una transazione unica che possa annullare automaticamente qualsiasi aggiornamento parziale.
 
@@ -130,7 +137,7 @@ In caso di avvio interrotto:
 docker compose --env-file .env.docker ps
 python3 scripts/manage_cluster.py --env-file .env.docker status
 curl --fail --max-time 5 http://localhost/healthz
-docker compose --env-file .env.docker logs --since=10m --tail=100 app db-proxy
+docker compose --env-file .env.docker logs --since=10m --tail=100 app proxy-db
 ```
 
 Completare poi le verifiche specifiche: nuovo login, funzione modificata, isolamento dei ruoli, dati precedenti leggibili, eventuali PDF scaricabili con integrità verificata, stato addon e code. Le API di stato possono essere controllate senza avviare invii o modifiche di calendari reali.

@@ -49,7 +49,7 @@ def backup_documents(cluster):
     descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as stream:
-            cluster.run(("exec", "-T", "documents", "sh", "-c", DUMP_SCRIPT),
+            cluster.run(("exec", "-T", "mongodb", "sh", "-c", DUMP_SCRIPT),
                         output=stream, timeout=600)
             stream.flush()
             os.fsync(stream.fileno())

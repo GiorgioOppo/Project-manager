@@ -2,14 +2,14 @@
 
 Verificato sul codice il **10 ottobre 2026**. I servizi sono programmi C separati dall'applicazione, eseguiti in container dedicati. SMTP e credenziali Google sono predisposti, ma **la configurazione dei fornitori reali è rinviata**: i test usano servizi simulati.
 
-Fonti: [mailer.c](../../addon/src/mailer.c), [mail_client.c](../../src/mail_client.c), [calendar.c](../../calendar-addon/src/calendar.c), [calendar_client.c](../../src/calendar_client.c), [scheduler alert](../../src/alerts.c), [Compose](../../compose.yaml). Guide dei componenti: [mail-addon](../../addon/README.md) e [calendar-addon](../../calendar-addon/README.md).
+Fonti: [mailer.c](../../addon/src/mailer.c), [mail_client.c](../../src/mail_client.c), [calendar.c](../../calendar-addon/src/calendar.c), [calendar_client.c](../../src/calendar_client.c), [scheduler alert](../../src/alerts.c), [Compose](../../compose.yaml). Guide dei componenti: [mail](../../addon/README.md) e [Calendar](../../calendar-addon/README.md).
 
 ## Trasporto, autenticazione e confini
 
 | Servizio | API privata | Sorgente applicativa | Rete API | Uscita |
 | --- | --- | --- | --- | --- |
-| `mail-addon` | `https://mail-api:8090`, bind `172.30.60.2` | `172.30.60.10` | `mail_api` | `172.30.40.11` su `app_egress`, verso Squid. |
-| `calendar-addon` | `https://calendar-api:8091`, bind `172.30.70.2` | `172.30.70.10` | `calendar_api` | `172.30.40.12` su `app_egress`, verso Squid. |
+| `mail` | `https://mail-api:8090`, bind `172.30.60.2` | `172.30.60.10` | `mail_api` | `172.30.40.11` su `app_egress`, verso Squid. |
+| `calendar` | `https://calendar-api:8091`, bind `172.30.70.2` | `172.30.70.10` | `calendar_api` | `172.30.40.12` su `app_egress`, verso Squid. |
 
 Le API non pubblicano porte sull'host e non sono instradate da Nginx al browser. L'app usa una CA interna, verifica hostname e TLS almeno 1.2; non segue redirect e non usa proxy per questi collegamenti privati. Il servizio verifica separatamente l'IP sorgente e `Authorization: Bearer <token dedicato>`, con confronto a tempo costante. Non si tratta di mTLS: l'autenticazione applicativa è tramite token più controllo sorgente, mentre il certificato autentica il server.
 
@@ -70,7 +70,7 @@ L'app usa `MAIL_API_NAMESPACE:outbox:ID`, dove `ID` è quello di `alert_email_ou
 
 L'app verifica lo stato SMTP circa ogni 60 secondi e tratta al massimo una email per ciclo dello scheduler, circa ogni 30 secondi, con cursore circolare. Prima dell'invio ricontrolla gestore attivo e destinatario ancora ammesso. La chiamata avviene fuori dalla transazione MySQL; esito e audit sono salvati insieme successivamente.
 
-Timeout client app→mail-addon: 1 secondo per connettersi, 3 secondi totali; risposta massima 8192 byte. Timeout SMTP del servizio: `MAIL_SMTP_TIMEOUT`, 1–60 secondi, default 20. Pertanto il client può perdere la risposta mentre SMTP continua; la chiave persistente consente di interrogare nuovamente lo stesso invio senza duplicarlo. Il server mail gestisce le richieste in sequenza; un invio lungo può ritardare la lettura dello stato.
+Timeout client app→mail: 1 secondo per connettersi, 3 secondi totali; risposta massima 8192 byte. Timeout SMTP del servizio: `MAIL_SMTP_TIMEOUT`, 1–60 secondi, default 20. Pertanto il client può perdere la risposta mentre SMTP continua; la chiave persistente consente di interrogare nuovamente lo stesso invio senza duplicarlo. Il server mail gestisce le richieste in sequenza; un invio lungo può ritardare la lettura dello stato.
 
 Non esiste un endpoint di reinvio terminale o consultazione dell'intero ledger. Per `delivery_unknown` verificare il registro del provider e decidere esplicitamente un eventuale nuovo invio. Un backup coerente comprende MySQL, ledger e namespace: vedere [backup/ripristino](operazioni-backup-ripristino.md).
 
@@ -87,7 +87,7 @@ Non esiste un endpoint di reinvio terminale o consultazione dell'intero ledger. 
 | `MAIL_PROXY_URL` | Proxy CONNECT obbligatorio nel percorso di uscita, `http://squid:3128`. |
 | `MAIL_SMTP_TIMEOUT`, `MAIL_SMTP_CA_FILE` | Timeout e CA SMTP opzionale per un provider/fixture dedicato. |
 
-La configurazione attuale lascia SMTP disabilitato e l'allowlist SMTP con un segnaposto. In seguito bisognerà aggiungere l'hostname esatto alla [allowlist SMTP](../../docker/squid/allowed-smtp-domains.txt), predisporre il secret e ricreare Squid e mail-addon secondo la [guida mail](../../addon/README.md). La configurazione parziale viene rifiutata all'avvio. L'abilitazione può elaborare anche email già accodate, quindi riguarda invii reali pendenti.
+La configurazione attuale lascia SMTP disabilitato e l'allowlist SMTP con un segnaposto. In seguito bisognerà aggiungere l'hostname esatto alla [allowlist SMTP](../../docker/squid/allowed-smtp-domains.txt), predisporre il secret e ricreare Squid (`proxy-egress`) e `mail` secondo la [guida mail](../../addon/README.md). La configurazione parziale viene rifiutata all'avvio. L'abilitazione può elaborare anche email già accodate, quindi riguarda invii reali pendenti.
 
 Il container non può contattare gli endpoint Google: la policy Squid della sua sorgente consente solo gli hostname SMTP autorizzati sulle porte ammesse. Nessun SMTP in chiaro sulla porta 25 è previsto nella policy corrente.
 

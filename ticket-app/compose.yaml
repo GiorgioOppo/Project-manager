@@ -1,0 +1,48 @@
+services:
+  tickets:
+    image: "punto/tickets:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
+    build:
+      context: .
+    environment:
+      TICKETS_BIND: 0.0.0.0
+      TICKETS_PORT: "8083"
+      TICKETS_PUBLIC_DIR: /app/public
+      TICKETS_DB_PATH: /var/lib/punto-tickets/tickets.db
+      TICKETS_EMAIL: "${TICKETS_EMAIL:?Imposta TICKETS_EMAIL nel file ticket-app/.env}"
+      TICKETS_PASSWORD: "${TICKETS_PASSWORD:?Imposta TICKETS_PASSWORD di almeno 12 caratteri}"
+      TICKETS_NAME: "${TICKETS_NAME:-Gestore}"
+      TICKETS_PUBLIC_ORIGIN: "${TICKETS_PUBLIC_ORIGIN:-http://localhost:8083}"
+    ports:
+      - "127.0.0.1:${TICKETS_HOST_PORT:-8083}:8083"
+    volumes:
+      - tickets_data:/var/lib/punto-tickets
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "curl --noproxy '*' --fail --silent --show-error --max-time 3 --header \"Host: $${TICKETS_PUBLIC_ORIGIN#*://}\" http://127.0.0.1:8083/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 4
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      tickets_local:
+        aliases:
+          - ticket-app
+
+volumes:
+  tickets_data:
+
+networks:
+  tickets_local:
+    driver: bridge

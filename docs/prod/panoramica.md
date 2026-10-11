@@ -1,6 +1,6 @@
 # Panoramica di prodotto
 
-Stato documentato: **10 ottobre 2026**, codice applicativo con schema dati **7**. Questa pagina descrive le funzioni presenti; la [roadmap](roadmap.md) distingue le estensioni ancora da realizzare.
+Stato documentato: **11 ottobre 2026**, codice applicativo con schema dati **9**. Questa pagina descrive le funzioni presenti; la [roadmap](roadmap.md) distingue le estensioni ancora da realizzare.
 
 ## Scopo
 
@@ -13,6 +13,8 @@ flowchart LR
   F[Fornitore] --> C[Contratto e PDF]
   C --> J[Commessa]
   A[Utenti, gruppi e ruoli] --> J
+  J --> K[Attività e sottoattività]
+  K --> B[Kanban e registro blocchi]
   J --> O[Ore personali]
   O --> R[Analisi del lavoro]
   T[Tariffe orarie] --> R
@@ -25,11 +27,11 @@ Il collegamento della commessa a un contratto è facoltativo. Le attività inter
 
 | Profilo | Obiettivo | Funzioni principali |
 | --- | --- | --- |
-| Operatore | Rendicontare il proprio lavoro con una scelta guidata | Commesse autorizzate, proprie ore, proprie analisi e notifiche |
-| Gestore | Organizzare il lavoro e controllarne l’andamento | Censimento commesse, fornitori e contratti; utenti e accessi; analisi complessive; tariffe; alert; storico |
+| Operatore | Svolgere e rendicontare il lavoro autorizzato | Commesse, bacheca, stato delle attività assegnate, propri blocchi, proprie ore, analisi e notifiche |
+| Gestore | Organizzare il lavoro e controllarne l’andamento | Censimento commesse, fornitori e contratti; utenti e accessi; attività, sottoattività e blocchi; analisi complessive; tariffe; alert; storico |
 | Referente tecnico dell’installazione | Mantenere disponibile e configurare il servizio | Container, database, backup, rete e configurazione degli addon, descritti nella documentazione tecnica |
 
-**Gestore** e **Operatore** sono i due profili dell’account. **Lettore**, **Collaboratore** e gli eventuali ruoli personalizzati sono invece ruoli su una singola commessa. Un Collaboratore può registrare le proprie ore; non diventa per questo amministratore degli utenti o dei contratti.
+**Gestore** e **Operatore** sono i due profili dell’account. **Lettore**, **Collaboratore** e gli eventuali ruoli personalizzati sono invece ruoli su una singola commessa. Un Collaboratore può registrare le proprie ore, aggiornare lo stato delle attività assegnate e gestire i blocchi di cui è autore o responsabile; non diventa per questo amministratore degli utenti o dei contratti.
 
 L’applicazione attuale ha un unico spazio operativo. Le società separate e i permessi finanziari per società appartengono al [piano finanziario](piano-modulo-finanziario.md).
 
@@ -40,6 +42,7 @@ L’applicazione attuale ha un unico spazio operativo. Le società separate e i 
 | Accesso | Implementato | Login con email e password, sessione personale, opzione «Ricordami per 30 giorni», logout e revoca degli account disattivati |
 | Commesse | Implementato | Codice, nome, cliente, descrizione, cinque stati, contratto facoltativo, ricerca, abilitazioni e cancellazione definitiva |
 | Commesse comuni | Implementato | Una casella rende la commessa utilizzabile da tutti gli utenti attivi, compresi quelli creati successivamente |
+| Attività e blocchi | Implementato | Attività e sottoattività, responsabile, priorità, scadenza, Kanban a cinque stati ed elenco gerarchico; blocchi con impatto, prossima azione e stato |
 | Registro ore | Implementato | Registrazioni personali giornaliere, minuti interi, nota facoltativa, totale e limite giornaliero |
 | Analisi | Implementato | Viste Per periodo, Per commessa e Per utente, con date e filtri; ambito personale per gli operatori e aggregato per i gestori |
 | Valore contratti | Implementato | Valore EUR dei contratti distinti collegati alle ore filtrate, valori mancanti e ore prive di contratto |
@@ -59,21 +62,23 @@ L’applicazione attuale ha un unico spazio operativo. Le società separate e i 
 
 ## Esperienza dell’operatore
 
-L’operatore trova quattro sezioni: **Commesse**, **Registro ore**, **Analisi** e **Notifiche**. Il selettore delle ore contiene le commesse su cui è consentita la registrazione; quelle in sola lettura rimangono consultabili nell’elenco ma non possono ricevere nuove ore da quell’utente.
+L’operatore trova cinque sezioni: **Commesse**, **Attività e blocchi**, **Registro ore**, **Analisi** e **Notifiche**. Il selettore delle ore contiene le commesse su cui è consentita la registrazione; quelle in sola lettura rimangono consultabili nell’elenco ma non possono ricevere nuove ore da quell’utente.
 
 Una revoca impedisce nuove registrazioni sulla commessa, ma conserva la consultazione delle proprie ore già salvate. Le ore appartengono sempre a chi ha effettuato l’accesso: non è possibile attribuirle a un collega dal modulo di registrazione. L’operatore può aggiungere ore, ma non correggere o eliminare quelle già salvate.
 
-Per iniziare: [guida utente](guida-utente.md).
+La bacheca è visibile a chi può consultare la commessa. Con accesso di Collaboratore l’operatore aggiorna lo stato delle attività assegnate a lui e può segnalare impedimenti. Assegnazione e autorizzazione restano distinte: il nome del responsabile non sostituisce l’abilitazione.
+
+Per iniziare: [guida utente](guida-utente.md) e [Attività, Kanban e blocchi](attivita-kanban-e-blocchi.md).
 
 ## Esperienza del gestore
 
 Il gestore dispone delle stesse funzioni personali e delle sezioni **Alert e trigger**, **Fornitori**, **Contratti**, **Utenti**, **Gruppi e ruoli** e **Storico**. Amministra tutte le commesse dello spazio e può consultare gli aggregati delle ore di tutti gli utenti in Analisi.
 
-Il Registro ore resta personale anche per il gestore: le normali azioni di modifica e cancellazione delle registrazioni riguardano le proprie ore. Lo Storico e gli alert possono fornire il contesto operativo relativo ad altri utenti; questo non abilita un registro modificabile di tutte le loro ore. La cancellazione di una commessa è un’operazione distinta e rimuove anche tutte le ore collegate di tutti gli utenti.
+Il Registro ore resta personale anche per il gestore: le normali azioni di modifica e cancellazione delle registrazioni riguardano le proprie ore. Lo Storico e gli alert possono fornire il contesto operativo relativo ad altri utenti; questo non abilita un registro modificabile di tutte le loro ore. La cancellazione di una commessa è un’operazione distinta e rimuove anche attività, sottoattività, blocchi e tutte le ore collegate di tutti gli utenti.
 
 Per impostare lo spazio: [guida del gestore](guida-gestore.md).
 
-## Attività comuni
+## Commesse per il lavoro comune
 
 Il catalogo di riferimento per le attività trasversali comprende:
 
@@ -90,6 +95,8 @@ Il meccanismo è la casella **Commessa comune**. I nomi non sono riservati dal s
 
 Le cinque etichette di stato della commessa descrivono l’avanzamento ma non costituiscono un workflow con approvazioni o blocchi automatici. Una commessa Completata o Annullata può ancora ricevere ore da un utente autorizzato. Le date di un contratto non ne cambiano automaticamente lo stato.
 
+Attività e sottoattività hanno stati indipendenti. Non sono ancora disponibili dipendenze, Gantt, pianificazione del carico, checklist separate o associazione delle ore a una singola attività. I blocchi descrivono impedimenti presenti; il registro dei rischi futuri rimane da sviluppare. Scadenze, attività e blocchi non alimentano nuove notifiche automatiche.
+
 Il controllo delle ore mancanti applica oggi 8 ore per ogni giorno dal lunedì al venerdì, trascorse 48 ore dalla fine della giornata. Non conosce festività, ferie, part time o turni. Una notifica documenta l’anomalia rilevata; il pulsante di lettura non modifica le ore.
 
 I report economici attuali usano solo EUR e vengono ricalcolati dai dati correnti. Non producono fatture, documenti fiscali, incassi o valori contabili congelati. Il campo Cliente della commessa è un testo descrittivo, non un’anagrafica completa di fatturazione.
@@ -99,7 +106,8 @@ L’addon Calendar cifra token e contenuti nel proprio archivio, mentre l’appl
 ## Documenti di riferimento
 
 - [Processi e regole](processi-e-regole.md): permessi, limiti, date, cancellazioni e significato dei report.
-- [Roadmap](roadmap.md): stato dei venti miglioramenti e del percorso finanziario.
+- [Attività, Kanban e blocchi](attivita-kanban-e-blocchi.md): organizzazione, permessi e gestione degli impedimenti.
+- [Roadmap](roadmap.md): stato dei miglioramenti operativi, del modulo attività e del percorso finanziario.
 - [Glossario](glossario.md): termini del prodotto.
 - [Architettura tecnica](../tehnical/architettura.md): componenti e responsabilità.
 - [Verifica UI del 10 ottobre 2026](../tehnical/verifica-ui-2026-10-10.md): evidenza storica riferita alla versione esaminata; non certifica tutte le aggiunte successive.

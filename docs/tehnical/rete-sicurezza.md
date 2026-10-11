@@ -1,8 +1,8 @@
 # Rete e sicurezza
 
-La configurazione descritta è quella del repository al **10 ottobre 2026**. Le fonti principali sono [Compose](../../compose.yaml), [configurazione MySQL](../../docker/mysql/cluster.cnf), [Squid](../../docker/squid/squid.conf), [preparazione TLS](../../scripts/configure_network.py) e i client C. Per il quadro generale consultare [architettura](architettura.md) e [README principale](../../README.md).
+La configurazione descritta è quella del repository al **11 ottobre 2026**. Le fonti principali sono [Compose](../../compose.yaml), [configurazione MySQL](../../docker/mysql/cluster.cnf), [Squid](../../docker/squid/squid.conf), [preparazione TLS](../../scripts/configure_network.py) e i client C. Per il quadro generale consultare [architettura](architettura.md) e [README principale](../../README.md).
 
-## Sette reti e indirizzi
+## Otto reti e indirizzi
 
 Le reti interne usano sia `internal: true` sia `com.docker.network.bridge.gateway_mode_ipv4: isolated`. NPM e Squid hanno ciascuno un bridge con uscita esterna distinto. I nomi delle interfacce nei container sono assegnati esplicitamente da Compose.
 
@@ -10,13 +10,14 @@ Le reti interne usano sia `internal: true` sia `com.docker.network.bridge.gatewa
 | --- | --- | --- | --- |
 | `public` | `172.30.10.0/24` | NPM `.2` | Bridge con gateway; ingresso pubblico |
 | `private_app` | `172.30.20.0/24` | NPM `.2`, app `.10` | Interna, gateway isolato |
-| `backend_app` | `172.30.30.0/24` | app `.10`, HAProxy `.20`, db `.21`, db2 `.22`, db3 `.23`, documents `.30` | Interna, gateway isolato |
-| `app_egress` | `172.30.40.0/24` | Squid `.2`, app `.10`, mail-addon `.11`, calendar-addon `.12` | Interna, gateway isolato |
+| `backend_app` | `172.30.30.0/24` | app `.10`, HAProxy `.20`, mysql-1 `.21`, mysql-2 `.22`, mysql-3 `.23`, mongodb `.30` | Interna, gateway isolato |
+| `app_egress` | `172.30.40.0/24` | Squid `.2`, app `.10`, mail `.11`, calendar `.12` | Interna, gateway isolato |
 | `proxy_wan` | `172.30.50.0/24` | Squid `.2` | Bridge con gateway; uscita del proxy |
-| `mail_api` | `172.30.60.0/24` | mail-addon `.2`, app `.10` | Interna, gateway isolato |
-| `calendar_api` | `172.30.70.0/24` | calendar-addon `.2`, app `.10` | Interna, gateway isolato |
+| `mail_api` | `172.30.60.0/24` | mail `.2`, app `.10` | Interna, gateway isolato |
+| `calendar_api` | `172.30.70.0/24` | calendar `.2`, app `.10` | Interna, gateway isolato |
+| `inventory_api` | `172.30.80.0/24` | inventory `.2`, app `.10` | Interna, gateway isolato |
 
-L'app ha cinque interfacce. Gli alias `mail-api` e `calendar-api` sono definiti soltanto nelle rispettive reti API. Gli addon non appartengono a `backend_app` e non ricevono credenziali SQL o MongoDB. NPM non appartiene alle reti database o addon. Solo NPM pubblica porte sull'host. NPM dispone anche di uscita diretta dalla propria rete `public`, necessaria alla gestione del proxy e dei certificati: la policy Squid riguarda app e addon e non filtra il traffico di NPM.
+L'app ha sei interfacce. Gli alias `mail-api`, `calendar-api` e `inventory-api` sono definiti soltanto nelle rispettive reti API. La [nomenclatura Docker](nomi-servizi-e-immagini.md) mantiene gli alias storici dei servizi per DNS e TLS; i comandi Compose usano i nomi nuovi. Gli addon non appartengono a `backend_app` e non ricevono credenziali SQL o MongoDB. NPM non appartiene alle reti database o addon. Solo NPM pubblica porte sull'host. NPM dispone anche di uscita diretta dalla propria rete `public`, necessaria alla gestione del proxy e dei certificati: la policy Squid riguarda app e addon e non filtra il traffico di NPM.
 
 Su Docker Desktop le reti bridge sono nella VM Linux; non rappresentano interfacce direttamente raggiungibili dal Mac. L'amministratore dell'host o del daemon Docker rimane in grado di leggere volumi, configurazioni e memoria o collegare nuovi container: la segmentazione non protegge da tale amministratore.
 
@@ -30,16 +31,17 @@ Su Docker Desktop le reti bridge sono nella VM Linux; non rappresentano interfac
 | App | `db-proxy:3306` | MySQL con TLS | CA, identità server, account SQL |
 | HAProxy | db/db2/db3 `3306` | Inoltro TCP | TLS end-to-end; selezione membri del gruppo |
 | Monitor HAProxy | db/db2/db3 `3306` | MySQL TLS | Account monitor e verifica del certificato |
-| db/db2/db3 | Peer `33061` | Group Replication XCom con TLS | Allowlist dei tre IP e verifica identità |
-| db/db2/db3 | Peer `3306` | Recupero distribuito MySQL con TLS | Account recupero e verifica server |
+| mysql-1/mysql-2/mysql-3 | Peer `33061` | Group Replication XCom con TLS | Allowlist dei tre IP e verifica identità |
+| mysql-1/mysql-2/mysql-3 | Peer `3306` | Recupero distribuito MySQL con TLS | Account recupero e verifica server |
 | App | `documents:27017` | MongoDB TLS | CA, nome, autenticazione e ruolo documentale |
 | App `.60.10` | `mail-api:8090` | HTTPS | IP sorgente e token bearer dedicato |
 | App `.70.10` | `calendar-api:8091` | HTTPS | IP sorgente e token bearer dedicato |
+| App `.80.10` | `inventory-api:8092` | HTTPS | IP sorgente e token bearer dedicato |
 | App e addon | `172.30.40.2:3128` | Proxy esplicito CONNECT | Policy Squid distinta per IP sorgente |
 | Squid | Host Google autorizzati `443` | Tunnel TLS | Nome esatto, porta e destinazione pubblica |
-| Squid | Host SMTP autorizzati `465/587` | Tunnel SMTP TLS | Consentito solo per mail-addon; provider non ancora configurato |
+| Squid | Host SMTP autorizzati `465/587` | Tunnel SMTP TLS | Consentito solo per il servizio email; provider non ancora configurato |
 
-L'app ascolta soltanto su `172.30.20.10:8080`, quindi le interfacce backend, egress, email e Calendar non espongono il server HTTP. I due addon ascoltano solo sulle rispettive interfacce API; Squid solo su `172.30.40.2:3128`.
+L'app ascolta soltanto su `172.30.20.10:8080`, quindi le interfacce backend, egress, email, Calendar e inventory non espongono il server HTTP. I tre addon ascoltano solo sulle rispettive interfacce API; Squid solo su `172.30.40.2:3128`.
 
 MongoDB ascolta su loopback e `172.30.30.30`. MySQL X Protocol è disattivato (`mysqlx=0`), quindi la porta `33060` non fa parte dei servizi previsti. Il monitor HAProxy espone i suoi tre endpoint HTTP solo su `127.0.0.1:9201–9203` nel container.
 
@@ -49,7 +51,7 @@ La matrice descrive i flussi previsti, non un firewall per ogni coppia nella ste
 
 ## Uscita attraverso Squid
 
-Le tre sorgenti accettate sono gli IP dell'app, di mail-addon e di calendar-addon sulla rete egress. Sono vietate sorgenti diverse, richieste diverse da CONNECT, IP letterali e destinazioni private/riservate. Gli hostname non ammessi vengono rifiutati prima della risoluzione DNS; la risposta DNS di un nome ammesso viene comunque controllata contro [denied-destinations.txt](../../docker/squid/denied-destinations.txt).
+Le tre sorgenti accettate sono gli IP dell'app, di `mail` e di `calendar` sulla rete egress. Sono vietate sorgenti diverse, richieste diverse da CONNECT, IP letterali e destinazioni private/riservate. Gli hostname non ammessi vengono rifiutati prima della risoluzione DNS; la risposta DNS di un nome ammesso viene comunque controllata contro [denied-destinations.txt](../../docker/squid/denied-destinations.txt).
 
 | Client | Host consentiti | Porte |
 | --- | --- | --- |
@@ -67,7 +69,7 @@ Squid non usa cache e non è un router. `tcp_outgoing_address` imposta l'uscita 
 
 ## TLS interno e materiale crittografico
 
-[configure_network.py](../../scripts/configure_network.py) genera una CA locale e leaf distinti per db, db2, db3, documents, mail-addon e calendar-addon. La chiave CA rimane sull'host. L'app riceve solo la CA pubblica, mentre ciascun server riceve il proprio leaf e la propria chiave.
+[configure_network.py](../../scripts/configure_network.py) genera una CA locale e leaf distinti con i nomi storici db, db2, db3, documents, mail-addon, calendar-addon e inventory-addon. La chiave CA rimane sull'host. L'app riceve solo la CA pubblica, mentre ciascun server riceve il proprio leaf e la propria chiave.
 
 | Collegamento | Protezione configurata |
 | --- | --- |
@@ -78,7 +80,7 @@ Squid non usa cache e non è un router. `tcp_outgoing_address` imposta l'uscita 
 | Addon → provider | TLS con verifica del nome e CA; CONNECT tramite Squid |
 | NPM → app | HTTP in chiaro sulla rete `private_app` |
 
-I certificati dei nodi SQL includono il rispettivo nome, l'IP e `db-proxy`, perché HAProxy non termina TLS. Le chiavi SQL e documentali non sono intercambiabili. I certificati addon includono l'alias della rete API oltre al nome servizio e agli indirizzi previsti.
+I certificati dei nodi SQL includono il rispettivo nome, l'IP e `db-proxy`, perché HAProxy non termina TLS. Le chiavi SQL e documentali non sono intercambiabili. I certificati addon includono l'alias della rete API oltre al nome storico e agli indirizzi previsti. I nuovi nomi Compose non vengono aggiunti automaticamente ai SAN: usare gli alias TLS già configurati.
 
 I secret sono file locali separati dal database e montati in sola lettura. La directory host ha permessi `0700`; i file destinati ai container sono leggibili dai rispettivi utenti non privilegiati. Questa soluzione non è un KMS, non usa un HSM e non impedisce a un amministratore dell'host di leggere la chiave. Rinnovo TLS e rotazione delle chiavi richiedono procedure coordinate; vedere [configurazione](installazione-configurazione.md).
 

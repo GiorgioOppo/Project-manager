@@ -1,4 +1,5 @@
 #include "alerts.h"
+#include "inventory_client.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -38,9 +39,11 @@ int main(int argc, char **argv) {
         char *end = NULL;
         long long epoch = strtoll(argv[3], &end, 10);
         assert(!errno && end && !*end);
+        assert(inventory_client_open());
         assert(alerts_open(argv[2]));
         alerts_tick_at((time_t)epoch);
         alerts_close();
+        inventory_client_close();
     } else if (strcmp(argv[1], "ordinary") == 0) {
         assert(!alerts_workday_due("2026-10-05", local_time(2026, 10, 7, 23, 59, 59)));
         assert(alerts_workday_due("2026-10-05", local_time(2026, 10, 8, 0, 0, 0)));

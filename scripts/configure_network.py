@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from manage_cluster import Cluster, ClusterError, NODES, PROJECT, STATE_PATH, load_state
+from manage_cluster import Cluster, ClusterError, NODES, NODE_SERVICES, PROJECT, STATE_PATH, load_state
 
 
 TLS_PATH = PROJECT / "data" / "network-tls"
@@ -130,17 +130,22 @@ def prepare_calendar_certificate(directory):
     prepare_addon_certificate(directory, "calendar-addon", "calendar-api", "172.30.70.2")
 
 
+def prepare_inventory_certificate(directory):
+    prepare_addon_certificate(directory, "inventory-addon", "inventory-api", "172.30.80.2")
+
+
 def prepare_addon_secrets():
     """Create local file-backed secrets once; never rotate an existing token."""
     if ADDON_SECRETS.is_symlink():
         raise ClusterError("La directory dei segreti addon non può essere un collegamento simbolico.")
     ADDON_SECRETS.mkdir(mode=0o700, parents=True, exist_ok=True)
     ADDON_SECRETS.chmod(0o700)
-    hex_secrets = {"mail-api-token", "calendar-api-token", "calendar-token-key"}
+    hex_secrets = {"mail-api-token", "calendar-api-token", "calendar-token-key", "inventory-api-token"}
     for name, initial in (("mail-api-token", secrets.token_hex(32) + "\n"), ("smtp-password", ""),
                           ("calendar-api-token", secrets.token_hex(32) + "\n"),
                           ("calendar-token-key", secrets.token_hex(32) + "\n"),
-                          ("google-client-secret", "")):
+                          ("google-client-secret", ""),
+                          ("inventory-api-token", secrets.token_hex(32) + "\n")):
         path = ADDON_SECRETS / name
         if not path.exists() and not path.is_symlink():
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -163,6 +168,7 @@ def prepare():
         prepare_document_certificate(TLS_PATH)
         prepare_mail_certificate(TLS_PATH)
         prepare_calendar_certificate(TLS_PATH)
+        prepare_inventory_certificate(TLS_PATH)
         prepare_addon_secrets()
         print("CA verificata; certificati e segreti addon pronti, materiali esistenti conservati.", flush=True)
         return
@@ -199,9 +205,10 @@ def prepare():
         prepare_document_certificate(directory)
         prepare_mail_certificate(directory)
         prepare_calendar_certificate(directory)
+        prepare_inventory_certificate(directory)
         directory.rename(TLS_PATH)
     prepare_addon_secrets()
-    print("CA privata e tre certificati creati in data/network-tls (esclusi da Git e dalle immagini).", flush=True)
+    print("CA privata e certificati interni creati in data/network-tls (esclusi da Git e dalle immagini).", flush=True)
     print("Conserva una copia protetta del bundle per ripristino e rinnovo; la chiave CA non viene montata nei servizi.", flush=True)
 
 
@@ -230,7 +237,7 @@ def check_engine(cluster):
         targets = {"public": "172.30.10.0/24", "private_app": "172.30.20.0/24",
                    "backend_app": "172.30.30.0/24", "app_egress": "172.30.40.0/24",
                    "proxy_wan": "172.30.50.0/24", "mail_api": "172.30.60.0/24",
-                   "calendar_api": "172.30.70.0/24"}
+                   "calendar_api": "172.30.70.0/24", "inventory_api": "172.30.80.0/24"}
         for network in json.loads(inspection.stdout):
             labels = network.get("Labels") or {}
             name = labels.get("com.docker.compose.network")
@@ -248,17 +255,18 @@ def check_engine(cluster):
 def apply(env_file, context):
     if not load_state().get("initialized"):
         raise ClusterError("Cluster non inizializzato: esegui prepare e poi manage_cluster.py init.")
-    prepare()
     cluster = Cluster(env_file, context)
+    cluster.require_service_migration_complete()
+    prepare()
     check_engine(cluster)
     online = [node for node in NODES if cluster.local_state(node) == "ONLINE"]
     if not online:
         raise ClusterError("Prima della migrazione ripristina il cluster e verifica il suo stato ONLINE.")
     print("Migrazione delle reti: arresto app, proxy e Nginx, preservando volumi e configurazione.", flush=True)
-    cluster.run(("stop", "nginx-proxy-manager", "app", "db-proxy"))
+    cluster.run(("stop", "proxy-web", "app", "proxy-db"))
     cluster.backup(online[0])
     print("Ricreazione dei tre membri sulla rete backend isolata…", flush=True)
-    cluster.run(("up", "-d", "--no-deps", "--force-recreate", *NODES))
+    cluster.run(("up", "-d", "--no-deps", "--force-recreate", *(NODE_SERVICES[node] for node in NODES)))
     cluster.recover()
     print("Reti applicate. Esegui la suite network per verificare i flussi consentiti e vietati.", flush=True)
 

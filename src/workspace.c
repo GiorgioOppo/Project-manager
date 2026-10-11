@@ -664,9 +664,12 @@ static void delete_job(const char *body, DbInt actor_id, DbInt id,
     if (!prepare(&statement,
         "SELECT COUNT(*),COALESCE(SUM(minutes),0),"
         "(SELECT COUNT(*) FROM job_assignments WHERE job_id=?),"
-        "(SELECT COUNT(*) FROM job_group_grants WHERE job_id=?) "
+        "(SELECT COUNT(*) FROM job_group_grants WHERE job_id=?),"
+        "(SELECT COUNT(*) FROM job_tasks WHERE job_id=?),"
+        "(SELECT COUNT(*) FROM job_blockers WHERE job_id=?) "
         "FROM time_entries WHERE job_id=?") || !bind_id(statement,1,id) ||
         !bind_id(statement,2,id) || !bind_id(statement,3,id) ||
+        !bind_id(statement,4,id) || !bind_id(statement,5,id) ||
         db_step(statement) != DB_ROW) goto database_failure;
     /* Keep the job's ordinary snapshot fields at the top level so the audit
        retains its identity after all foreign-key rows have been removed. */
@@ -676,10 +679,16 @@ static void delete_job(const char *body, DbInt actor_id, DbInt id,
     append(&before,",\"deleted_minutes\":"); append_integer(&before,db_column_int64(statement,1));
     append(&before,",\"deleted_assignments\":"); append_integer(&before,db_column_int64(statement,2));
     append(&before,",\"deleted_group_grants\":"); append_integer(&before,db_column_int64(statement,3));
+    append(&before,",\"deleted_tasks\":"); append_integer(&before,db_column_int64(statement,4));
+    append(&before,",\"deleted_blockers\":"); append_integer(&before,db_column_int64(statement,5));
     append(&before,"}");
     db_finalize(statement); statement = NULL;
     if (before.failed) goto database_failure;
     static const char *const deletes[] = {
+        "DELETE FROM job_blockers WHERE job_id=?",
+        /* Clear self references first: InnoDB checks foreign keys per row. */
+        "UPDATE job_tasks SET parent_id=NULL WHERE job_id=?",
+        "DELETE FROM job_tasks WHERE job_id=?",
         "DELETE FROM time_entries WHERE job_id=?",
         "DELETE FROM job_assignments WHERE job_id=?",
         "DELETE FROM job_group_grants WHERE job_id=?",

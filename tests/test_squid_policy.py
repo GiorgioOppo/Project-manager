@@ -1,7 +1,7 @@
 """Opt-in Squid destination ACL check in an isolated disposable container.
 
 Run: PUNTO_SQUID_POLICY_TEST=1 python3 tests/test_squid_policy.py -v
-Build the Compose squid image first. No stack containers are changed, host
+Build the Compose proxy-egress image first. No stack containers are changed, host
 paths mounted, credentials injected or external network connections attempted.
 """
 
@@ -76,12 +76,12 @@ class SquidDestinationPolicyTests(unittest.TestCase):
         docker = cluster.command[:cluster.command.index("compose")]
         # Inspect the configured image tag, not an existing container's old
         # image ID: a rebuild may precede the deployment of that new image.
-        images = cluster.run(("config", "--images", "squid"), timeout=20).stdout.decode("ascii").split()
-        self.assertEqual(len(set(images)), 1, "The Compose squid service must name exactly one image")
+        images = cluster.run(("config", "--images", "proxy-egress"), timeout=20).stdout.decode("ascii").split()
+        self.assertEqual(len(set(images)), 1, "The Compose proxy-egress service must name exactly one image")
         inspected = subprocess.run(docker + ["image", "inspect", images[0], "--format", "{{.Id}}"],
                                    capture_output=True, text=True, env=cluster.environment,
                                    cwd=ROOT, timeout=20)
-        self.assertEqual(inspected.returncode, 0, "Build the Compose squid image before running this test")
+        self.assertEqual(inspected.returncode, 0, "Build the Compose proxy-egress image before running this test")
         image = inspected.stdout.strip()
         self.assertRegex(image, r"\A(?:sha256:)?[a-f0-9]{12,64}\Z", "Unexpected Squid image identifier")
         name = "punto-squid-policy-" + uuid.uuid4().hex

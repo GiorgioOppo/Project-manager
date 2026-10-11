@@ -19,6 +19,7 @@ In alto sono visibili il tuo nome, email e profilo. Usa **Esci** al termine dell
 | Sezione | A cosa serve |
 | --- | --- |
 | **Commesse** | Consultare le commesse a cui hai accesso e il loro stato |
+| **Attività e blocchi** | Consultare la bacheca della commessa, aggiornare le attività assegnate e segnalare impedimenti quando abilitato |
 | **Registro ore** | Inserire e consultare il tuo tempo per giornata |
 | **Analisi** | Riepilogare le tue ore su un intervallo, per commessa o per utente |
 | **Notifiche** | Leggere gli avvisi indirizzati al tuo account |
@@ -38,6 +39,23 @@ Su schermi piccoli le tabelle possono scorrere orizzontalmente nel loro riquadro
 L’elenco mostra soltanto le commesse attualmente autorizzate e quelle comuni a tutti. Una commessa assegnata con ruolo **Lettore** può essere consultata ma non usata per nuove registrazioni. Il ruolo **Collaboratore**, o un ruolo equivalente configurato dal gestore, permette anche di registrare ore.
 
 Le ore visualizzate nell’elenco delle commesse sono **le tue ore complessive**, su tutte le date. Per il totale di un periodo usa Analisi. Lo stato della commessa non determina da solo la possibilità di registrare ore: se la procedura aziendale richiede un blocco, il gestore deve intervenire sulle abilitazioni.
+
+## Seguire attività e impedimenti
+
+1. Apri **Attività e blocchi** e seleziona la **Commessa**, oppure premi **Attività** nella sua riga in Commesse.
+2. Consulta le colonne **Da fare**, **In corso**, **Bloccato**, **Da verificare** e **Completato**. Ricerca, stato e priorità restringono le attività mostrate.
+3. Scegli **Elenco e sottoattività** nel campo **Vista** per leggere l’organizzazione gerarchica. Nella bacheca le colonne possono scorrere orizzontalmente.
+4. Per un’attività assegnata a te, se hai un ruolo che permette di collaborare, scegli il nuovo **Stato** e premi **Applica**. Il titolo, il responsabile, la scadenza e la struttura vengono definiti dal gestore.
+5. Usa **Segnala blocco** per descrivere un impedimento della commessa o di una specifica attività. Indica titolo, descrizione, impatto, prossima azione e, se serve, scadenza. Il nuovo blocco viene assegnato a te.
+6. Nel **Registro dei blocchi**, premi **Gestisci** per aggiornare i blocchi di cui sei autore o responsabile. Passa a **Risolto** quando l’impedimento è superato. Il filtro iniziale nasconde i blocchi risolti; scegli **Tutti** per ritrovarli.
+
+Il ruolo Lettore consente la sola consultazione. Perdere l’abilitazione impedisce di aggiornare un’attività anche se risulti ancora responsabile. Il gestore può riassegnarla. Le descrizioni di attività e blocchi sono condivise con chi può leggere quella commessa.
+
+Gli stati dell’attività, dei suoi figli e dei blocchi non si aggiornano a vicenda: risolvere un blocco non sposta automaticamente l’attività. Le ore si registrano ancora sulla commessa; il campo **Attività svolta / nota** è testo libero e non collega la registrazione a una scheda della bacheca.
+
+Se un’altra persona ha già salvato una modifica, l’app segnala il conflitto. Non ripetere il salvataggio della vecchia versione: usa **Chiudi e ricarica la versione aggiornata**, controlla il contenuto corrente e riporta le variazioni ancora necessarie. La bozza chiusa non viene conservata. **Aggiorna** rilegge attività e blocchi della commessa.
+
+La [guida del modulo](attivita-kanban-e-blocchi.md) descrive stati, limiti e cancellazioni.
 
 ## Registrare il lavoro della giornata
 
@@ -77,7 +95,7 @@ Le commesse comuni non richiedono un’abilitazione personale e rimangono dispon
 3. Premi **Oggi** per tornare alla giornata corrente del browser.
 4. Leggi le registrazioni e il totale della giornata.
 
-Il registro rimane personale. Se perdi l’abilitazione a una commessa, le tue registrazioni già salvate restano consultabili finché la commessa esiste. L’eliminazione definitiva della commessa, eseguita dal gestore, rimuove invece anche tutte le ore collegate.
+Il registro rimane personale. Se perdi l’abilitazione a una commessa, le tue registrazioni già salvate restano consultabili finché la commessa esiste. L’eliminazione definitiva della commessa, eseguita dal gestore, rimuove invece anche tutte le ore collegate, oltre alle attività e ai blocchi.
 
 Come Operatore non puoi modificare o eliminare una registrazione salvata. In caso di errore contatta il gestore indicando data, commessa, durata e correzione richiesta. Non inserire una seconda riga per simulare una correzione: aumenterebbe il totale. La gestione delle richieste di rettifica e dell’approvazione è ancora pianificata; il gestore non dispone oggi di un editor generico delle ore altrui.
 
@@ -94,7 +112,7 @@ L’intervallo comprende entrambi gli estremi e non può superare 366 giorni. **
 
 Puoi passare dalla riga di una giornata alle relative commesse e dalla riga di una commessa al suo andamento per periodo. La vista e i filtri sono riportati nell’indirizzo della pagina: puoi conservare il collegamento per riaprire la stessa selezione. Chi lo apre vede soltanto i dati consentiti al proprio account.
 
-Le analisi includono il tuo storico su commesse successivamente revocate. Non contengono le note delle singole attività. Un elenco vuoto significa che nessuna registrazione corrisponde ai filtri, non che una commessa o un account siano stati cancellati.
+Le analisi includono il tuo storico su commesse successivamente revocate. Non contengono le note delle singole registrazioni né aggregati delle schede Kanban. Un elenco vuoto significa che nessuna registrazione corrisponde ai filtri, non che una commessa o un account siano stati cancellati.
 
 ## Leggere le notifiche
 
@@ -118,7 +136,11 @@ La lettura non corregge automaticamente la registrazione e non elimina la notifi
 | --- | --- |
 | Commessa assente dall’elenco | Azzera i filtri; se continua a mancare, chiedi al gestore di verificare abilitazione e relative date |
 | Commessa visibile ma non selezionabile per le ore | Verifica con il gestore il ruolo operativo: potrebbe essere di sola consultazione |
-| Abilitazione revocata mentre compilavi | La richiesta viene rifiutata; scegli una commessa ancora autorizzata dopo aver verificato la destinazione corretta. La UI conserva data, durata e nota quando aggiorna le scelte |
+| Abilitazione revocata mentre registravi ore | La richiesta viene rifiutata; scegli una commessa ancora autorizzata dopo aver verificato la destinazione corretta. La UI conserva data, durata e nota quando aggiorna le scelte |
+| Accesso negato o elemento non disponibile in Attività e blocchi | L’app svuota la bacheca e chiude le bozze; seleziona una commessa ancora abilitata. Le modifiche non salvate non vengono conservate |
+| Non posso cambiare lo stato di un’attività | Verifica di esserne responsabile e di avere ancora un accesso Collaboratore alla commessa; un Lettore può soltanto consultare |
+| Un blocco risolto non compare | Nel registro dei blocchi scegli **Tutti** o **Risolti** |
+| Conflitto durante una modifica di attività o blocchi | Rileggi la versione aggiornata e confrontala con le tue variazioni; la versione precedente non viene sovrascritta |
 | Durata rifiutata | Usa minuti interi, controlla il formato e il totale già presente nella giornata |
 | Sessione terminata | Effettua nuovamente il login; una bozza non confermata non è una registrazione salvata |
 | Errore o attesa durante un salvataggio | Prima di ripetere l’invio, controlla nel registro se la riga è già comparsa; la registrazione ore non dispone ancora della deduplicazione generale prevista dalla roadmap |

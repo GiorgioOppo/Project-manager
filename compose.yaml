@@ -1,5 +1,9 @@
+# Nomi dei servizi e immagini: docs/tehnical/nomi-servizi-e-immagini.md
+# Gli alias DNS storici conservano la compatibilità con TLS e replica.
 services:
   app:
+    image: "punto/app:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
@@ -14,8 +18,8 @@ services:
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128
       https_proxy: http://squid:3128
-      NO_PROXY: localhost,127.0.0.1,::1,app,db-proxy,db,db2,db3,documents,mail-api,mail-addon,calendar-api,calendar-addon,172.30.20.10,172.30.60.2,172.30.70.2
-      no_proxy: localhost,127.0.0.1,::1,app,db-proxy,db,db2,db3,documents,mail-api,mail-addon,calendar-api,calendar-addon,172.30.20.10,172.30.60.2,172.30.70.2
+      NO_PROXY: localhost,127.0.0.1,::1,app,db-proxy,db,db2,db3,documents,mail-api,mail-addon,calendar-api,calendar-addon,inventory-api,inventory-addon,mail,calendar,inventory,proxy-web,proxy-db,proxy-egress,mysql-1,mysql-2,mysql-3,mongodb,172.30.20.10,172.30.60.2,172.30.70.2,172.30.80.2
+      no_proxy: localhost,127.0.0.1,::1,app,db-proxy,db,db2,db3,documents,mail-api,mail-addon,calendar-api,calendar-addon,inventory-api,inventory-addon,mail,calendar,inventory,proxy-web,proxy-db,proxy-egress,mysql-1,mysql-2,mysql-3,mongodb,172.30.20.10,172.30.60.2,172.30.70.2,172.30.80.2
       MAIL_API_URL: https://mail-api:8090
       MAIL_API_TOKEN_FILE: /run/secrets/mail_api_token
       MAIL_API_CA_FILE: /etc/punto/tls/ca.crt
@@ -23,6 +27,9 @@ services:
       CALENDAR_API_URL: https://calendar-api:8091
       CALENDAR_API_TOKEN_FILE: /run/secrets/calendar_api_token
       CALENDAR_API_CA_FILE: /etc/punto/tls/ca.crt
+      INVENTORY_API_URL: https://inventory-api:8092
+      INVENTORY_API_TOKEN_FILE: /run/secrets/inventory-api-token
+      INVENTORY_API_CA_FILE: /etc/punto/tls/ca.crt
       DB_HOST: db-proxy
       DB_PORT: "3306"
       DB_NAME: "${MYSQL_DATABASE:-punto}"
@@ -39,15 +46,17 @@ services:
       PUNTO_EMAIL: "${PUNTO_EMAIL:?Imposta PUNTO_EMAIL nel file .env.docker}"
       PUNTO_PASSWORD: "${PUNTO_PASSWORD:?Imposta PUNTO_PASSWORD nel file .env.docker}"
     depends_on:
-      squid:
+      proxy-egress:
         condition: service_healthy
-      mail-addon:
+      mail:
         condition: service_healthy
-      calendar-addon:
+      calendar:
         condition: service_healthy
-      db-proxy:
+      inventory:
         condition: service_healthy
-      documents:
+      proxy-db:
+        condition: service_healthy
+      mongodb:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 10s
@@ -63,6 +72,8 @@ services:
     secrets:
       - mail_api_token
       - calendar_api_token
+      - source: inventory_api_token
+        target: inventory-api-token
     sysctls:
       net.ipv4.ip_forward: "0"
       net.ipv6.conf.all.forwarding: "0"
@@ -82,8 +93,67 @@ services:
       calendar_api:
         ipv4_address: 172.30.70.10
         interface_name: calendar_api
+      inventory_api:
+        ipv4_address: 172.30.80.10
+        interface_name: inventory_api
 
-  calendar-addon:
+  inventory:
+    image: "punto/inventory:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
+    build:
+      context: ./inventory-addon
+    environment:
+      INVENTORY_BIND: 172.30.80.2
+      INVENTORY_PORT: "8092"
+      INVENTORY_ALLOWED_CLIENT: 172.30.80.10
+      INVENTORY_API_TOKEN_FILE: /run/secrets/inventory-api-token
+      INVENTORY_TLS_CERT_FILE: /etc/punto/tls/inventory-addon.crt
+      INVENTORY_TLS_KEY_FILE: /etc/punto/tls/inventory-addon.key
+      INVENTORY_DB_PATH: /var/lib/punto-inventory/inventory.sqlite3
+      INVENTORY_BACKUP_DIR: /var/backups/punto-inventory
+      INVENTORY_BACKUP_INTERVAL_HOURS: "${INVENTORY_BACKUP_INTERVAL_HOURS:-24}"
+      INVENTORY_BACKUP_KEEP: "${INVENTORY_BACKUP_KEEP:-14}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    secrets:
+      - source: inventory_api_token
+        target: inventory-api-token
+    volumes:
+      - inventory_addon_data:/var/lib/punto-inventory
+      - inventory_addon_backups:/var/backups/punto-inventory
+      - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
+      - ./data/network-tls/inventory-addon.crt:/etc/punto/tls/inventory-addon.crt:ro
+      - ./data/network-tls/inventory-addon.key:/etc/punto/tls/inventory-addon.key:ro
+    healthcheck:
+      test: ["CMD", "curl", "--noproxy", "*", "--fail", "--silent", "--show-error", "--max-time", "3", "--cacert", "/etc/punto/tls/ca.crt", "https://172.30.80.2:8092/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      inventory_api:
+        ipv4_address: 172.30.80.2
+        interface_name: inventory_api
+        aliases:
+          - inventory-addon
+          - inventory-api
+
+  calendar:
+    image: "punto/calendar:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
     build:
       context: ./calendar-addon
     environment:
@@ -102,7 +172,7 @@ services:
       CALENDAR_SYNC_INTERVAL: "${CALENDAR_SYNC_INTERVAL:-300}"
       CALENDAR_HTTP_TIMEOUT: "10"
     depends_on:
-      squid:
+      proxy-egress:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 30s
@@ -139,12 +209,17 @@ services:
         ipv4_address: 172.30.70.2
         interface_name: calendar_api
         aliases:
+          - calendar-addon
           - calendar-api
       app_egress:
         ipv4_address: 172.30.40.12
         interface_name: app_egress
+        aliases:
+          - calendar-addon
 
-  mail-addon:
+  mail:
+    image: "punto/mail:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
     build:
       context: ./addon
     environment:
@@ -164,7 +239,7 @@ services:
       MAIL_PROXY_URL: http://squid:3128
       MAIL_SMTP_TIMEOUT: "20"
     depends_on:
-      squid:
+      proxy-egress:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 30s
@@ -200,12 +275,17 @@ services:
         ipv4_address: 172.30.60.2
         interface_name: mail_api
         aliases:
+          - mail-addon
           - mail-api
       app_egress:
         ipv4_address: 172.30.40.11
         interface_name: app_egress
+        aliases:
+          - mail-addon
 
-  squid:
+  proxy-egress:
+    image: "punto/proxy-egress:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
     build:
       context: ./docker/squid
     restart: unless-stopped
@@ -238,12 +318,19 @@ services:
       app_egress:
         ipv4_address: 172.30.40.2
         interface_name: app_egress
+        aliases:
+          - squid
+
       proxy_wan:
         ipv4_address: 172.30.50.2
         interface_name: proxy_wan
         gw_priority: 100
+        aliases:
+          - squid
 
-  nginx-proxy-manager:
+  proxy-web:
+    image: "punto/proxy-web:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
     build:
       context: ./docker/nginx-proxy-manager
     restart: unless-stopped
@@ -278,11 +365,16 @@ services:
         ipv4_address: 172.30.10.2
         interface_name: public
         gw_priority: 100
+        aliases:
+          - nginx-proxy-manager
+
       private_app:
         ipv4_address: 172.30.20.2
         interface_name: private_app
+        aliases:
+          - nginx-proxy-manager
 
-  db:
+  mysql-1:
     image: mysql:8.4
     hostname: db
     command:
@@ -320,8 +412,10 @@ services:
       backend_app:
         ipv4_address: 172.30.30.21
         interface_name: backend_app
+        aliases:
+          - db
 
-  db2:
+  mysql-2:
     image: mysql:8.4
     hostname: db2
     command:
@@ -357,8 +451,10 @@ services:
       backend_app:
         ipv4_address: 172.30.30.22
         interface_name: backend_app
+        aliases:
+          - db2
 
-  db3:
+  mysql-3:
     image: mysql:8.4
     hostname: db3
     command:
@@ -394,8 +490,10 @@ services:
       backend_app:
         ipv4_address: 172.30.30.23
         interface_name: backend_app
+        aliases:
+          - db3
 
-  documents:
+  mongodb:
     image: mongo:8.0
     hostname: documents
     command:
@@ -443,8 +541,12 @@ services:
       backend_app:
         ipv4_address: 172.30.30.30
         interface_name: backend_app
+        aliases:
+          - documents
 
-  db-proxy:
+  proxy-db:
+    image: "punto/proxy-db:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
     build:
       context: ./docker/db-proxy
     environment:
@@ -453,11 +555,11 @@ services:
     volumes:
       - ./data/network-tls/ca.crt:/etc/punto/tls/ca.crt:ro
     depends_on:
-      db:
+      mysql-1:
         condition: service_healthy
-      db2:
+      mysql-2:
         condition: service_healthy
-      db3:
+      mysql-3:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "/usr/local/bin/punto-db-health.py", "ready"]
@@ -479,10 +581,14 @@ services:
       backend_app:
         ipv4_address: 172.30.30.20
         interface_name: backend_app
+        aliases:
+          - db-proxy
 
 volumes:
   mail_addon_data:
   calendar_addon_data:
+  inventory_addon_data:
+  inventory_addon_backups:
   mysql_data:
   mysql_data_2:
   mysql_data_3:
@@ -496,6 +602,8 @@ secrets:
     file: ./data/addon-secrets/smtp-password
   calendar_api_token:
     file: ./data/addon-secrets/calendar-api-token
+  inventory_api_token:
+    file: ./data/addon-secrets/inventory-api-token
   calendar_token_key:
     file: ./data/addon-secrets/calendar-token-key
   google_client_secret:
@@ -552,3 +660,11 @@ networks:
     ipam:
       config:
         - subnet: 172.30.70.0/24
+  inventory_api:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config:
+        - subnet: 172.30.80.0/24

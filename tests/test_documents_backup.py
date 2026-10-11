@@ -19,8 +19,10 @@ class FakeCluster:
     def __init__(self, payload, fail=False):
         self.payload = payload
         self.fail = fail
+        self.commands = []
 
     def run(self, arguments, *, output, timeout):
+        self.commands.append(arguments)
         output.write(self.payload)
         if self.fail:
             raise BACKUP.ClusterError("Simulated failure")
@@ -29,7 +31,10 @@ class FakeCluster:
 class DocumentBackupTests(unittest.TestCase):
     def test_complete_archive_has_private_permissions(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(BACKUP, "PROJECT", Path(temporary)):
-            destination = BACKUP.backup_documents(FakeCluster(gzip.compress(b"archive fixture")))
+            cluster = FakeCluster(gzip.compress(b"archive fixture"))
+            destination = BACKUP.backup_documents(cluster)
+            self.assertEqual(cluster.commands[0][:5], ("exec", "-T", "mongodb", "sh", "-c"))
+            self.assertIn("--host documents --port 27017", cluster.commands[0][5])
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
             self.assertEqual(destination.parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(gzip.decompress(destination.read_bytes()), b"archive fixture")

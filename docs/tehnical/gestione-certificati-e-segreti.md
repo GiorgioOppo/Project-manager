@@ -14,21 +14,22 @@ Le password degli utenti finali sono derivate con PBKDF2 e salt, non cifrate con
 
 ## Inventario TLS privato
 
-Il percorso host comune è `data/network-tls/`, escluso da Git e dal contesto delle immagini. La tabella elenca nomi di file, non link a materiali dell'installazione.
+Il percorso host comune è `data/network-tls/`, escluso da Git e dal contesto delle immagini. La tabella elenca nomi di file, non link a materiali dell'installazione. I nomi storici dei file e dei SAN restano validi attraverso gli alias Compose; vedere [nomenclatura Docker](nomi-servizi-e-immagini.md).
 
 | File host | Consumatore e mount | Funzione |
 | --- | --- | --- |
-| `ca.crt` | App, db-proxy, db/db2/db3, documents, mail-addon, calendar-addon; percorsi TLS specifici dei servizi | Radice pubblica di fiducia interna |
+| `ca.crt` | App, proxy-db, mysql-1/mysql-2/mysql-3, mongodb, mail, calendar, inventory; percorsi TLS specifici dei servizi | Radice pubblica di fiducia interna |
 | `ca.key` | Solo operatore/script sull'host; nessun mount nei container | Firma dei certificati interni |
-| `db.crt`, `db.key` | `db` → `/etc/mysql/tls/server.crt` e `server.key` | Identità del primo nodo |
-| `db2.crt`, `db2.key` | `db2`, stessi percorsi interni | Identità del secondo nodo |
-| `db3.crt`, `db3.key` | `db3`, stessi percorsi interni | Identità del terzo nodo |
+| `db.crt`, `db.key` | `mysql-1` → `/etc/mysql/tls/server.crt` e `server.key` | Identità del primo nodo |
+| `db2.crt`, `db2.key` | `mysql-2`, stessi percorsi interni | Identità del secondo nodo |
+| `db3.crt`, `db3.key` | `mysql-3`, stessi percorsi interni | Identità del terzo nodo |
 | `documents.crt`, `documents.key` | Materiali originali sull'host | Certificato e chiave documentale usati per creare il PEM |
-| `documents.pem` | `documents` → `/etc/mongo/tls/server.pem` | Chiave e certificato concatenati per MongoDB |
-| `mail-addon.crt`, `mail-addon.key` | `mail-addon` → `/etc/punto/tls/mail-addon.crt` e `.key` | HTTPS `mail-api:8090` |
-| `calendar-addon.crt`, `calendar-addon.key` | `calendar-addon` → `/etc/punto/tls/calendar-addon.crt` e `.key` | HTTPS `calendar-api:8091` |
+| `documents.pem` | `mongodb` → `/etc/mongo/tls/server.pem` | Chiave e certificato concatenati per MongoDB |
+| `mail-addon.crt`, `mail-addon.key` | `mail` → `/etc/punto/tls/mail-addon.crt` e `.key` | HTTPS `mail-api:8090` |
+| `calendar-addon.crt`, `calendar-addon.key` | `calendar` → `/etc/punto/tls/calendar-addon.crt` e `.key` | HTTPS `calendar-api:8091` |
+| `inventory-addon.crt`, `inventory-addon.key` | `inventory` → `/etc/punto/tls/inventory-addon.crt` e `.key` | HTTPS `inventory-api:8092` |
 
-App e db-proxy ricevono `ca.crt` su `/etc/punto/tls/ca.crt`; i nodi SQL su `/etc/mysql/tls/ca.crt`; MongoDB su `/etc/mongo/tls/ca.crt`. Squid usa le CA di sistema per le proprie esigenze e non riceve la chiave CA privata. La cifratura dei tunnel verso Google/SMTP è terminata dai client, non da Squid.
+App e proxy-db ricevono `ca.crt` su `/etc/punto/tls/ca.crt`; i nodi SQL su `/etc/mysql/tls/ca.crt`; MongoDB su `/etc/mongo/tls/ca.crt`. Squid usa le CA di sistema per le proprie esigenze e non riceve la chiave CA privata. La cifratura dei tunnel verso Google/SMTP è terminata dai client, non da Squid.
 
 ### Identità nei certificati
 
@@ -40,6 +41,7 @@ App e db-proxy ricevono `ca.crt` su `/etc/punto/tls/ca.crt`; i nodi SQL su `/etc
 | documents | `documents`, `localhost` | `127.0.0.1`, `172.30.30.30` |
 | mail-addon | `mail-api`, `mail-addon`, `localhost` | `127.0.0.1`, `172.30.60.2` |
 | calendar-addon | `calendar-api`, `calendar-addon`, `localhost` | `127.0.0.1`, `172.30.70.2` |
+| inventory-addon | `inventory-api`, `inventory-addon`, `localhost` | `127.0.0.1`, `172.30.80.2` |
 
 `db-proxy` compare nei certificati SQL perché HAProxy inoltra TCP senza terminare TLS: il client continua a verificare la destinazione configurata. Gli IP loopback negli addon/documenti servono alle verifiche previste, non pubblicano nuove porte.
 
@@ -51,11 +53,11 @@ Il percorso host è `data/addon-secrets/`, protetto dalla directory padre. Sono 
 
 | File host | Nome/mount Compose | Chi lo riceve | Uso |
 | --- | --- | --- | --- |
-| `mail-api-token` | `mail_api_token` → `/run/secrets/mail_api_token` | App e mail-addon | Bearer condiviso dell'API privata email |
-| `smtp-password` | `mail_smtp_password` → `/run/secrets/mail_smtp_password` | Solo mail-addon | Password del provider SMTP quando configurato |
-| `calendar-api-token` | `calendar_api_token` → `/run/secrets/calendar_api_token` | App e calendar-addon | Bearer condiviso dell'API privata Calendar |
-| `calendar-token-key` | `calendar_token_key` → `/run/secrets/calendar_token_key` | Solo calendar-addon | Chiave AES-256-GCM, 32 byte rappresentati da 64 cifre esadecimali |
-| `google-client-secret` | `google_client_secret` → `/run/secrets/google_client_secret` | Solo calendar-addon | Credenziale del client OAuth Google |
+| `mail-api-token` | `mail_api_token` → `/run/secrets/mail_api_token` | App e mail | Bearer condiviso dell'API privata email |
+| `smtp-password` | `mail_smtp_password` → `/run/secrets/mail_smtp_password` | Solo mail | Password del provider SMTP quando configurato |
+| `calendar-api-token` | `calendar_api_token` → `/run/secrets/calendar_api_token` | App e calendar | Bearer condiviso dell'API privata Calendar |
+| `calendar-token-key` | `calendar_token_key` → `/run/secrets/calendar_token_key` | Solo calendar | Chiave AES-256-GCM, 32 byte rappresentati da 64 cifre esadecimali |
+| `google-client-secret` | `google_client_secret` → `/run/secrets/google_client_secret` | Solo calendar | Credenziale del client OAuth Google |
 
 `prepare` genera i tre file esadecimali con valori casuali distinti e crea inizialmente vuoti i due file provider. Conserva i file esistenti, rifiuta symlink/file non regolari e verifica il formato dei tre valori esadecimali attesi. Non stampa i valori e non esegue una rotazione automatica.
 
@@ -71,12 +73,12 @@ Il bearer viene caricato in memoria all'avvio dei processi. Cambiare il file sul
 | `MYSQL_USER`, `MYSQL_PASSWORD` | Inizializzazione nodi e app tramite `DB_USER`/`DB_PASSWORD` | L'app riceve il proprio account SQL, non root |
 | `MYSQL_ROOT_PASSWORD` | Nodi e operazioni amministrative del controller nei container | Non fornita all'app o agli addon |
 | `CLUSTER_REPLICATION_PASSWORD` | Controller, che configura account e canale nei nodi | Account `punto_recovery`, massimo 32 byte |
-| `CLUSTER_MONITOR_PASSWORD` | Controller e db-proxy | Account `punto_monitor` limitato alle letture di stato previste |
+| `CLUSTER_MONITOR_PASSWORD` | Controller e proxy-db | Account `punto_monitor` limitato alle letture di stato previste |
 | `DOC_DB_PASSWORD` | App e MongoDB | Account documentale con ruolo limitato al database documenti |
 | `DOC_DB_ROOT_PASSWORD` | MongoDB come password amministrativa | Non fornita all'app |
 | `NPM_ADMIN_EMAIL`, `NPM_ADMIN_PASSWORD` | Script `configure_proxy.py` | Credenziali del pannello, non variabili passate al container app |
-| `MAIL_SMTP_USER` | mail-addon | Nome di accesso provider; password separata nel secret |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_REDIRECT_URI` | calendar-addon | Identificatore e URI OAuth; client secret separato |
+| `MAIL_SMTP_USER` | mail | Nome di accesso provider; password separata nel secret |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_REDIRECT_URI` | calendar | Identificatore e URI OAuth; client secret separato |
 
 Il controller genera le quattro password interne mancanti di replica, monitor e documenti durante `init`. Non interpreta una successiva modifica del file env come richiesta di aggiornamento degli account già creati. `CREATE USER IF NOT EXISTS` non è una procedura di rotazione delle password esistenti.
 

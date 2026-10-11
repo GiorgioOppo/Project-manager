@@ -26,12 +26,14 @@ def build_native_check(directory):
     if compiler is None:
         raise unittest.SkipTest("C compiler unavailable")
     binary = Path(directory) / "alerts-check"
+    json_flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", "json-c"], text=True).split()
     subprocess.run([compiler, "-D_POSIX_C_SOURCE=200809L", "-std=c11", "-Wall", "-Wextra",
                     "-Wpedantic", "-Werror", "-I", str(roles.ROOT / "src"),
                     str(roles.ROOT / "src/alerts.c"), str(roles.ROOT / "src/storage.c"),
                     str(roles.ROOT / "src/workspace.c"), str(roles.ROOT / "src/organization.c"),
                     str(roles.ROOT / "src/mail_client.c"),
-                    str(roles.ROOT / "tests/alerts_native_check.c"), "-lsqlite3", "-lcurl", "-o", str(binary)],
+                    str(roles.ROOT / "src/inventory_client.c"),
+                    str(roles.ROOT / "tests/alerts_native_check.c"), "-lsqlite3", "-lcurl", *json_flags, "-o", str(binary)],
                    check=True, capture_output=True, text=True)
     return binary
 
@@ -459,7 +461,7 @@ class AlertIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (6,7)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (6,7,8,9)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=5")
             db.commit()
@@ -468,13 +470,13 @@ class AlertIntegrationTests(unittest.TestCase):
             old_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()
         self.restart_and_login()
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (7,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (9,))
             for table, rows in old.items():
                 self.assertEqual(db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             for table in ALERT_TABLES:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM "' + table + '"').fetchone(), (0,), table)
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (6,7)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (6,7,8,9)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=6").fetchone(), (1,))
             final_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()

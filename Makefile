@@ -3,7 +3,7 @@ DB_BACKEND ?= sqlite
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L
 CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
-SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c src/organization.c src/alerts.c src/mail_client.c src/calendar_client.c
+SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c src/organization.c src/alerts.c src/mail_client.c src/calendar_client.c src/work_board.c src/inventory_client.c
 CPPFLAGS += $(shell pkg-config --cflags json-c)
 LDLIBS += -lcurl $(shell pkg-config --libs json-c)
 UNAME_S := $(shell uname -s)
@@ -41,3 +41,13 @@ test: build/punto
 
 clean:
 	rm -rf build
+
+.PHONY: tickets run-tickets test-tickets
+tickets:
+	$(MAKE) -C ticket-app
+
+run-tickets: tickets
+	cd ticket-app && ./build/punto-tickets
+
+test-tickets: tickets
+	python3 -m unittest discover -s tests -p 'test_tickets.py' -v

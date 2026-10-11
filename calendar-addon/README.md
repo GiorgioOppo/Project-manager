@@ -1,5 +1,7 @@
 # Addon Google Calendar
 
+Il servizio Compose si chiama `calendar` e la sua immagine locale è `punto/calendar:${PUNTO_IMAGE_TAG:-local}`. Per aggiornare un’installazione con i nomi precedenti seguire la [guida nomenclatura Docker](../docs/tehnical/nomi-servizi-e-immagini.md); directory, volumi e identità TLS conservano i nomi già previsti.
+
 `punto-calendar` è un servizio in C indipendente dall'app, con API HTTPS privata e una coda persistente per le modifiche. Importa gli eventi Google nel proprio archivio e invia a Google creazioni, modifiche e cancellazioni richieste dall'app. Non accede ai database MySQL o MongoDB.
 
 Le credenziali Google non sono ancora configurate: il container e le API funzionano, ma lo stato espone `oauth_configured: false`. Nessun account viene collegato e nessuna chiamata a Google viene effettuata in questa configurazione.

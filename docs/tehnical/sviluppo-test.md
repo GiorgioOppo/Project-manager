@@ -1,6 +1,6 @@
 # Sviluppo e test
 
-Questa guida descrive strumenti e test presenti il **10 ottobre 2026**. I comandi sono da eseguire dalla radice del repository. La redazione di questa documentazione non ha avviato test, modificato dati o ricreato container. Il [README principale](../../README.md) contiene il contesto del progetto; [architettura](architettura.md) descrive i componenti.
+Questa guida descrive strumenti e test presenti l’**11 ottobre 2026**. I comandi sono da eseguire dalla radice del repository. I risultati del nuovo modulo sono nel [verbale attività dell'11 ottobre](verifica-attivita-2026-10-11.md); le istruzioni qui sotto non attestano da sole l'esecuzione di una prova. Il [README principale](../../README.md) contiene il contesto del progetto; [architettura](architettura.md) descrive i componenti.
 
 ## Toolchain e backend
 
@@ -43,11 +43,12 @@ Per eseguire una famiglia specifica:
 
 ```sh
 python3 -m unittest discover -s tests -p 'test_reports.py' -v
+python3 -m unittest discover -s tests -p 'test_work_board.py' -v
 python3 -m unittest discover -s tests -p 'test_calendar_addon.py' -v
 python3 -m unittest discover -s tests -p 'test_calendar_client.py' -v
 ```
 
-La seconda e la terza famiglia possono compilare binari e generare certificati di fixture; un ambiente che blocca i socket locali impedisce questi test anche se la logica applicativa è corretta. Non sostituire una fixture TLS con un fornitore reale per superare la limitazione.
+Le due famiglie Calendar possono compilare binari e generare certificati di fixture; un ambiente che blocca i socket locali impedisce questi test anche se la logica applicativa è corretta. Non sostituire una fixture TLS con un fornitore reale per superare la limitazione.
 
 ## Mappa delle verifiche
 
@@ -55,6 +56,7 @@ La seconda e la terza famiglia possono compilare binari e generare certificati d
 | --- | --- | --- |
 | HTTP e autenticazione | [test_server.py](../../tests/test_server.py), [test_roles.py](../../tests/test_roles.py), [test_public_port.py](../../tests/test_public_port.py), [test_reverse_proxy.py](../../tests/test_reverse_proxy.py) | Parsing, sessioni, profili, Host/Origin, porte pubbliche e comportamento dietro proxy |
 | Commesse e ore | [test_workspace.py](../../tests/test_workspace.py), [test_assignments.py](../../tests/test_assignments.py), [test_job_defaults.py](../../tests/test_job_defaults.py) | Stati, dati, permessi, assegnazioni, commesse comuni e storico |
+| Attività, Kanban e blocchi | [test_work_board.py](../../tests/test_work_board.py) | Permessi diretti/gruppi/comuni, revoche, assegnatari, gerarchie, revisioni obsolete, validazione Unicode e limite HTTP dedicato, audit atomico, cancellazioni e migrazione 7→8 |
 | Organizzazione | [test_groups.py](../../tests/test_groups.py) | Albero, appartenenze, ruoli, abilitazioni, cicli, intervalli e migrazione |
 | Contratti e PDF | [test_procurement.py](../../tests/test_procurement.py), [test_documents_storage.py](../../tests/test_documents_storage.py), [test_documents_backup.py](../../tests/test_documents_backup.py) | Fornitori, contratti, relazioni, upload/download, storage e comportamento del backup |
 | Report e tariffe | [test_reports.py](../../tests/test_reports.py), [test_labor_rates.py](../../tests/test_labor_rates.py) | Filtri, aggregati, visibilità, costi, arrotondamenti e tariffe temporali |
@@ -63,6 +65,8 @@ La seconda e la terza famiglia possono compilare binari e generare certificati d
 | Calendar | [test_calendar_addon.py](../../tests/test_calendar_addon.py), [test_calendar_client.py](../../tests/test_calendar_client.py) | OAuth, isolamento utente, cifratura, paging, sincronizzazione, ETag, idempotenza, timeout e riconnessione |
 | Distribuzione | [test_deployment.py](../../tests/test_deployment.py), [test_cluster_manager.py](../../tests/test_cluster_manager.py) | Configurazioni, procedure del controller e salvaguardie |
 | Privacy proxy | [test_proxy_privacy.py](../../tests/test_proxy_privacy.py) | Conservazione di ACL/header e rimozione dei segreti OAuth dai log |
+
+La suite attività/blocchi usa esclusivamente un server HTTP e database SQLite temporanei. Il Kanban è una presentazione degli stati delle attività: i test HTTP coprono i valori e i permessi, mentre elenco, colonne, dialog e tastiera richiedono anche il collaudo della UI. La presenza dei test non certifica un deployment MySQL aggiornato.
 
 Il C di supporto in `tests/` verifica anche comportamento documentale, pianificatore alert e TLS del driver. I test di integrazione con database reali completano, senza sostituire, le prove SQLite.
 

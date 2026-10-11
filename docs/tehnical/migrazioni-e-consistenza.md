@@ -1,10 +1,10 @@
 # Migrazioni, transazioni e consistenza
 
-Verificato il **10 ottobre 2026** sui sorgenti e sui test presenti. Versione applicativa dei dati: **7**. Le sezioni iniziali descrivono il comportamento implementato; la sezione finale propone un metodo per le evoluzioni future. Non sono state lanciate migrazioni o prove di guasto per scrivere questo documento.
+Verificato l’**11 ottobre 2026** sui sorgenti e sui test presenti. Versione applicativa dei dati: **9**. Le sezioni iniziali descrivono il comportamento implementato; la sezione finale propone un metodo per le evoluzioni future. La migrazione 8 → 9 è verificata da test nativi su conservazione delle righe figlie, sequenze, idempotenza e rollback.
 
 Fonti: [storage.c](../../src/storage.c), [mysql_schema.c](../../src/mysql_schema.c), [adapter MySQL](../../src/db_mysql.c), [avvio](../../src/server.c), [accounts.c](../../src/accounts.c), [procurement.c](../../src/procurement.c). Il DDL completo e le relazioni sono nel [modello dati](modello-dati.md); backup e ripristino nel [manuale operativo](operazioni-backup-ripristino.md).
 
-## Che cosa significa versione 7
+## Che cosa significa versione 9
 
 La stessa versione applicativa descrive i due backend, ma la procedura fisica è differente:
 
@@ -19,7 +19,7 @@ La stessa versione applicativa descrive i due backend, ma la procedura fisica è
 
 Versione supportata non significa verifica completa di ogni colonna e indice esistente. Il codice contiene controlli mirati: non è uno strumento generale di rilevamento della divergenza dello schema. Alterazioni manuali sconosciute possono far fallire l'avvio oppure una successiva operazione.
 
-Gli addon hanno cicli di archivio indipendenti: Calendar verifica `PRAGMA user_version<=1` e la chiave cifrante; mail crea il proprio ledger e converte `sending` residui in `unknown`. NPM gestisce autonomamente le proprie migrazioni. Nessuno di questi archivi viene aggiornato dalla versione 7 MySQL.
+Gli addon hanno cicli di archivio indipendenti: Calendar verifica `PRAGMA user_version<=1` e la chiave cifrante; mail crea il proprio ledger e converte `sending` residui in `unknown`. NPM gestisce autonomamente le proprie migrazioni. Nessuno di questi archivi viene aggiornato dalla versione 9 MySQL.
 
 ## Avvio SQLite, ordine ed effetti persistenti
 
@@ -50,11 +50,11 @@ sequenceDiagram
     end
 ```
 
-Il diagramma mostra il caso di file già esistente; se il file non esiste il preflight accetta l'assenza senza crearlo. Un file con versione negativa/non leggibile o maggiore di 7 viene rifiutato prima di creare tabelle o account.
+Il diagramma mostra il caso di file già esistente; se il file non esiste il preflight accetta l'assenza senza crearlo. Un file con versione negativa/non leggibile o maggiore di 9 viene rifiutato prima di creare tabelle o account.
 
 `workspace_open()` crea `jobs`, `time_entries` e indici base in una sua transazione. `accounts_open()` crea `users`, quindi inserisce il gestore bootstrap soltanto se `COUNT(*)=0`. Questi commit precedono la transazione delle migrazioni: **non esiste una sola transazione che racchiuda l'intero avvio**. Se una migrazione successiva fallisce, il bootstrap/base già confermati non vengono cancellati.
 
-`storage_open()` apre un'altra connessione, abilita le FK e avvia `migrate()`. Il valore di partenza viene letto una volta; le condizioni `version <= N` applicano tutti i passi necessari nello stesso avvio. Ogni passo aggiorna il marcatore e aggiunge un evento `system.migration`; se un passo fallisce, il rollback della transazione di migrazione annulla anche i passi precedenti eseguiti in quella stessa transazione.
+`storage_open()` apre un'altra connessione e avvia `migrate()`. Per ricostruire la tabella padre `alert_rules`, la migrazione sospende le FK prima della transazione, esegue `PRAGMA foreign_key_check` prima del commit e riabilita le FK anche in caso di errore. Il valore di partenza viene letto una volta; le condizioni `version <= N` applicano tutti i passi necessari nello stesso avvio. Ogni passo aggiorna il marcatore e aggiunge un evento `system.migration`; se un passo fallisce, il rollback della transazione di migrazione annulla anche i passi precedenti eseguiti in quella stessa transazione.
 
 ## Avvio MySQL, DDL e versione
 
@@ -76,21 +76,22 @@ sequenceDiagram
     Main->>M: Migrazioni versionate
     M->>DB: START TRANSACTION e UPDATE write_guard
     M->>DB: SELECT version FOR UPDATE
-    M->>DB: Dati iniziali, audit, versioni fino a 7
+    M->>DB: Dati iniziali, audit, versioni fino a 9
     M->>DB: COMMIT
     Main->>Main: Apre altri moduli e listener
 ```
 
 Qui il nome `storage_preflight()` comprende una fase mutante: prima `mysql_schema_preflight()` verifica la compatibilità, poi `mysql_schema_prepare()` prepara lo schema. La connessione read-only della prima fase non è riutilizzata per il DDL.
 
-Il controllo preliminare accetta il database senza `schema_metadata`, oppure con tabella vuota dopo un'installazione interrotta; con una riga richiede `id=1`, versione non NULL in 0–7 e nessun'altra riga. Una versione futura viene respinta prima della preparazione DDL e del bootstrap.
+Il controllo preliminare accetta il database senza `schema_metadata`, oppure con tabella vuota dopo un'installazione interrotta; con una riga richiede `id=1`, versione non NULL in 0–9 e nessun'altra riga. Una versione futura viene respinta prima della preparazione DDL e del bootstrap.
 
-La preparazione definisce le 22 tabelle attese e controlla esplicitamente:
+La preparazione definisce le 24 tabelle attese e controlla esplicitamente:
 
 - `jobs.contract_id`, con FK e indice, per installazioni precedenti;
 - `job_assignments.role_id` e FK;
 - `jobs.is_common`, default 0;
 - il CHECK degli stati di `alert_email_outbox`: accetta quello corrente, oppure sostituisce soltanto il vincolo legacy riconosciuto che ammetteva `pending_configuration`; un vincolo personalizzato sconosciuto non viene sostituito alla cieca;
+- `alert_rules.days_before` con default 30 e CHECK 1–365; ampliamento del CHECK dei tipi al solo vincolo legacy riconosciuto, aggiungendo `inventory_due`;
 - presenza dei trigger di integrità/immutabilità;
 - righe iniziali `schema_metadata(1,0)` e `cluster_write_guard(1,0)` con inserimento idempotente.
 
@@ -98,7 +99,7 @@ I singoli DDL MySQL possono produrre commit impliciti e rimangono applicati se u
 
 Solo dopo si aprono workspace/accounts/storage. La migrazione versionata MySQL acquisisce il guard, legge la versione `FOR UPDATE`, applica le trasformazioni dati necessarie, aggiunge audit e avanza il marcatore nella medesima transazione. Il contatore versione non è aggiornato dal solo `CREATE TABLE`.
 
-## Percorso 0 → 7
+## Percorso 0 → 9
 
 | Passaggio | Trasformazione implementata | Dati preservati o particolarità |
 | --- | --- | --- |
@@ -109,10 +110,13 @@ Solo dopo si aprono workspace/accounts/storage. La migrazione versionata MySQL a
 | `4 → 5` | Flag `jobs.is_common` non nullo, default 0. | Le commesse esistenti restano private salvo aggiornamento esplicito. I nomi delle commesse comuni non vengono imposti automaticamente da questa migrazione. |
 | `5 → 6` | Regole alert, destinatari utenti/email, soggetti monitorati, eventi invalidi, notifiche e outbox. | Nessuna regola viene attivata automaticamente per tutti. L'outbox legacy ammette solo `pending_configuration`. |
 | `6 → 7` | Stati email `pending_configuration/retrying/sent/delivery_unknown/delivery_failed`. | SQLite ricostruisce l'outbox copiando tutte le righe e preserva `sqlite_sequence`, anche se gli ID più alti erano già eliminati. MySQL espande il CHECK nella fase DDL e registra il passo versione nella fase transazionale. |
+| `7 → 8` | Attività/sottoattività `job_tasks` e registro `job_blockers`, indici, FK alla commessa e agli utenti e FK composte alla stessa commessa. | Nessun dato dimostrativo o trasformazione dei record precedenti. SQLite crea le strutture nella transazione; MySQL le prepara nella fase DDL e conferma audit/versione nella transazione. |
+
+| `8 → 9` | Regole `inventory_due` e `days_before` 1–365, predefinito 30. | SQLite ricostruisce `alert_rules`, preserva ID, sequenza e righe figlie, controlla le FK e conferma audit/versione atomicamente. MySQL amplia il solo CHECK legacy riconosciuto e aggiunge la colonna in preparazione DDL. Non crea regole automatiche. |
 
 La conservazione del massimo ID outbox è parte del contratto di idempotenza: il servizio mail usa `namespace:outbox:ID`. Riutilizzare un ID precedentemente consumato potrebbe far coincidere un nuovo messaggio con un invio storico.
 
-Una migrazione già applicata non deve aggiungere nuovamente gli audit dei passi precedenti. La preparazione MySQL ripete controlli di esistenza, mentre i passi dati dipendono dal marcatore. Uno schema con colonne apparentemente recenti ma marcatore non coerente non va “corretto” impostando manualmente `version=7`: si salterebbero trasformazioni e verifiche.
+Una migrazione già applicata non deve aggiungere nuovamente gli audit dei passi precedenti. La preparazione MySQL ripete controlli di esistenza, mentre i passi dati dipendono dal marcatore. Uno schema con colonne apparentemente recenti ma marcatore non coerente non va “corretto” impostando manualmente `version=9`: si salterebbero trasformazioni e verifiche.
 
 ## Transazione business: unità atomica
 
@@ -130,7 +134,9 @@ risposta di successo
 
 In caso di errore: finalizzare gli statement, fare rollback e restituire errore. Il risultato di `COMMIT` viene verificato: non si deve emettere successo solo perché l'ultima `INSERT` è riuscita. `storage_audit()` rifiuta la chiamata quando la connessione è in autocommit, rendendo esplicito il vincolo transazionale.
 
-Esempi atomici presenti: limite delle ore giornaliere con inserimento, cancellazione commessa con tutte le ore/grant, modifica ruolo/utente con protezione dell'ultimo gestore attivo, tariffa con verifica sovrapposizioni, esecuzione alert con notifiche/outbox/cursori. Audit e dati non usano due connessioni differenti: la funzione audit riceve quella dell'handler.
+Esempi atomici presenti: limite delle ore giornaliere con inserimento, cancellazione commessa con tutte le ore, attività, blocchi e grant, modifica ruolo/utente con protezione dell'ultimo gestore attivo, tariffa con verifica sovrapposizioni, esecuzione alert con notifiche/outbox/cursori, modifica attività/blocco con controllo revisione e rimozione attività con scollegamento dei blocchi e relativo audit. Audit e dati non usano due connessioni differenti: la funzione audit riceve quella dell'handler.
+
+Attività e blocchi aggiungono concorrenza ottimistica: il form invia la revisione letta, la transazione la confronta e la scrittura la incrementa. Due editor della stessa revisione non possono sostituirsi silenziosamente. Lo scollegamento di un blocco durante l’eliminazione dell’attività incrementa anch’esso la revisione. I controlli della gerarchia considerano tutto il sottoalbero e avvengono prima della scrittura.
 
 Le letture dei report usano una singola query con CTE per totali e righe, senza aprire una transazione di scrittura né acquisire il guard. Le opzioni filtro vengono lette separatamente; non costituiscono un intero snapshot multi-query immutabile del database.
 
@@ -192,7 +198,9 @@ Questa tabella indica **test esistenti**, non risultati appena rieseguiti.
 | Flag comuni inizializzati in modo conservativo | `test_schema_four_upgrade_preserves_records_and_sets_safe_defaults_once` in [commesse comuni](../../tests/test_job_defaults.py). |
 | Migrazione alert e audit una sola volta | `test_schema_five_upgrade_preserves_business_and_audit_once` in [alert](../../tests/test_alerts.py). |
 | Sequenza ID outbox conservata al passo 7 | `test_schema_six_upgrade_preserves_outbox_ids_sequence_business_records_and_audit` in [client mail](../../tests/test_mail_client.py). |
-| Audit fallito annulla business | Test dedicati in [assegnazioni](../../tests/test_assignments.py), [gruppi](../../tests/test_groups.py), [tariffe](../../tests/test_labor_rates.py), [contratti](../../tests/test_procurement.py) e [alert](../../tests/test_alerts.py). |
+| Schema 8 conserva dati precedenti e audit una sola volta | `test_schema_seven_upgrade_preserves_existing_accounts_jobs_hours_and_audit` in [attività/blocchi](../../tests/test_work_board.py). |
+| Revisioni, gerarchie e scollegamento blocchi | Casi dedicati in [attività/blocchi](../../tests/test_work_board.py): update/delete obsoleti, limiti di profondità, cancellazione con figli e rollback dell’audit. |
+| Audit fallito annulla business | Test dedicati in [assegnazioni](../../tests/test_assignments.py), [gruppi](../../tests/test_groups.py), [tariffe](../../tests/test_labor_rates.py), [contratti](../../tests/test_procurement.py) [alert](../../tests/test_alerts.py) e [attività/blocchi](../../tests/test_work_board.py). |
 | Scritture da ogni primario e conflitti | `test_01_every_primary_writes_and_conflicting_transactions_roll_back` in [HA MySQL](../../tests/test_cluster_ha.py), prova facoltativa con effetti sul laboratorio. |
 | Recupero quorum e arresto completo | Altri casi di [HA MySQL](../../tests/test_cluster_ha.py) e selezione GTID in [cluster manager](../../tests/test_cluster_manager.py). |
 
@@ -200,7 +208,7 @@ Le prove SQLite non dimostrano da sole il comportamento MySQL di DDL implicito, 
 
 ## Strategia proposta per una prossima versione
 
-Questa sezione è **una proposta di lavoro**, non un migration runner già presente. Non esiste una migrazione 8, un downgrade automatico o un comando HTTP di aggiornamento schema.
+Questa sezione è **una proposta di lavoro**, non un migration runner già presente. Le migrazioni fino alla 9 sono implementate; non sono presenti un downgrade automatico o un comando HTTP di aggiornamento schema.
 
 1. Definire l'invariante del nuovo dato, la nullabilità e il valore iniziale senza inventare valori business. Elencare impatti su audit, report, autorizzazioni, backup e integrazioni.
 2. Preparare fixture dei database supportati e snapshot prima/dopo delle entità da conservare, inclusi contatori ID e blob esterni. Usare dati sintetici e testare upgrade da ogni versione effettivamente supportata.

@@ -1,6 +1,8 @@
 # Add-on email di punto
 
-Microservizio scritto in C che riceve richieste HTTPS dall’app e invia messaggi di testo tramite SMTP con TLS. Usa OpenSSL, libcurl e SQLite; `make -C addon` compila l’eseguibile indipendente `addon/build/punto-mailer`. Il [Dockerfile](Dockerfile) produce il servizio Compose `mail-addon`, eseguito con utente non privilegiato, filesystem in sola lettura e un volume dedicato al registro degli invii.
+Il servizio Compose si chiama `mail` e la sua immagine locale è `punto/mail:${PUNTO_IMAGE_TAG:-local}`. Per aggiornare un’installazione con i nomi precedenti seguire la [guida nomenclatura Docker](../docs/tehnical/nomi-servizi-e-immagini.md); directory, volumi e identità TLS conservano i nomi già previsti.
+
+Microservizio scritto in C che riceve richieste HTTPS dall’app e invia messaggi di testo tramite SMTP con TLS. Usa OpenSSL, libcurl e SQLite; `make -C addon` compila l’eseguibile indipendente `addon/build/punto-mailer`. Il [Dockerfile](Dockerfile) produce il servizio Compose `mail`, eseguito con utente non privilegiato, filesystem in sola lettura e un volume dedicato al registro degli invii.
 
 **SMTP non è ancora configurato.** Il servizio è operativo come API, ma non invia email reali. Le notifiche interne continuano a funzionare; le email degli alert restano in `alert_email_outbox` con stato `pending_configuration`.
 
@@ -74,7 +76,7 @@ Sostituire il segnaposto in [allowed-smtp-domains.txt](../docker/squid/allowed-s
 Dopo aver predisposto configurazione, secret e allowlist, dalla radice del progetto ricreare i due servizi affinché rileggano ambiente e file montati:
 
 ```sh
-docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait squid mail-addon
+docker compose --env-file .env.docker up -d --no-deps --force-recreate --wait proxy-egress mail
 ```
 
 Non serve riavviare l’app per rilevare lo stato SMTP aggiornato. Quando SMTP diventa configurato, l’app può elaborare anche gli alert già accodati: verificare destinatari e contenuto dell’outbox prima di abilitare un fornitore reale.

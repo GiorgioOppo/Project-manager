@@ -1,0 +1,50 @@
+# Overlay facoltativo: usare insieme a compose.yaml per l'ingresso tramite NPM.
+# docker compose --env-file .env.docker --env-file ticket-app/.env \
+#   -f compose.yaml -f compose.tickets.yaml up --build -d tickets
+services:
+  tickets:
+    image: "punto/tickets:${PUNTO_IMAGE_TAG:-local}"
+    pull_policy: build
+    build:
+      context: ./ticket-app
+    environment:
+      TICKETS_BIND: 172.30.20.11
+      TICKETS_PORT: "8083"
+      TICKETS_PUBLIC_DIR: /app/public
+      TICKETS_DB_PATH: /var/lib/punto-tickets/tickets.db
+      TICKETS_EMAIL: "${TICKETS_EMAIL:?Imposta TICKETS_EMAIL nel file ticket-app/.env}"
+      TICKETS_PASSWORD: "${TICKETS_PASSWORD:?Imposta TICKETS_PASSWORD di almeno 12 caratteri}"
+      TICKETS_NAME: "${TICKETS_NAME:-Gestore}"
+      TICKETS_PUBLIC_ORIGIN: "${TICKETS_PUBLIC_ORIGIN:?Imposta l'origine pubblica dei ticket senza slash finale}"
+    volumes:
+      - tickets_data:/var/lib/punto-tickets
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_forward: "0"
+      net.ipv6.conf.all.forwarding: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --noproxy '*' --fail --silent --show-error --max-time 3 --header \"Host: $${TICKETS_PUBLIC_ORIGIN#*://}\" http://172.30.20.11:8083/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 4
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      private_app:
+        ipv4_address: 172.30.20.11
+        interface_name: private_app
+        aliases:
+          - ticket-app
+
+volumes:
+  tickets_data:

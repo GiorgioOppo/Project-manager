@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 try:
-    from manage_cluster import Cluster, NODES
+    from manage_cluster import Cluster, NODES, NODE_SERVICES
 finally:
     sys.path.pop(0)
 
@@ -116,7 +116,7 @@ class ClusterHATests(unittest.TestCase):
             def conflicting_write(node):
                 query = f"START TRANSACTION; UPDATE {self.schema}.cluster_write_guard SET generation=generation+1 WHERE id=1; "
                 query += "INSERT INTO " + qualified + "(origin) VALUES('race-" + node + "'); DO SLEEP(2); COMMIT;"
-                return self.cluster.run(("exec", "-T", node, "sh", "-c",
+                return self.cluster.run(("exec", "-T", NODE_SERVICES[node], "sh", "-c",
                     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql --user=root --batch --skip-column-names'),
                     data=query.encode(), check=False, timeout=30)
 
@@ -140,19 +140,19 @@ class ClusterHATests(unittest.TestCase):
         paused = False
         try:
             print("Arresto del primo nodo: verifica scrittura con due nodi…", flush=True)
-            self.cluster.run(("stop", "db"))
+            self.cluster.run(("stop", NODE_SERVICES["db"]))
             self.wait_health(200)
             job_id = self.create_job(cookie, "due nodi")
             for node in ("db2", "db3"):
                 self.assertEqual(self.cluster.sql(node, f"SELECT COUNT(*) FROM {self.schema}.jobs WHERE id=" + str(job_id) + ";"), "1")
-            self.cluster.run(("up", "-d", "db"))
+            self.cluster.run(("up", "-d", NODE_SERVICES["db"]))
             self.assert_all_writers()
             self.wait_health(200)
             self.assertEqual(self.cluster.sql("db", f"SELECT COUNT(*) FROM {self.schema}.jobs WHERE id=" + str(job_id) + ";"), "1")
             print("Rientro automatico del nodo e recupero della scrittura: OK", flush=True)
 
             print("Pausa di due nodi: verifica protezione dalla perdita di maggioranza…", flush=True)
-            self.cluster.run(("pause", "db2", "db3"))
+            self.cluster.run(("pause", NODE_SERVICES["db2"], NODE_SERVICES["db3"]))
             paused = True
             self.wait_health(503)
             deadline = time.monotonic() + 40
@@ -169,7 +169,7 @@ class ClusterHATests(unittest.TestCase):
             print("Minoranza in sola lettura e app HTTP 503: OK", flush=True)
         finally:
             if paused:
-                self.cluster.run(("unpause", "db2", "db3"), check=False)
+                self.cluster.run(("unpause", NODE_SERVICES["db2"], NODE_SERVICES["db3"]), check=False)
             self.cluster.recover()
         self.assert_all_writers()
         self.wait_health(200)
@@ -182,7 +182,7 @@ class ClusterHATests(unittest.TestCase):
         print("Arresto completo: verifica recupero sicuro dai GTID…", flush=True)
         try:
             self.cluster.run(("stop", "app"))
-            self.cluster.run(("stop", *NODES))
+            self.cluster.run(("stop", *(NODE_SERVICES[node] for node in NODES)))
         finally:
             self.cluster.recover()
         self.assert_all_writers()

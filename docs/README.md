@@ -2,7 +2,7 @@
 
 La documentazione descrive la web app per commesse e registrazione delle ore, i servizi che la eseguono e i processi di lavoro. È organizzata in **`tehnical/`** per chi sviluppa o amministra il sistema e **`prod/`** per chi lo configura e lo utilizza. Il nome della cartella `tehnical` è mantenuto come richiesto dal progetto.
 
-**Riferimento:** codice del workspace al 10 ottobre 2026, schema applicativo 7, 22 tabelle MySQL, 10 servizi Docker e 7 reti. La modalità nativa usa SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.md) conserva le istruzioni generali di avvio.
+**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo 9, 24 tabelle MySQL, 11 servizi Docker (12 con Ticket) e 8 reti. La modalità nativa usa 22 tabelle funzionali SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.md) conserva le istruzioni generali di avvio.
 
 ## Percorsi di lettura
 
@@ -20,10 +20,13 @@ Gli [indici tecnici](tehnical/README.md) e [di prodotto](prod/README.md) elencan
 
 | Attività | Documenti dedicati |
 | --- | --- |
+| Gestire inventario e assegnazioni dei beni | [Guida inventory](prod/asset-inventory.md), [servizio e API](tehnical/asset-inventory.md) |
+| Organizzare attività e impedimenti | [Guida operativa](prod/attivita-kanban-e-blocchi.md), [implementazione e API](tehnical/attivita-kanban-e-blocchi.md), [collaudo dell'11 ottobre](tehnical/verifica-attivita-2026-10-11.md) |
 | Preparare il primo utilizzo | [Avvio operativo](prod/avvio-operativo.md), [scenari di accesso](prod/scenari-accessi.md) |
 | Interpretare ore e importi | [Esempi di analisi e costi](prod/esempi-analisi-e-costi.md), [regole del prodotto](prod/processi-e-regole.md) |
 | Comprendere una parte del codice | [Server C](tehnical/interni-server-c.md), [frontend](tehnical/frontend-e-interfaccia.md), [motore alert](tehnical/motore-alert.md) |
 | Cambiare dati o integrazioni | [Migrazioni e consistenza](tehnical/migrazioni-e-consistenza.md), [flussi email e Calendar](tehnical/flussi-integrazioni.md) |
+| Uniformare servizi e immagini Docker | [Nomenclatura e migrazione](tehnical/nomi-servizi-e-immagini.md) |
 | Preparare un rilascio | [Rilascio e compatibilità](tehnical/rilascio-e-compatibilita.md), [collaudo di accettazione](prod/collaudo-accettazione.md) |
 | Diagnosticare un problema | [Diagnostica e osservabilità](tehnical/diagnostica-e-osservabilita.md), [certificati e segreti](tehnical/gestione-certificati-e-segreti.md) |
 
@@ -33,7 +36,7 @@ Gli esempi usano dati fittizi. Le procedure di collaudo descrivono cosa verifica
 
 | Stato | Significato | Esempi |
 | --- | --- | --- |
-| Implementato e utilizzabile | Codice, API e interfaccia disponibili, salvo configurazione ordinaria dell’installazione | Commesse, ore, utenti, gruppi, contratti/PDF, analisi, tariffe, notifiche interne |
+| Implementato e utilizzabile | Codice, API e interfaccia disponibili, salvo configurazione ordinaria dell’installazione | Commesse, attività/sottoattività, Kanban, blocchi, ore, utenti, gruppi, contratti/PDF, analisi, tariffe, notifiche interne, asset inventory |
 | Implementato, provider da configurare | Servizio e API presenti; l’integrazione reale richiede credenziali e configurazione esterna | Invio email SMTP e collegamento Google OAuth |
 | Disponibile tramite API | Funzionalità utilizzabile dal bridge applicativo; una schermata dedicata non è ancora presente | Sincronizzazione Google Calendar e gestione eventi |
 | Pianificato / parziale | Requisito o progetto di rilascio; eventuali parti esistenti sono indicate nella roadmap | Registro settimanale, approvazioni, finanza completa, più società/valute, collegamento eventi–commesse–ore |
@@ -49,6 +52,7 @@ docs/
 ├── tehnical/
 │   ├── README.md
 │   ├── architettura.md
+│   ├── nomi-servizi-e-immagini.md
 │   ├── interni-server-c.md
 │   ├── frontend-e-interfaccia.md
 │   ├── installazione-configurazione.md
@@ -58,12 +62,15 @@ docs/
 │   ├── migrazioni-e-consistenza.md
 │   ├── api-app.md
 │   ├── api-addon.md
+│   ├── asset-inventory.md
 │   ├── flussi-integrazioni.md
+│   ├── attivita-kanban-e-blocchi.md
 │   ├── motore-alert.md
 │   ├── operazioni-backup-ripristino.md
 │   ├── diagnostica-e-osservabilita.md
 │   ├── rilascio-e-compatibilita.md
 │   ├── sviluppo-test.md
+│   ├── verifica-attivita-2026-10-11.md
 │   └── verifica-ui-2026-10-10.md
 ├── prod/
 │   ├── README.md
@@ -71,6 +78,8 @@ docs/
 │   ├── avvio-operativo.md
 │   ├── guida-utente.md
 │   ├── guida-gestore.md
+│   ├── asset-inventory.md
+│   ├── attivita-kanban-e-blocchi.md
 │   ├── processi-e-regole.md
 │   ├── scenari-accessi.md
 │   ├── esempi-analisi-e-costi.md
@@ -83,10 +92,11 @@ docs/
 ├── verifica-ui/       # Schermate del collaudo storico
 ├── analisi/           # Evidenze delle viste analitiche
 ├── alert/             # Evidenze delle notifiche
+├── attivita/          # Evidenze del modulo attività e blocchi
 └── commesse/          # Evidenze del catalogo comune
 ```
 
-Le immagini esistenti mantengono i propri percorsi. I manuali locali dei servizi restano disponibili in [addon/README.md](../addon/README.md) e [calendar-addon/README.md](../calendar-addon/README.md).
+Le immagini esistenti mantengono i propri percorsi. I manuali locali dei servizi restano disponibili in [addon/README.md](../addon/README.md) e [calendar-addon/README.md](../calendar-addon/README.md) e [inventory-addon/README.md](../inventory-addon/README.md).
 
 ## Criteri di manutenzione
 

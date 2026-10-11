@@ -1,0 +1,105 @@
+/* Asset inventory shares workspace typography and controls. */
+.inventory-heading-actions,.inventory-toolbar { display:flex; align-items:end; flex-wrap:wrap; gap:10px; }
+.inventory-heading-actions { align-items:center; }
+.inventory-scope { margin:0 28px 18px; font-size:12px; line-height:1.7; color:#586953; }
+.inventory-summary { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin:0 28px 22px; }
+.inventory-summary>div { min-width:0; padding:15px 12px; border:1px solid #e0e5d9; border-radius:7px; background:#f6f7f0; }
+.inventory-summary span { display:block; color:#5c6c53; font-size:11px; line-height:1.5; }
+.inventory-summary strong { display:block; margin-top:6px; color:#344f30; font-size:25px; font-weight:500; }
+.inventory-toolbar { padding:0 28px 22px; border-bottom:1px solid #e6e9df; }
+.inventory-toolbar .work-field { margin:0; min-width:165px; }
+.inventory-toolbar .inventory-search-field { flex:1; min-width:220px; }
+.inventory-toolbar>.button { margin-bottom:1px; }
+.inventory-toolbar>.row-button { padding:12px 5px; }
+.inventory-table { min-width:780px; table-layout:auto!important; }
+.inventory-table th:nth-child(1) { width:27%; }
+.inventory-table th:nth-child(2) { width:19%; }
+.inventory-table th:nth-child(3) { width:17%; }
+.inventory-table th:nth-child(4) { width:23%; }
+.inventory-table th:nth-child(5) { width:14%; }
+.inventory-table td { overflow-wrap:anywhere; }
+.inventory-identity strong,.inventory-identity span,.inventory-cell-line { display:block; line-height:1.6; }
+.inventory-identity strong { font-size:13px; color:#344d31; }
+.inventory-identity span,.inventory-cell-line { color:#64735a; font-size:11px; }
+.inventory-cell-secondary { display:block; color:#7a846f; font-size:11px; margin-top:4px; line-height:1.6; }
+.inventory-row-actions { display:flex; flex-wrap:wrap; gap:5px 12px; }
+.inventory-row-actions .row-button { text-align:left; }
+.inventory-status { display:inline-flex; padding:5px 8px; border-radius:5px; background:#eef2e7; color:#466239; font-size:11px; line-height:1.5; }
+.inventory-status-assigned { background:#e8eef7; color:#425b79; }
+.inventory-status-maintenance { background:#fbf0d9; color:#84601e; }
+.inventory-status-retired { background:#eeeeea; color:#696b62; }
+.inventory-status-lost { background:#fae8e0; color:#934c35; }
+.inventory-dialog,.inventory-detail-dialog { max-width:720px; }
+.inventory-fields { border:0; padding:0; margin:0; min-width:0; }
+.inventory-field-help { margin:7px 0 0; }
+.inventory-reload { margin:0 0 20px; white-space:normal; text-align:left; }
+.inventory-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 24px; padding:18px 0; margin:0; }
+.inventory-detail-grid>div { min-width:0; }
+.inventory-detail-grid dt { color:#64735c; font-size:11px; margin-bottom:5px; }
+.inventory-detail-grid dd { margin:0; color:#354d32; font-size:13px; line-height:1.7; overflow-wrap:anywhere; white-space:pre-wrap; }
+.inventory-detail-grid .inventory-detail-wide { grid-column:1 / -1; }
+.inventory-history-heading { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; border-top:1px solid #e1e6da; margin:8px 0 18px; padding-top:18px; }
+.inventory-history-heading h3 { margin:0; font-size:17px; color:#344c30; }
+.inventory-history-heading>span { font-size:11px; color:#697661; }
+.inventory-history { list-style:none; padding:0; margin:0 0 20px; }
+.inventory-history>li { border-left:2px solid #dbe4d0; padding:0 0 20px 16px; overflow-wrap:anywhere; }
+.inventory-history>li:last-child { padding-bottom:2px; }
+.inventory-history h4 { margin:0 0 5px; color:#3d5634; font-size:13px; }
+.inventory-history-meta,.inventory-history-summary { font-size:11px; color:#66775d; line-height:1.7; margin:5px 0; }
+.inventory-history details { margin-top:8px; }
+.inventory-history summary { font-size:11px; color:#4e6742; cursor:pointer; }
+.inventory-history summary:focus-visible { outline:3px solid #e6947d; outline-offset:3px; }
+.inventory-history .inventory-detail-grid { padding-bottom:0; gap:12px 20px; }
+.inventory-summary[hidden],.inventory-heading-actions button[hidden],.inventory-toolbar button[hidden],.inventory-detail-grid[hidden],#inventory-more[hidden],#inventory-history-more[hidden] { display:none; }
+@media (max-width:1050px) { .inventory-summary { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:760px) {
+  .inventory-scope { margin-left:18px; margin-right:18px; }
+  .inventory-summary { margin-left:18px; margin-right:18px; gap:8px; }
+  .inventory-summary>div { padding:12px 10px; }
+  .inventory-toolbar { padding-left:18px; padding-right:18px; align-items:stretch; }
+  .inventory-toolbar .inventory-search-field { min-width:100%; }
+  .inventory-toolbar .work-field { flex:1; }
+  .inventory-toolbar>.button { align-self:end; }
+  #inventory-dialog .form-grid { grid-template-columns:1fr; gap:0; }
+  .inventory-detail-grid { grid-template-columns:1fr; }
+  #inventory-footer { align-items:center; flex-wrap:wrap; gap:12px; }
+}
+.inventory-type-badge { display:inline-flex; padding:4px 7px; background:#edf0e7; border:1px solid #dfe6d7; border-radius:5px; color:#4a6340; font-size:11px; line-height:1.5; }
+.inventory-type-group { margin:6px 0 20px; padding-top:16px; border-top:1px solid #e1e6da; }
+.inventory-type-group legend { padding:0 10px 0 0; color:#405937; font-size:14px; font-weight:500; }
+.inventory-picker-wide { grid-column:1 / -1; min-width:0; }
+.inventory-picker-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:7px 0 8px; }
+.inventory-picker-controls input { flex:1; min-width:160px; }
+.inventory-picker-controls select { flex:0 1 170px; }
+.inventory-picker-controls .button { flex:0 0 auto; padding:11px 14px; }
+.inventory-picker>select { width:100%; }
+.inventory-picker .field-help { margin:6px 0; }
+.inventory-picker .dialog-error { margin:8px 0; }
+.inventory-relations { list-style:none; padding:0; margin:0 0 18px; }
+.inventory-relation-card { padding:14px 16px; margin:0 0 10px; border:1px solid #e0e6d9; background:#f8f9f3; border-radius:7px; }
+.inventory-relation-heading { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:5px 16px; }
+.inventory-relation-heading strong { color:#3d5736; font-size:13px; font-weight:500; }
+.inventory-relation-heading .inventory-cell-secondary { margin:0; }
+.inventory-relation-summary { margin:7px 0 10px; color:#596e50; font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.inventory-relation-form { padding:18px; margin:18px 0 22px; background:#f5f7ef; border:1px solid #dfe6d7; border-radius:7px; }
+.inventory-relation-form h4 { margin:0 0 16px; color:#405a37; font-size:15px; font-weight:500; }
+.inventory-relation-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+.inventory-relation-confirm { margin-top:12px; padding:12px; background:#fff6e7; border:1px solid #e8dabd; border-radius:5px; }
+.inventory-relation-confirm p { margin:0 0 10px; color:#725c36; font-size:12px; line-height:1.7; }
+.inventory-relation-confirm button { margin:0 8px 5px 0; }
+#inventory-dialog [hidden],#inventory-detail-dialog [hidden],.inventory-picker-controls [hidden] { display:none!important; }
+@media (max-width:760px) {
+  .inventory-picker-controls { align-items:stretch; }
+  .inventory-picker-controls input { flex-basis:100%; min-width:0; }
+  .inventory-picker-controls select { flex:1; min-width:0; }
+  .inventory-relation-form { padding:14px; }
+}
+.inventory-backup-status { margin:0 28px 18px; }
+.inventory-import-dialog { max-width:850px; }
+.inventory-import-preview { margin:22px 0; }
+.inventory-import-preview .inventory-table-wrap { max-height:320px; overflow:auto; border:1px solid #e0e5d9; border-radius:7px; }
+.inventory-import-preview .inventory-table { min-width:560px; width:100%; }
+.inventory-import-preview .inventory-table th { width:auto; }
+.inventory-import-preview .inventory-table td { white-space:pre-wrap; }
+.inventory-import-preview[hidden],.inventory-backup-status[hidden] { display:none; }
+@media (max-width:760px) { .inventory-backup-status { margin-inline:18px; } }

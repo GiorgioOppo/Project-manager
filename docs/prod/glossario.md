@@ -10,11 +10,11 @@ I termini seguenti descrivono il prodotto attuale. Le voci riferite a sviluppi f
 | --- | --- |
 | Utente / account | Identità personale con nome, email, password derivata e stato attivo o disattivato. Le registrazioni appartengono al suo identificativo stabile. |
 | Gestore | Profilo dell’account che amministra lo spazio di lavoro: anagrafiche, commesse, organizzazione, tariffe e proprie regole di alert. Consulta anche analisi aggregate di più utenti. |
-| Operatore | Profilo che consulta le commesse abilitate e registra le proprie ore quando il ruolo sulla commessa lo consente. |
+| Operatore | Profilo che consulta le commesse abilitate, registra le proprie ore, aggiorna le attività assegnate e gestisce i propri blocchi quando il ruolo sulla commessa lo consente. |
 | Ruolo dell’account | Profilo globale Gestore oppure Operatore. È distinto dal ruolo attribuito su una commessa. |
-| Ruolo sulla commessa | Insieme di permessi operativi su una commessa: consultazione e, se abilitata, registrazione delle ore. Non concede amministrazione globale. |
+| Ruolo sulla commessa | Insieme di permessi operativi su una commessa: consultazione e, se abilitata, registrazione delle ore e collaborazione su attività assegnate e propri blocchi. Non concede amministrazione globale. |
 | Lettore | Ruolo predefinito sulla commessa che permette la consultazione senza inserimento delle ore. Non è un terzo profilo di account. |
-| Collaboratore | Ruolo predefinito sulla commessa che permette consultazione e registrazione delle proprie ore. |
+| Collaboratore | Ruolo predefinito sulla commessa che permette consultazione, registrazione delle proprie ore, aggiornamento dello stato delle attività assegnate e gestione dei blocchi di cui è autore o responsabile. |
 | Gruppo | Insieme di utenti organizzabile in una gerarchia. Un utente può appartenere a più gruppi. |
 | Sottogruppo | Gruppo figlio che beneficia delle abilitazioni attribuite ai suoi gruppi antenati. |
 | Appartenenza | Collegamento diretto fra un utente e un gruppo. È distinto dall’abilitazione del gruppo a una commessa. |
@@ -30,6 +30,15 @@ I termini seguenti descrivono il prodotto attuale. Le voci riferite a sviluppi f
 | Commessa | Unità a cui attribuire lavoro: codice univoco, nome, cliente, descrizione, stato ed eventuale contratto. Le richieste che parlano di “progetto” fanno riferimento a questa entità. |
 | Commessa comune | Commessa che il gestore rende consultabile e utilizzabile da tutti gli account attivi, senza singole assegnazioni. |
 | Stato della commessa | Etichetta del ciclo di lavoro: Da avviare, In corso, In pausa, Completata o Annullata. Da sola non blocca l’inserimento delle ore. |
+| Attività | Elemento di lavoro di una commessa con titolo, descrizione, stato e priorità; responsabile e scadenza sono facoltativi. Le ore non sono ancora collegate alla singola attività. |
+| Sottoattività | Attività collegata a un genitore della stessa commessa. La gerarchia arriva a otto livelli e mantiene stati indipendenti. |
+| Kanban / bacheca | Vista delle attività in cinque colonne: Da fare, In corso, Bloccato, Da verificare e Completato. |
+| Responsabile attività | Persona incaricata di seguirla. L’assegnazione non concede automaticamente accesso alla commessa. |
+| Blocco | Impedimento della commessa o di una sua attività, con impatto, responsabile, stato, prossima azione e scadenza. |
+| Impatto | Gravità operativa di un blocco: Basso, Medio, Alto o Critico. Non calcola automaticamente perdite economiche. |
+| Prossima azione | Passo descritto per affrontare un blocco; non è una nuova attività creata automaticamente. |
+| Revisione attività/blocco | Numero che cambia a ogni aggiornamento e impedisce di sovrascrivere una versione più recente con una modifica obsoleta. |
+| Dipendenza | Relazione temporale fra attività prevista per uno sviluppo successivo; non coincide con la parentela delle sottoattività. |
 | Registrazione ore | Riga personale composta da commessa, data del lavoro, durata in minuti e nota facoltativa. Non contiene una fascia di inizio/fine attività. |
 | Giornata lavorata | Data a cui si riferiscono le ore, distinta dall’istante in cui vengono salvate. |
 | Minuti | Unità intera di persistenza delle durate. La UI permette input e visualizzazione in ore, ma il salvataggio non ammette frazioni di minuto. |
@@ -38,7 +47,7 @@ I termini seguenti descrivono il prodotto attuale. Le voci riferite a sviluppi f
 | Contratto | Accordo censito con fornitore, codice, titolo, stato, date, eventuale valore EUR e documenti PDF. Può essere collegato a più commesse. |
 | Documento contrattuale | PDF originale caricato sul contratto, conservato con metadati e impronta di integrità. Caricare un altro PDF aggiunge un documento. |
 | Integrità del documento | Verifica che dimensione e impronta del PDF scaricato coincidano con quelle registrate. Non equivale a validazione legale, antivirus o firma digitale. |
-| Eliminazione definitiva | Rimozione senza cestino applicativo. Per una commessa comprende ore di tutti gli utenti e abilitazioni collegate. |
+| Eliminazione definitiva | Rimozione senza cestino applicativo. Per una commessa comprende attività, blocchi, ore di tutti gli utenti e abilitazioni collegate. |
 | Storico delle modifiche / audit | Registro di chi ha eseguito le modifiche, quando e con quali valori prima/dopo. È diverso dal registro giornaliero delle ore e non sostituisce un backup. |
 
 ## Analisi ed economia

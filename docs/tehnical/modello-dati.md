@@ -1,19 +1,19 @@
 # Modello dei dati e dizionario degli archivi
 
-Verificato sul codice del repository il **10 ottobre 2026**. Schema applicativo **7**; schema del calendario SQLite **1**. Questo documento descrive l'implementazione presente, non le proposte finanziarie o crittografiche della roadmap.
+Verificato sul codice del repository l’**11 ottobre 2026**. Schema applicativo **9**; schema del calendario SQLite **1**. Questo documento descrive l'implementazione presente, non le proposte finanziarie o crittografiche della roadmap.
 
-Fonti: [DDL MySQL](../../src/mysql_schema.c), [migrazioni](../../src/storage.c), [utenti](../../src/accounts.c), [commesse e ore](../../src/workspace.c), [organizzazione](../../src/organization.c), [contratti](../../src/procurement.c), [documenti](../../src/documents.c), [alert](../../src/alerts.c), [mailer](../../addon/src/mailer.c), [calendario](../../calendar-addon/src/calendar.c) e [Compose](../../compose.yaml).
+Fonti: [DDL MySQL](../../src/mysql_schema.c), [migrazioni](../../src/storage.c), [utenti](../../src/accounts.c), [commesse e ore](../../src/workspace.c), [organizzazione](../../src/organization.c), [attività e blocchi](../../src/work_board.c), [contratti](../../src/procurement.c), [documenti](../../src/documents.c), [alert](../../src/alerts.c), [mailer](../../addon/src/mailer.c), [calendario](../../calendar-addon/src/calendar.c) e [Compose](../../compose.yaml).
 
 ## Inventario e responsabilità
 
 | Archivio | Nome/percorso predefinito | Contenuto e proprietario |
 | --- | --- | --- |
-| MySQL InnoDB, tre repliche Group Replication | `punto`, configurabile con `MYSQL_DATABASE`/`DB_NAME` | Le 22 tabelle applicative sotto descritte. Tre nodi replicano lo stesso database logico: non sono tre database business diversi. |
+| MySQL InnoDB, tre repliche Group Replication | `punto`, configurabile con `MYSQL_DATABASE`/`DB_NAME` | Le 24 tabelle applicative sotto descritte. Tre nodi replicano lo stesso database logico: non sono tre database business diversi. |
 | SQLite applicativo, sviluppo nativo | `DB_PATH`, predefinito `data/punto.db` | Alternativa a MySQL per le stesse funzioni; versione con `PRAGMA user_version`. |
 | MongoDB GridFS | `punto_documents`, configurabile con `DOC_DB_NAME` | Originali PDF e metadati GridFS, gestiti dall'app tramite account documentale. |
 | SQLite Nginx Proxy Manager | `nginx-proxy-manager/data/database.sqlite` sull'host, `/data/database.sqlite` nel container | Configurazione NPM, utenti amministrativi NPM, host proxy e riferimenti ai certificati. Schema di competenza di NPM 2.16.0, non delle migrazioni applicative. |
-| SQLite mail-addon | `/var/lib/punto-mailer/delivery.sqlite3`, volume `mail_addon_data` | Registro di idempotenza SMTP; nessuna copia del testo delle email. |
-| SQLite calendar-addon | `/var/lib/punto-calendar/calendar.sqlite3`, volume `calendar_addon_data` | Token Google, cache eventi e coda delle modifiche, isolati per ID utente. |
+| SQLite mail | `/var/lib/punto-mailer/delivery.sqlite3`, volume `mail_addon_data` | Registro di idempotenza SMTP; nessuna copia del testo delle email. |
+| SQLite calendar | `/var/lib/punto-calendar/calendar.sqlite3`, volume `calendar_addon_data` | Token Google, cache eventi e coda delle modifiche, isolati per ID utente. |
 | Memoria del processo app | Array di sessioni, massimo 64 | Token di sessione, ID utente e scadenza; persi al riavvio. Non esiste una tabella sessioni. |
 
 Gli addon non accedono a MySQL o MongoDB. I loro ID utente sono riferimenti logici ricevuti dall'app, senza foreign key tra database o container. Le due SQLite degli addon sono singole istanze: non ereditano l'alta disponibilità MySQL.
@@ -36,6 +36,13 @@ Gli addon non accedono a MySQL o MongoDB. I loro ID utente sono riferimenti logi
 erDiagram
     users ||--o{ time_entries : registra
     jobs ||--o{ time_entries : riceve
+    jobs ||--o{ job_tasks : contiene
+    job_tasks o|--o{ job_tasks : padre
+    users o|--o{ job_tasks : assegnatario
+    jobs ||--o{ job_blockers : contiene
+    job_tasks o|--o{ job_blockers : riguarda
+    users o|--o{ job_blockers : responsabile
+    users ||--o{ job_blockers : autore
     suppliers ||--o{ contracts : fornisce
     contracts o|--o{ jobs : definisce
     contracts ||--o{ contract_documents : contiene
@@ -61,19 +68,21 @@ erDiagram
 
 `alert_events.job_id` è intenzionalmente privo di FK: registra tentativi relativi a una commessa inesistente. `audit_events.entity_id` è un riferimento polimorfico storico, non una FK: lo storico sopravvive alla cancellazione dell'entità.
 
-## Catalogo funzionale delle 22 tabelle MySQL
+## Catalogo funzionale delle 24 tabelle MySQL
 
 Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, indice, chiave e CHECK**. Qui sono spiegate le responsabilità e le regole che il solo DDL non esprime.
 
 | Tabella | Responsabilità e interpretazione |
 | --- | --- |
-| `schema_metadata` | Una riga `id=1`; `version=7` dopo le migrazioni. Una versione futura sconosciuta impedisce l'avvio. |
+| `schema_metadata` | Una riga `id=1`; `version=9` dopo le migrazioni. Una versione futura sconosciuta impedisce l'avvio. |
 | `cluster_write_guard` | Una riga `id=1`, `generation>=0`; aggiornata all'inizio delle scritture applicative per far certificare sul cluster i conflitti fra transazioni, incluse regole dipendenti da aggregati. Non è un dato utente. |
 | `users` | Identità applicativa: email univoca, nome, ruolo globale `manager`/`worker`, abilitazione, hash password e salt. L'API non espone hash/salt. Creazione attiva; disabilitazione reversibile; nessuna cancellazione utente esposta. |
 | `suppliers` | Codice univoco, ragione sociale, partita IVA, contatti, indirizzo, note e stato attivo. Il flag non elimina contratti o documenti. |
 | `contracts` | Codice, titolo, fornitore, stato `draft`/`active`/`expired`/`closed`/`cancelled`, validità, valore facoltativo in EUR e note. Nessun calcolo fiscale o registro fatture. |
 | `contract_documents` | Manifesto SQL del PDF: `storage_key` casuale univoca, nome, dimensione, SHA-256, autore e istante. `storage_key` risolve il contenuto in GridFS; non è un percorso filesystem. Metadati immutabili. |
 | `jobs` | Commessa, codice univoco, nome, cliente libero, descrizione, stato `planned`/`active`/`paused`/`completed`/`cancelled`, contratto opzionale e `is_common`. Le commesse comuni sono visibili a tutti gli utenti attivi secondo le regole applicative. |
+| `job_tasks` | Attività della commessa, padre facoltativo nella stessa commessa, assegnatario utente, titolo/descrizione, stato Kanban, priorità e scadenza. `revision` protegge gli editor concorrenti. Massimo 500 per commessa e gerarchia di otto livelli senza cicli, verificati dal C. |
+| `job_blockers` | Impedimento della commessa, attività facoltativa nella stessa commessa, impatto, responsabile facoltativo, stato, prossima azione, scadenza, autore e revisione. Massimo 500 per commessa. Il suo stato non cambia automaticamente quello dell’attività. |
 | `time_entries` | Durata lavorata da un utente in una data per una commessa; nota. `owner` conserva l'email storica/legacy; l'autorizzazione usa `user_id`. |
 | `labor_rates` | Tariffa per utente e intervallo inclusivo. `user_id` immutabile; intervalli dello stesso utente non sovrapposti per controllo applicativo. Zero è una tariffa valida. |
 | `job_roles` | Ruoli locali alla commessa, distinti da `users.role`. Built-in: `reader`/Lettore (`can_log_time=0`) e `contributor`/Collaboratore (`1`). `builtin` protegge i ruoli di sistema dalle modifiche. |
@@ -81,7 +90,7 @@ Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, 
 | `group_members` | Appartenenza diretta utente–gruppo, PK composta. Le autorizzazioni dei gruppi antenati sono risolte dal codice senza duplicare righe di appartenenza. |
 | `job_group_grants` | Abilitazione commessa–gruppo, ruolo locale obbligatorio e validità opzionale. Una riga per coppia. |
 | `job_assignments` | Abilitazione diretta commessa–utente e validità. `role_id` nullable per compatibilità: il codice interpreta il valore assente come Collaboratore, ID 2. |
-| `alert_rules` | Regola di proprietà di un gestore: nome, `invalid_job`/`missing_hours`, ora, abilitazione, date di gestione/esecuzione e ultimo evento processato. Una regola non è condivisa automaticamente tra gestori. |
+| `alert_rules` | Regola di proprietà di un gestore: nome, `invalid_job`/`missing_hours`/`inventory_due`, anticipo `days_before` (1–365), ora, abilitazione, date di gestione/esecuzione e ultimo evento processato. Una regola non è condivisa automaticamente tra gestori. |
 | `alert_rule_users` | Destinatari interni della regola; una riga per utente. L'app richiede utenti esistenti e attivi; un destinatario worker riceve solo notifiche che lo riguardano come soggetto. |
 | `alert_rule_emails` | Destinatari email della regola, indirizzi case-insensitive nella PK composta. Non occorre un account applicativo per un indirizzo email. |
 | `alert_subjects` | Utenti osservati per le ore mancanti: inizio del monitoraggio e ultimo giorno verificato. Sono soggetti dell'alert, distinti dai destinatari. |
@@ -92,7 +101,9 @@ Il DDL completo in fondo specifica **ogni colonna, tipo, nullabilità, default, 
 
 ### Integrità, cancellazione e concorrenza
 
-Le FK MySQL non dichiarano `ON DELETE CASCADE`: la cancellazione è normalmente restrittiva. L'API di cancellazione commessa elimina esplicitamente ore, assegnazioni dirette e grant di gruppo, poi la commessa, nella stessa transazione con l'audit. L'audit conserva identità e conteggi aggregati eliminati, non costituisce un backup integrale delle ore. Contratto, fornitore e PDF non sono cancellati da questa operazione.
+Le FK MySQL non dichiarano `ON DELETE CASCADE`: la cancellazione è normalmente restrittiva. L'API di cancellazione commessa elimina esplicitamente blocchi, relazioni padre fra attività, attività, ore, assegnazioni dirette e grant di gruppo, poi la commessa, nella stessa transazione con l'audit. L'audit conserva identità e conteggi aggregati eliminati, non costituisce un backup integrale delle ore. Contratto, fornitore e PDF non sono cancellati da questa operazione.
+
+La cancellazione di un’attività è rifiutata se ha figli. Altrimenti scollega i blocchi senza eliminarli, incrementa le loro revisioni e conserva l’audit della rimozione e degli scollegamenti. Le FK composte `(job_id,parent_id)` e `(job_id,task_id)` impediscono legami fra commesse differenti. Il controllo dei cicli e delle profondità resta applicativo. Aggiornamento ed eliminazione richiedono la revisione corrente, a differenza delle commesse prive di versione ottimistica.
 
 Una cancellazione gruppo è consentita solo dopo aver rimosso figli, membri e grant. Per utenti, fornitori, contratti, tariffe, ruoli e regole alert non esiste una generica API `DELETE`: usare gli aggiornamenti/stati esposti dal prodotto. Documenti contrattuali e audit hanno trigger che negano `UPDATE` e `DELETE`.
 
@@ -105,7 +116,7 @@ Trigger MySQL aggiuntivi:
 
 `time_entries.user_id` rimane nullable per compatibilità con dati precedenti alla migrazione delle identità. SQLite tenta il collegamento tramite email; righe non riconciliabili restano storiche e non diventano ore personali di un altro utente.
 
-I controlli di 24 ore giornaliere, ultimo gestore attivo, massimo numero di entità, sovrapposizioni tariffarie, validità delle assegnazioni e cicli dei gruppi richiedono l'applicazione. Scrivere direttamente in SQL può violare regole business anche quando tutti i CHECK passano. Le scritture applicative aggiornano `cluster_write_guard` prima di verificare le regole; contese e indisponibilità possono restituire un errore temporaneo. Le API business non hanno una chiave di idempotenza universale: dopo una risposta ambigua rileggere lo stato prima di creare una seconda entità.
+I controlli di 24 ore giornaliere, ultimo gestore attivo, massimo numero di entità, sovrapposizioni tariffarie, validità delle assegnazioni, cicli dei gruppi e gerarchie delle attività richiedono l'applicazione. Scrivere direttamente in SQL può violare regole business anche quando tutti i CHECK passano. Le scritture applicative aggiornano `cluster_write_guard` prima di verificare le regole; contese e indisponibilità possono restituire un errore temporaneo. Le API business non hanno una chiave di idempotenza universale: dopo una risposta ambigua rileggere lo stato prima di creare una seconda entità.
 
 ## SQLite applicativo e migrazioni
 
@@ -119,9 +130,11 @@ In modalità nativa, `users`, `jobs` e `time_entries` vengono inizializzate dai 
 | 4 | Tariffe orarie storicizzate. |
 | 5 | Flag commessa comune. |
 | 6 | Regole, destinatari, soggetti, eventi, notifiche e outbox alert. |
-| 7 | Stati di consegna email ampliati per mail-addon; mantenimento dei contatori ID anche delle righe eliminate. |
+| 7 | Stati di consegna email ampliati per il servizio email; mantenimento dei contatori ID anche delle righe eliminate. |
+| 8 | Attività e sottoattività, stati Kanban e blocchi con revisioni, FK nella stessa commessa e audit delle nuove operazioni. |
+| 9 | Regole alert `inventory_due` e anticipo `days_before` sulle scadenze inventory; nessuna nuova tabella applicativa. |
 
-SQLite non possiede `schema_metadata` né `cluster_write_guard`: usa `PRAGMA user_version` e transazioni `BEGIN IMMEDIATE`. Il suo schema business comprende le altre 20 tabelle; `sqlite_sequence` è una tabella interna SQLite. Non si devono copiare i DDL MySQL sul file SQLite. Le migrazioni sono eseguite dall'app, senza un endpoint HTTP di migrazione.
+SQLite non possiede `schema_metadata` né `cluster_write_guard`: usa `PRAGMA user_version` e transazioni `BEGIN IMMEDIATE`. Il suo schema business comprende le altre 22 tabelle; `sqlite_sequence` è una tabella interna SQLite. Non si devono copiare i DDL MySQL sul file SQLite. Le migrazioni sono eseguite dall'app, senza un endpoint HTTP di migrazione.
 
 In modalità nativa i PDF sono file locali nella directory `DOC_FILES_DIR`, oppure nella sottocartella `documents` accanto al file `DB_PATH` (per default `data/documents`), con chiavi validate ed esclusione di symlink. In Docker il backend documentale è MongoDB.
 
@@ -139,7 +152,7 @@ Il manifesto MySQL mantiene la relazione al contratto e l'autore. L'upload verif
 
 Il caricamento attraversa due database e non usa una transazione distribuita. Il codice riserva lo storage, salva il documento, inserisce manifesto/audit e tenta la pulizia se la parte SQL fallisce. Backup e verifiche devono includere entrambi gli archivi; un dump MySQL contiene solo metadati, non i PDF.
 
-## Registro mail-addon
+## Registro mail
 
 Una tabella SQLite, `deliveries`:
 
@@ -152,7 +165,7 @@ Una tabella SQLite, `deliveries`:
 
 WAL e `synchronous=FULL`; lo stato `sending` viene confermato su disco prima della chiamata SMTP e trasformato in `unknown` al riavvio. Non sono salvati destinatario, oggetto o corpo nel ledger: restano in chiaro nell'outbox MySQL. Il ledger non è cifrato a livello di campo. Namespace, outbox e ledger devono essere ripristinati coerentemente per evitare duplicati. Dettagli nel [contratto addon](api-addon.md).
 
-## Archivio calendar-addon
+## Archivio calendar
 
 SQLite usa FK, WAL, `synchronous=FULL`, `user_version=1`, timeout di contesa 3 secondi e connessioni distinte per API e worker. Le cinque tabelle sono:
 
@@ -175,7 +188,7 @@ Il formato binario dei valori cifrati è versionato: byte versione `1`, nonce ca
 | Dati | Protezione effettivamente implementata |
 | --- | --- |
 | Password login | Hash PBKDF2-HMAC-SHA256, 210.000 iterazioni, salt casuale 16 byte, derivato 32 byte. Non sono password cifrate reversibilmente. Il confronto è a tempo costante. |
-| Nome/email utenti, ruoli, commesse, ore/note, tariffe, anagrafiche e valori contratti | In chiaro a livello di colonna SQL; accesso controllato dall'app e dall'account database. |
+| Nome/email utenti, ruoli, commesse, attività/blocchi, ore/note, tariffe, anagrafiche e valori contratti | In chiaro a livello di colonna SQL; accesso controllato dall'app e dall'account database. |
 | PDF e metadati documentali | In chiaro a livello applicativo in GridFS e nel manifesto SQL; hash SHA-256 per integrità. |
 | Audit, notifiche, email outbox | In chiaro; includono copie di dati personali e business. |
 | Token OAuth, verificatori PKCE, contenuti eventi e richieste calendar | AES-256-GCM persistente, chiave montata come secret separata dal volume SQLite. Decifrati nella memoria del servizio quando necessari. |
@@ -187,7 +200,7 @@ Non sono implementati FHE/calcolo omomorfico, vault con chiavi per utente o camp
 
 Per procedure coerenti di backup e ripristino vedere [operazioni](operazioni-backup-ripristino.md). Per i vincoli esposti ai chiamanti vedere [API app](api-app.md) e [API addon](api-addon.md).
 
-## DDL MySQL completo, schema 7
+## DDL MySQL completo, schema 9
 
 Le definizioni seguenti sono estratte dalle stringhe DDL di `mysql_schema_prepare()` e formattate senza modificarne il contenuto. Sono un riferimento dello schema atteso, **non uno script da lanciare per aggiornare manualmente un database esistente**: le migrazioni includono anche verifiche, trigger, dati iniziali e audit.
 
@@ -316,6 +329,70 @@ CREATE TABLE IF NOT EXISTS jobs (
   CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),
   CHECK(status IN ('planned','active','paused','completed','cancelled')),
   CHECK(is_common IN (0,1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+```
+
+### `job_tasks`
+
+```sql
+CREATE TABLE IF NOT EXISTS job_tasks (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  job_id BIGINT NOT NULL,
+  parent_id BIGINT NULL,
+  assigned_user_id BIGINT NULL,
+  title VARCHAR(160) NOT NULL,
+  description VARCHAR(2000) NOT NULL DEFAULT '',
+  status VARCHAR(16) NOT NULL DEFAULT 'todo',
+  priority VARCHAR(16) NOT NULL DEFAULT 'normal',
+  due_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
+  created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  updated_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  UNIQUE KEY job_tasks_job_id(job_id,id),
+  KEY job_tasks_job_status(job_id,status,id),
+  KEY job_tasks_parent(job_id,parent_id,id),
+  KEY job_tasks_assignee(assigned_user_id,job_id,id),
+  CONSTRAINT job_tasks_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),
+  CONSTRAINT job_tasks_parent_fk FOREIGN KEY(job_id,parent_id) REFERENCES job_tasks(job_id,id),
+  CONSTRAINT job_tasks_assignee_fk FOREIGN KEY(assigned_user_id) REFERENCES users(id),
+  CHECK(CHAR_LENGTH(title)>=1),
+  CHECK(status IN ('todo','in_progress','blocked','in_review','done')),
+  CHECK(priority IN ('low','normal','high','urgent')),
+  CHECK(due_date IS NULL OR CHAR_LENGTH(due_date)=10),
+  CHECK(revision>=1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+```
+
+### `job_blockers`
+
+```sql
+CREATE TABLE IF NOT EXISTS job_blockers (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  job_id BIGINT NOT NULL,
+  task_id BIGINT NULL,
+  title VARCHAR(160) NOT NULL,
+  description VARCHAR(2000) NOT NULL DEFAULT '',
+  impact VARCHAR(16) NOT NULL DEFAULT 'medium',
+  owner_id BIGINT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'open',
+  next_action VARCHAR(1000) NOT NULL DEFAULT '',
+  due_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  created_by BIGINT NOT NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
+  created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  updated_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  KEY job_blockers_job_status(job_id,status,id),
+  KEY job_blockers_task(job_id,task_id,id),
+  KEY job_blockers_owner(owner_id,job_id,id),
+  CONSTRAINT job_blockers_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),
+  CONSTRAINT job_blockers_task_fk FOREIGN KEY(job_id,task_id) REFERENCES job_tasks(job_id,id),
+  CONSTRAINT job_blockers_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),
+  CONSTRAINT job_blockers_creator_fk FOREIGN KEY(created_by) REFERENCES users(id),
+  CHECK(CHAR_LENGTH(title)>=1),
+  CHECK(impact IN ('low','medium','high','critical')),
+  CHECK(status IN ('open','in_progress','resolved')),
+  CHECK(due_date IS NULL OR CHAR_LENGTH(due_date)=10),
+  CHECK(revision>=1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 ```
 
@@ -462,7 +539,9 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   last_event_id BIGINT NOT NULL DEFAULT 0,
   KEY alert_rules_owner(owner_id,id),
   CONSTRAINT alert_rules_owner_fk FOREIGN KEY(owner_id) REFERENCES users(id),
-  CHECK(type IN ('invalid_job','missing_hours')),
+  days_before INT NOT NULL DEFAULT 30,
+  CONSTRAINT alert_rules_type CHECK(type IN ('invalid_job','missing_hours','inventory_due')),
+  CONSTRAINT alert_rules_days_before CHECK(days_before BETWEEN 1 AND 365),
   CHECK(CHAR_LENGTH(run_time)=5),
   CHECK(enabled IN (0,1)),
   CHECK(last_event_id>=0)

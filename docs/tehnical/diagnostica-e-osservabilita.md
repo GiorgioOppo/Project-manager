@@ -36,7 +36,7 @@ Dalla radice del progetto, con dominio e porte predefiniti:
 docker compose --env-file .env.docker ps
 python3 scripts/manage_cluster.py --env-file .env.docker status
 curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}\n' http://localhost/healthz
-docker compose --env-file .env.docker logs --since=15m --tail=100 app db-proxy
+docker compose --env-file .env.docker logs --since=15m --tail=100 app proxy-db
 ```
 
 Il comando `status` è di lettura. `init`, `recover`, `configure_network.py apply`, `up --force-recreate` e l'esecuzione manuale di un alert sono invece interventi, non strumenti diagnostici equivalenti. `prepare` può creare materiali mancanti e non deve essere usato come se fosse una verifica totalmente priva di scritture.
@@ -46,10 +46,10 @@ Il comando `status` è di lettura. `init`, `recover`, `configure_network.py appl
 | Servizio | Prova configurata | Cosa resta fuori |
 | --- | --- | --- |
 | App | HTTP sul bind privato e query `SELECT 1`; `200` con `database:mysql` o `sqlite`, altrimenti `503` | PDF, autorizzazioni business, completezza dati, SMTP e Google |
-| `db` | Query SQL locale con account applicativo | Quorum e appartenenza Group Replication |
-| `db2`, `db3` | Query SQL locale amministrativa | Quorum e scrivibilità applicativa |
-| `db-proxy` | Almeno due endpoint monitor pronti; ognuno controlla `ONLINE`, `PRIMARY`, assenza di sola lettura e almeno due membri online | Validità di tutte le transazioni future o disponibilità di MongoDB |
-| `documents` | Ping autenticato con account documentale e TLS | Correttezza di ogni PDF e corrispondenza con il manifesto SQL |
+| `mysql-1` | Query SQL locale con account applicativo | Quorum e appartenenza Group Replication |
+| `mysql-2`, `mysql-3` | Query SQL locale amministrativa | Quorum e scrivibilità applicativa |
+| `proxy-db` | Almeno due endpoint monitor pronti; ognuno controlla `ONLINE`, `PRIMARY`, assenza di sola lettura e almeno due membri online | Validità di tutte le transazioni future o disponibilità di MongoDB |
+| `mongodb` | Ping autenticato con account documentale e TLS | Correttezza di ogni PDF e corrispondenza con il manifesto SQL |
 | Squid | Richiesta HTTP locale volutamente vietata che deve ricevere `403` | Connessione effettiva agli endpoint Google o SMTP |
 | Addon email / Calendar | HTTPS con CA e nome/IP del servizio verificati, `/healthz` | Validità delle credenziali provider e risultato di un'operazione remota |
 | NPM | `/usr/bin/check-health` dell'immagine | Funzionamento completo di tutti gli host, del login e dei flussi applicativi |
@@ -71,7 +71,7 @@ Se questo funziona ma l'URL pubblico fallisce, concentrare la diagnosi su NPM, h
 Verificare lo stato di NPM e app, il health check interno sopra e i log recenti dei due servizi:
 
 ```sh
-docker compose --env-file .env.docker logs --since=15m --tail=100 nginx-proxy-manager app
+docker compose --env-file .env.docker logs --since=15m --tail=100 proxy-web app
 ```
 
 La destinazione prevista del proxy è `http://app:8080` su `private_app`. L'app deve ascoltare su `172.30.20.10`; non risponde sulle altre sue interfacce. Un listener spostato su `0.0.0.0` o una pubblicazione diretta non è una correzione equivalente.
@@ -84,7 +84,7 @@ Il problema riguarda la query del backend SQL utilizzato dall'app. Controllare n
 
 ```sh
 python3 scripts/manage_cluster.py --env-file .env.docker status
-docker compose --env-file .env.docker logs --since=15m --tail=100 db-proxy db db2 db3 app
+docker compose --env-file .env.docker logs --since=15m --tail=100 proxy-db mysql-1 mysql-2 mysql-3 app
 ```
 
 Tre processi MySQL raggiungibili possono avere Group Replication fermo. Con un solo membro disponibile il blocco delle scritture è atteso: non impostare `super_read_only=OFF` o forzare un nuovo bootstrap. Se tutti i membri si sono arrestati, la procedura pertinente è `recover`, dopo avere verificato il contesto e seguendo [operazioni](operazioni-backup-ripristino.md).
@@ -93,7 +93,7 @@ Un errore del monitor impedisce a HAProxy di considerare i membri utilizzabili. 
 
 ### Solo upload o download PDF fallisce
 
-Un `/healthz` app positivo non esclude questo problema. SQL conserva il manifesto; MongoDB conserva i byte. Controllare `documents`, TLS e log applicativi. Un upload non autorizzato produce `403`; un contratto inesistente `404`; formato o firma non validi `400`; archivio indisponibile può produrre `503`.
+Un `/healthz` app positivo non esclude questo problema. SQL conserva il manifesto; MongoDB conserva i byte. Controllare `mongodb`, TLS e log applicativi. Un upload non autorizzato produce `403`; un contratto inesistente `404`; formato o firma non validi `400`; archivio indisponibile può produrre `503`.
 
 Un download controlla dimensione e SHA-256 prima di restituire il PDF. Una mancata corrispondenza non si risolve aggiornando l'hash per adattarlo a un blob inatteso: verificare copia originale, manifesto e backup coerente. Non esiste una riconciliazione automatica degli oggetti non referenziati.
 
@@ -125,7 +125,7 @@ Leggere ultimo run, prossimo run e notifiche attraverso le API autorizzate. Il c
 
 Nel deployment SMTP è ancora da configurare. `pending_configuration` è quindi atteso. Il flag `smtp_configured` nell'API app deriva dall'ultima interrogazione al servizio email: può risultare falso anche se la chiamata privata fallisce o restituisce una risposta non valida. Non basta quel flag per distinguere assenza di configurazione e indisponibilità dell'addon.
 
-Controllare health e log mail-addon, CA, alias `mail-api`, token e policy Squid. Il vero endpoint privato `GET /v1/status` richiede il token e una sorgente autorizzata; non esiste un pannello SMTP pubblico aggiuntivo. Consultarlo solo con strumenti che mantengano il bearer fuori da URL, shell history e log.
+Controllare health e log `mail`, CA, alias `mail-api`, token e policy Squid. Il vero endpoint privato `GET /v1/status` richiede il token e una sorgente autorizzata; non esiste un pannello SMTP pubblico aggiuntivo. Consultarlo solo con strumenti che mantengano il bearer fuori da URL, shell history e log.
 
 L'app ha un timeout di 3 secondi sulla chiamata privata email; l'addon può attendere fino a 20 secondi il provider con il valore Compose. Una richiesta può quindi avere un esito locale ambiguo mentre il servizio sta ancora lavorando. La ripetizione deve conservare la stessa chiave e contenuto: il ledger gestisce l'idempotenza. `delivery_unknown` e `delivery_failed` richiedono verifica del fornitore, non cancellazione della coda. `sent` attesta accettazione SMTP, non recapito nella casella.
 
@@ -162,9 +162,9 @@ Il refresh completo o incrementale è atomico rispetto alla cache locale: un dow
 Un `403` può provenire da sorgente, metodo, host, porta o risposta DNS non consentiti. Leggere i log del proxy e il file non segreto montato:
 
 ```sh
-docker compose --env-file .env.docker logs --since=15m --tail=100 squid
-docker compose --env-file .env.docker exec -T squid cat /etc/squid/allowed-domains.txt
-docker compose --env-file .env.docker exec -T squid squid -k parse -f /etc/squid/squid.conf
+docker compose --env-file .env.docker logs --since=15m --tail=100 proxy-egress
+docker compose --env-file .env.docker exec -T proxy-egress cat /etc/squid/allowed-domains.txt
+docker compose --env-file .env.docker exec -T proxy-egress squid -k parse -f /etc/squid/squid.conf
 ```
 
 La verifica sintattica non ricarica la policy. Un editor può aver sostituito il file sul filesystem lasciando il bind mount legato al contenuto precedente: una ricreazione mirata, dopo build e verifica, è diversa da una diagnosi di lettura. La policy non può distinguere percorsi HTTPS dentro il tunnel; non aggiungere wildcard per aggirare un rifiuto non compreso.
@@ -174,10 +174,10 @@ La verifica sintattica non ricarica la policy. Un editor può aver sostituito il
 Quando serve conoscere la versione dello schema, un amministratore può leggere solo il metadato, evitando dump di tabelle utenti o contratti:
 
 ```sh
-docker compose --env-file .env.docker exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --user=root --database="$MYSQL_DATABASE" --batch --skip-column-names --execute="SELECT version FROM schema_metadata WHERE id=1;"'
+docker compose --env-file .env.docker exec -T mysql-1 sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql --user=root --database="$MYSQL_DATABASE" --batch --skip-column-names --execute="SELECT version FROM schema_metadata WHERE id=1;"'
 ```
 
-Il comando usa la credenziale già presente nell'ambiente del container senza inserirne il valore nella riga di comando. Non abilita il debug della shell e non stampa l'ambiente. La versione attesa dal codice corrente è 7. Per una verifica del gruppo usare prima il controller, che evita di stampare query e valori sensibili in caso di errore.
+Il comando usa la credenziale già presente nell'ambiente del container senza inserirne il valore nella riga di comando. Non abilita il debug della shell e non stampa l'ambiente. La versione attesa dal codice corrente è 9. Per una verifica del gruppo usare prima il controller, che evita di stampare query e valori sensibili in caso di errore.
 
 ## Log, privacy e raccolta di evidenze
 
