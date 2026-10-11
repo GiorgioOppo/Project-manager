@@ -420,7 +420,7 @@ class InventoryCustodyTests(unittest.TestCase):
         self.assertGreater(self.create(tag="NEW")["id"], 100)
         self.stop()
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(database.execute("SELECT snapshot FROM asset_history WHERE id=77").fetchone()[0], serialized)
             self.assertEqual(database.execute("SELECT preview_id FROM inventory_import_previews").fetchone()[0], "a" * 32)
             self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")

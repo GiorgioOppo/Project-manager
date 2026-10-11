@@ -2,7 +2,7 @@
 
 [Italiano](../../prod/roadmap.md) | **English**
 
-This page updates how the plans should be read against the application baseline documented on **11 October 2026**, schema **10**. The [twenty-feature plan](roadmap-20-funzionalita.md) and [financial module plan](piano-modulo-finanziario.md) retain the original detailed design, written when the baseline was schema 3. Schema numbers, counts, and descriptions of the “current baseline” in those plans are historical references, not the current state.
+This page updates how the plans should be read against the application baseline documented on **11 October 2026**, schema **12**. The [twenty-feature plan](roadmap-20-funzionalita.md) and [financial module plan](piano-modulo-finanziario.md) retain the original detailed design, written when the baseline was schema 3. Schema numbers, counts, and descriptions of the “current baseline” in those plans are historical references, not the current state.
 
 The statuses used here are:
 
@@ -10,7 +10,7 @@ The statuses used here are:
 - **Partial**: a useful part of the feature or infrastructure exists, but a component of the described workflow is missing.
 - **Planned**: the requested behavior is not yet available as a complete feature.
 
-A table, similar component, or addon alone does not complete a product feature. For current operational availability, see the [overview](panoramica.md).
+A table, similar component, or addon alone does not complete a product feature. For current operational availability, see the [overview](panoramica.md). For the workflows delivered in schema 12, see the [improved operational workflows](flussi-operativi.md). A global access matrix, copying a single day and duplicate detection remain separate extensions.
 
 ## Baseline already available
 
@@ -26,22 +26,22 @@ This track adds to the original twenty improvements without replacing their numb
 
 | Proposed feature | Current status | Development still needed |
 | --- | --- | --- |
-| Tasks and subtasks | Implemented for organization and progress tracking | Linking hours to individual tasks and separate checklists |
+| Tasks and subtasks | Implemented for organization, progress and linked hours | Separate checklists |
 | Kanban board | Implemented | Further view preferences and automation only if defined in a later release |
 | Risk and blocker register | Partial | Blockers implemented; future risks with probability and preventive measures still to develop |
 | Dependencies and schedule | Planned | Time relationships, delay impacts, and Gantt |
-| Team workload | Planned | Planned hours, individual availability, absences, and capacity comparison |
+| Team workload | Planned | Work estimates and workload comparison with already-configurable schedules and absences |
 | Discussions and decisions | Planned | Comments, mentions, and reasoned decisions with project-scoped visibility |
 | Change requests | Planned | Assessment and approval of impacts on work, deadlines, and budget |
 | Deliverables and acceptance | Planned | Versions, review, observations, and approval of results |
 | Customer portal | Planned | External access restricted to explicitly shared content and requests |
-| Overview of all projects | Partial | Analysis of existing hours; cross-project summary of tasks, due dates, and blockers still to develop |
+| Overview of all projects | Partial | Personal cross-project view and project overview implemented; overall portfolio still to develop |
 | Personal timer | Planned | Start/pause, proposal requiring confirmation, and overlap checking |
-| Guided project closure | Planned | Final checklist, blocking new entries, and reopening with a reason |
+| Guided project closure | Implemented | Open-work summary, blocking new hours, archiving and reopening with a reason |
 
-The current board uses status selections with confirmation, accessible by keyboard. States of tasks, parents, children, and blockers remain independent; calculated percentage progress, formal approvals, and automatic assignment/due-date notifications are absent. Revisions protect concurrent task and blocker edits without automatically extending that mechanism to every historical API.
+The current board uses status selections with confirmation, accessible by keyboard. States of tasks, parents, children, and blockers remain independent; calculated percentage progress and formal task approvals are absent. Operational assignment and due-date notices are available. Revisions protect concurrent task and blocker edits without automatically extending that mechanism to every historical API.
 
-Recommended next steps are workload planning and dependencies, after defining work estimates, individual schedules, and absences. Hour–task linking will require an explicit update to time logs and analysis; the current text note does not implement that link.
+Recommended next steps are workload planning and dependencies, after defining work estimates and capacity comparison; individual schedules and absences are already configurable. Hour–task linking is available as an optional reference in the time log and project overview; the note remains descriptive.
 
 ## The twenty operational improvements
 
@@ -49,11 +49,11 @@ Numbering remains that of the original plan so priorities and requirements can b
 
 | No. | Feature | Current status | What remains to complete it |
 | --- | --- | --- | --- |
-| 1 | Weekly grid timesheet | Planned | Seven-day view, cells with entry details, new atomic multiple insertions, and totals consistent with the time log |
-| 2 | Copy previous day or week | Planned | Preview, destination selection, optional note copying, and permission recheck on save |
+| 1 | Weekly grid timesheet | Implemented | Seven days, entry details, atomic multiple insertions and consistent totals |
+| 2 | Copy previous day or week | Partial | Previous-week copying implemented with an editable preview; single-day copying still to develop |
 | 3 | Favorite and recent projects | Planned | Persistent personal preferences and selector ordering, always subject to current access |
-| 4 | Time correction request | Planned | Reasoned operator request, authorized reviewer, approval/rejection, revisions, and conflicts |
-| 5 | Time-log anomaly checks | Partial | Fixed-threshold missing hours and attempts against nonexistent projects exist; individual schedules, holidays, exceptions, and possible-duplicate warnings are missing |
+| 4 | Time correction request | Implemented | Reasoned request, approval/rejection/cancellation, history and conflicts |
+| 5 | Time-log anomaly checks | Partial | Versioned individual schedules, absences and holidays implemented; possible-duplicate warnings still to develop |
 | 6 | Personal saved views | Partial | Analysis filters are already in the URL; named views, column/sort preferences, and account persistence are missing |
 | 7 | Global search | Planned | A single search across authorized resources; local Projects, Suppliers, and Contracts searches already exist |
 | 8 | Keyboard quick commands | Planned | Ctrl/Cmd+K bar with action catalog and subsequent record search; ordinary UI keyboard controls remain available |
@@ -61,8 +61,8 @@ Numbering remains that of the original plan so priorities and requirements can b
 | 10 | Installable app with offline drafts | Planned | PWA installation, personal drafts with explicit retention and online confirmation, idempotency, and account-change handling |
 | 11 | Guided CSV import | Planned | Column mapping, preview, row errors, confirmation, and subsequent user onboarding without passwords in CSV |
 | 12 | Bulk operations | Planned | Multiple selection, preview of states/grants/revocations, and confirmation with revision checks |
-| 13 | Guided project creation and templates | Planned | Single workflow with data, contract, groups, and checks, plus reusable templates without implicit authorization |
-| 14 | Effective-access matrix | Planned | Unified explanation of direct/inherited paths, roles, and dates; the access-enforcement engine is already implemented |
+| 13 | Guided project creation and templates | Implemented | Data, contract, team, tasks and summary; atomic confirmation and explicit templates |
+| 14 | Effective-access matrix | Partial | Per-person, per-project explanation implemented with direct/inherited sources and dates; global matrix still to develop |
 | 15 | Area managers with limited delegation | Planned | Administration scoped to groups/resources, without granting the current Manager's global powers |
 | 16 | Duplicate detection | Partial | Unique codes and PDF hashes already exist; assisted comparison, VAT-number/content warnings, and reasoned decisions are missing |
 | 17 | Contract versions and amendments | Planned | Immutable published revisions and explicit project links to the version; multiple PDFs on a contract do not constitute this workflow |

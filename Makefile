@@ -4,7 +4,7 @@ CPPFLAGS += -D_POSIX_C_SOURCE=200809L
 CFLAGS ?= -O2
 CFLAGS += -std=c11 -Wall -Wextra -Wpedantic -Werror
 SOURCES = src/server.c src/workspace.c src/accounts.c src/storage.c src/procurement.c src/documents.c src/organization.c src/alerts.c src/mail_client.c src/calendar_client.c src/work_board.c src/inventory_client.c
-SOURCES += auth/oidc.c src/ticket_bridge.c
+SOURCES += auth/oidc.c src/ticket_bridge.c src/access_control.c
 CPPFLAGS += $(shell pkg-config --cflags openssl)
 LDLIBS += $(shell pkg-config --libs openssl)
 CPPFLAGS += $(shell pkg-config --cflags json-c)
@@ -28,7 +28,7 @@ endif
 .PHONY: all run test clean FORCE
 all: build/punto
 
-build/$(DB_BACKEND)/punto: $(SOURCES) $(wildcard src/*.h auth/*.h) Makefile
+build/$(DB_BACKEND)/punto: $(SOURCES) $(wildcard src/*.h src/*.inc auth/*.h) Makefile
 	mkdir -p build/$(DB_BACKEND)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) -o $@ $(LDLIBS)
 

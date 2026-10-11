@@ -1,47 +1,51 @@
-# Addon Google Calendar
+# Google Calendar addon
 
-Il servizio Compose si chiama `calendar` e la sua immagine locale è `punto/calendar:${PUNTO_IMAGE_TAG:-local}`. Per aggiornare un’installazione con i nomi precedenti seguire la [guida nomenclatura Docker](../docs/tehnical/nomi-servizi-e-immagini.md); directory, volumi e identità TLS conservano i nomi già previsti.
+**English** | [Italiano](README.it.md)
 
-`punto-calendar` è un servizio in C indipendente dall'app, con API HTTPS privata e una coda persistente per le modifiche. Importa gli eventi Google nel proprio archivio e invia a Google creazioni, modifiche e cancellazioni richieste dall'app. Non accede ai database MySQL o MongoDB.
+The Compose service is named `calendar`, and its local image is `punto/calendar:${PUNTO_IMAGE_TAG:-local}`. To update an installation using the previous names, follow the [Docker naming guide](../docs/en/tehnical/nomi-servizi-e-immagini.md); directories, volumes and TLS identities retain their existing names.
 
-Le credenziali Google non sono ancora configurate: il container e le API funzionano, ma lo stato espone `oauth_configured: false`. Nessun account viene collegato e nessuna chiamata a Google viene effettuata in questa configurazione.
+`punto-calendar` is a C service independent of the app, with a private HTTPS API and a persistent queue for changes. It imports Google events into its own storage and sends Google the creations, updates and deletions requested by the app. It does not access the MySQL or MongoDB databases.
 
-## API privata
+Google credentials are not yet configured: the container and APIs work, but the status exposes `oauth_configured: false`. No account is connected and no Google calls are made in this configuration.
 
-Il servizio ascolta su `https://calendar-api:8091`. L'app deve verificare il certificato con la CA interna e inviare `Authorization: Bearer <token dedicato>`. L'indirizzo IP dell'app è verificato separatamente dal token. Soltanto `GET /healthz` non richiede autenticazione e resta limitato alle sorgenti ammesse o al container stesso.
+## Private API
 
-L'ID utente nel percorso è quello dell'utente autenticato dall'app. Il browser non può chiamare direttamente questa API né scegliere un altro ID attraverso il bridge pubblico dell'app.
+The service listens on `https://calendar-api:8091`. The app must verify the certificate against the internal CA and send `Authorization: Bearer <dedicated token>`. The app's IP address is checked separately from the token. Only `GET /healthz` requires no authentication, and it remains restricted to allowed sources or the container itself.
 
-| Metodo e percorso | Uso |
+The user ID in the path is that of the user authenticated by the app. The browser cannot call this API directly or choose another ID through the app's public bridge.
+
+| Method and path | Usage |
 | --- | --- |
-| `GET /healthz` | Verifica HTTPS e disponibilità del processo. |
-| `GET /v1/status` | Stato globale, provider, intervallo e configurazione OAuth. |
-| `GET /v1/users/<id>/status` | Collegamento, calendario selezionato, sincronizzazione, coda e conflitti dell'utente. |
-| `POST /v1/users/<id>/oauth/start` | Crea un consenso Google con state monouso e PKCE. |
-| `POST /v1/users/<id>/oauth/callback` | Completa il consenso attraverso l'app. |
-| `GET /v1/users/<id>/calendars` | Una pagina dei calendari disponibili. |
-| `POST /v1/users/<id>/selection` | Seleziona un calendario con permesso Google `writer` o `owner`. |
-| `GET /v1/users/<id>/events` | Legge una pagina della copia locale degli eventi. |
-| `GET /v1/users/<id>/changes` | Operazioni recenti e relativi esiti, fino a 100 e 90 KiB; `truncated` segnala altri risultati. |
-| `POST /v1/users/<id>/events/create` | Accoda un nuovo evento. |
-| `POST /v1/users/<id>/events/update` | Accoda una modifica con controllo ETag. |
-| `POST /v1/users/<id>/events/delete` | Accoda una cancellazione con controllo ETag. |
-| `POST /v1/users/<id>/sync` | Richiede una sincronizzazione in background; risponde subito `202`. |
-| `POST /v1/users/<id>/disconnect` | Revoca il consenso quando possibile e cancella l'archivio locale dell'utente. |
+| `GET /healthz` | Checks HTTPS and process availability. |
+| `GET /v1/status` | Global status, provider, interval and OAuth configuration. |
+| `GET /v1/users/<id>/status` | The user's connection, selected calendar, synchronization, queue and conflicts. |
+| `POST /v1/users/<id>/oauth/start` | Creates a Google consent flow with a single-use state and PKCE. |
+| `POST /v1/users/<id>/oauth/callback` | Completes consent through the app. |
+| `GET /v1/users/<id>/calendars` | One page of available calendars. |
+| `POST /v1/users/<id>/selection` | Selects a calendar with Google `writer` or `owner` permission. |
+| `GET /v1/users/<id>/events` | Reads one page of the local event copy. |
+| `GET /v1/users/<id>/event?event_id=...` | Reads one exact cached event, including its ETag and `calendar_id`; missing entries return `404`. |
+| `GET /v1/users/<id>/changes` | Recent operations and their outcomes, up to 100 and 90 KiB; `truncated` indicates further results. |
+| `GET /v1/users/<id>/change?idempotency_key=...` | Reads one exact operation and its original `calendar_id`; missing keys return `404`. |
+| `POST /v1/users/<id>/events/create` | Queues a new event. |
+| `POST /v1/users/<id>/events/update` | Queues an update with an ETag check. |
+| `POST /v1/users/<id>/events/delete` | Queues a deletion with an ETag check. |
+| `POST /v1/users/<id>/sync` | Requests background synchronization; responds immediately with `202`. |
+| `POST /v1/users/<id>/disconnect` | Revokes consent when possible and deletes the user's local storage. |
 
-Tutti i POST usano `application/x-www-form-urlencoded`, con i soli campi descritti di seguito. Parametri sconosciuti o duplicati sono rifiutati. Anche gli oggetti JSON con chiavi duplicate sono rifiutati.
+All POSTs use `application/x-www-form-urlencoded`, with only the fields described below. Unknown or duplicate parameters are rejected. JSON objects with duplicate keys are also rejected.
 
-- `oauth/start`: `session_binding`, SHA-256 esadecimale della sessione corrente dell'app. Restituisce `authorization_url` e `expires_in: 600`.
-- `oauth/callback`: `state`, `code`, `session_binding`; in caso di rifiuto del consenso, `error` sostituisce `code`. La sessione e l'utente devono coincidere con l'avvio. Lo state viene consumato prima dello scambio e non può essere riutilizzato.
-- `selection`: `calendar_id`, ricavato dall'elenco Google. Una coda con operazioni `queued` o `unknown` impedisce di cambiare calendario.
-- `events/create`: `idempotency_key` ed `event`.
-- `events/update`: `idempotency_key`, `event_id`, `etag` ed `event`.
+- `oauth/start`: `session_binding`, the hexadecimal SHA-256 of the app's current session. Returns `authorization_url` and `expires_in: 600`.
+- `oauth/callback`: `state`, `code`, `session_binding`; if consent is denied, `error` replaces `code`. The session and user must match those at the start. The state is consumed before the exchange and cannot be reused.
+- `selection`: `calendar_id`, obtained from the Google list. A queue with `queued` or `unknown` operations prevents calendar changes.
+- `events/create`: `idempotency_key` and `event`.
+- `events/update`: `idempotency_key`, `event_id`, `etag` and `event`.
 - `events/delete`: `idempotency_key`, `event_id`, `etag`.
-- `sync` e `disconnect`: corpo vuoto.
+- `sync` and `disconnect`: empty body.
 
-`event` è un oggetto JSON con `summary`, `start`, `end` e, facoltativamente, `description` e `location`. Per gli eventi con orario, `start` e `end` contengono `dateTime` RFC 3339 con secondi interi e offset esplicito o `Z` e possono contenere `timeZone`. Per gli eventi giornalieri contengono `date: YYYY-MM-DD`; la data finale è esclusiva, come nell'API Google. La fine deve seguire l'inizio. Non sono accettati partecipanti, notifiche, allegati o proprietà private arbitrarie; le scritture usano `sendUpdates=none`.
+`event` is a JSON object with `summary`, `start`, `end` and, optionally, `description` and `location`. For timed events, `start` and `end` contain an RFC 3339 `dateTime` with whole seconds and an explicit offset or `Z`, and may contain `timeZone`. For all-day events, they contain `date: YYYY-MM-DD`; the end date is exclusive, as in the Google API. The end must follow the start. Attendees, notifications, attachments and arbitrary private properties are not accepted; writes use `sendUpdates=none`.
 
-Esempio di valore del campo `event`:
+Example value for the `event` field:
 
 ```json
 {
@@ -51,60 +55,70 @@ Esempio di valore del campo `event`:
 }
 ```
 
-`GET calendars` accetta `page_token` e `limit` da 1 a 50, con valore predefinito 50. La risposta contiene `items` e `next_page_token`, oppure `null` alla fine. Viene eseguita una sola richiesta Google per pagina. La risposta ha un limite di 100 KiB: se una pagina eccezionalmente grande supera il limite, il chiamante deve ridurre `limit`.
+`GET calendars` accepts `page_token` and `limit` from 1 to 50, with a default of 50. The response contains `items` and `next_page_token`, or `null` at the end. Only one Google request is made per page. The response has a 100 KiB limit: if an exceptionally large page exceeds the limit, the caller must reduce `limit`.
 
-`GET events` accetta `limit` da 1 a 100, predefinito 20, e `after_id`. Restituisce `items`, `next_after_id`, `last_sync`, `calendar_id` e `recurrence_mode`. Il limite effettivo può essere inferiore per rispettare 100 KiB; il cursore indica come proseguire. Gli eventuali filtri `from` e `to` vanno forniti insieme, nel formato `YYYY-MM-DD`, con estremi inclusivi e intervallo massimo di 366 giorni. Il filtro confronta gli istanti degli eventi con orario e le date degli eventi giornalieri; gli estremi del filtro sono giorni UTC.
+`GET events` accepts `limit` from 1 to 100, with a default of 20, and `after_id`. It returns `items`, `next_after_id`, `last_sync`, `calendar_id` and `recurrence_mode`. The effective limit may be lower to stay within 100 KiB; the cursor indicates how to continue. Optional `from` and `to` filters must be supplied together in `YYYY-MM-DD` format, with inclusive endpoints and a maximum interval of 366 days. The filter compares timestamps for timed events and dates for all-day events; the filter endpoints are UTC days.
 
-Una singola sincronizzazione ammette al massimo 100 pagine, 20.000 eventi, 64 KiB per evento e 16 MiB complessivi di payload. Superare un limite produce un errore conservando la cache precedente e il relativo token.
+A single synchronization allows at most 100 pages, 20,000 events, 64 KiB per event and 16 MiB of total payload. Exceeding a limit produces an error while retaining the previous cache and its token.
 
-Gli eventi ricorrenti sono conservati come **serie ed eccezioni**, non vengono espansi in singole occorrenze. Una serie ricorrente rimane visibile anche quando il suo evento iniziale precede il filtro; gli eventi cancellati restano riconoscibili tramite `status: cancelled`. Non si tratta quindi di una vista delle sole occorrenze nel periodo. Le creazioni di nuove serie ricorrenti non fanno parte di questa prima versione; modificare un ID di serie Google può agire sulla serie intera.
+Recurring events are retained as **series and exceptions**, without being expanded into individual occurrences. A recurring series remains visible even when its initial event precedes the filter; deleted events remain identifiable through `status: cancelled`. This is therefore not a view of only the occurrences within the period. Creating new recurring series is outside the scope of this first version; updating a Google series ID may affect the entire series.
 
-## Sincronizzazione e conflitti
+## Synchronization and conflicts
 
-Il worker usa una connessione SQLite distinta da quella dell'API. Le chiamate a Google avvengono fuori dalle transazioni di scrittura; health check e letture dello stato restano disponibili durante la sincronizzazione. Le modifiche accodate vengono elaborate in background, mentre il polling periodico predefinito è di 300 secondi. Lo stato espone `sync_requested` e `sync_running`; `last_sync` cambia soltanto dopo un aggiornamento completo riuscito della cache.
+The worker uses a separate SQLite connection from the API. Google calls occur outside write transactions; health checks and status reads remain available during synchronization. Queued changes are processed in the background, while the default periodic polling interval is 300 seconds. Status exposes `sync_requested` and `sync_running`; `last_sync` changes only after a complete, successful cache update.
 
-Il primo download e quelli successivi rispettano tutte le pagine Google. Il token incrementale cambia soltanto insieme alla transazione che aggiorna gli eventi. Se Google risponde `410`, viene scaricata una nuova copia completa e la precedente resta disponibile finché il download non è terminato con successo. Il ripristino della cache non elimina la coda delle modifiche.
+The initial and subsequent downloads follow all Google pages. The incremental token changes only together with the transaction that updates the events. If Google responds with `410`, a new complete copy is downloaded, and the previous copy remains available until the download succeeds. Rebuilding the cache does not delete the change queue.
 
-Ogni operazione ha una chiave di idempotenza per utente. Riutilizzarla con lo stesso contenuto restituisce lo stato già registrato; un contenuto differente restituisce `409`. I contenuti accettati sono normalizzati prima di calcolarne l'impronta. Le creazioni usano un ID Google deterministico. Un marcatore privato lega utente, chiave e contenuto richiesto. Modifiche e cancellazioni inviano `If-Match` e un ETag obsoleto produce uno stato `conflict`, senza sovrascrivere la versione remota.
+Each operation has an idempotency key per user. Reusing it with the same content returns the previously recorded status; different content returns `409`. Accepted content is normalized before its fingerprint is calculated. Creations use a deterministic Google ID. A private marker binds the user, key and requested content. Updates and deletions send `If-Match`, and a stale ETag produces a `conflict` status without overwriting the remote version.
 
-Prima di una scrittura remota lo stato viene salvato come `unknown`. Dopo un arresto, un timeout o una risposta ambigua il servizio verifica l'evento remoto prima di ritentare. Un marcatore coincidente conferma una scrittura già eseguita; un ETag differente richiede la risoluzione del conflitto. Gli errori temporanei usano attese progressive; gli stati `failed` e `conflict` richiedono un intervento del chiamante. Non viene promessa una consegna esattamente una volta di qualsiasi operazione esterna.
+Schema version 2 stores each operation's target `calendar_id` when it is queued. Queue responses, exact lookups and replays retain that target after calendar reselection. Startup upgrades schema version 1 transactionally, preserving existing records and ciphertext. Legacy `queued` and `unknown` operations inherit the selected calendar as metadata, but their old encrypted payloads do not authenticate that target. They are never reencrypted from an assumed target: processing marks them `failed` with `queue_integrity_failed`, without contacting Google for a write or reconciliation. Review their original target and remote outcome before explicitly recreating legacy operations. Processing has no legacy decryption fallback. Legacy `applied`, `conflict` and `failed` operations keep an empty target because their historical calendar cannot be established safely; resolve that uncertainty before associating them with an event.
 
-Ogni nuovo consenso e ogni selezione di calendario cambiano la generazione della connessione: le risposte di un worker avviato prima del cambio non possono aggiornare cache, token o stato della nuova connessione.
+Status also exposes an opaque `connection_id`. It survives restarts, reauthorization of the same account and calendar selection, but explicit disconnection deletes it; the next connection receives a new identity. A caller can safely retry an absent operation with its immutable key and payload only after verifying the same connection and calendar. Mutation forms accept optional `expected_connection_id` and `expected_calendar_id`, checked atomically before enqueue or replay; a changed target returns `409`. A missing operation after disconnection or ledger deletion requires explicit resolution.
 
-Ricollegare lo stesso account Google conserva calendario, cache, coda e storico di idempotenza. Un account Google differente viene rifiutato con `google_account_mismatch`: occorre prima una disconnessione esplicita. La disconnessione cancella i dati locali di quell'utente e tenta la revoca del refresh token. Una richiesta remota già in corso può terminare durante la disconnessione; non vengono avviate nuove operazioni dopo la rimozione dell'account.
+Before a remote write, the status is saved as `unknown`. After a shutdown, timeout or ambiguous response, the service checks the remote event before retrying. A matching marker confirms an already completed write; a different ETag requires conflict resolution. Temporary errors use increasing backoff delays; `failed` and `conflict` states require caller intervention. Exactly-once delivery is not guaranteed for every external operation.
 
-## Sicurezza e conservazione
+Each new consent and calendar selection changes the connection generation: responses from a worker started before the change cannot update the new connection's cache, tokens or status.
 
-I token OAuth, il verificatore PKCE, i payload degli eventi e i payload delle modifiche sono cifrati con **AES-256-GCM**, nonce casuale e dati autenticati che includono l'utente e l'identità della riga. Trapiantare un ciphertext fra utenti, eventi o chiavi di idempotenza ne impedisce la decifratura. Un controllo cifrato all'avvio impedisce di aprire l'archivio con una chiave differente e di azzerarlo inavvertitamente.
+Reconnecting the same Google account retains the calendar, cache, queue and idempotency history. A different Google account is rejected with `google_account_mismatch`: explicit disconnection is required first. Disconnecting deletes that user's local data and attempts to revoke the refresh token. A remote request already in progress may finish during disconnection; no new operations are started after the account is removed.
 
-Restano in chiaro i metadati operativi: ID utente, account/calendario Google (spesso un indirizzo email), ID evento, ETag, stato, token di sincronizzazione incrementale, chiave di idempotenza, impronte, contatori e date. La chiave crittografica non è nel database. Il servizio decifra in memoria i soli dati dell'utente richiesto dall'app; questa soluzione non esegue calcoli su dati cifrati.
+## Security and retention
 
-Il servizio usa solo le destinazioni Google previste, HTTPS con verifica della CA e del nome, TLS minimo 1.2, nessun redirect automatico e un tunnel CONNECT forzato attraverso Squid. `NO_PROXY` non può aggirare il proxy. Il container non ha una porta pubblicata, accesso diretto a Internet o credenziali dei database dell'app. Il token API e la chiave di cifratura sono secret montati in sola lettura.
+OAuth tokens, the PKCE verifier, event payloads and change payloads are encrypted with **AES-256-GCM**, a random nonce and authenticated data that includes the user and row identity. Transplanting ciphertext between users, events or idempotency keys prevents decryption. An encrypted startup check prevents opening the storage with a different key and inadvertently resetting it.
 
-Per il backup, salvare il volume `calendar_addon_data` in modo consistente con SQLite, includendo il WAL oppure usando la funzione SQLite Backup. Custodire **separatamente** la chiave `calendar-token-key` e il token API. Senza la chiave i dati non sono recuperabili. Non cancellare o sostituire chiave e volume separatamente; una futura rotazione richiede una migrazione esplicita dei ciphertext. Il file secret locale è una prima configurazione, non un KMS. Il container è una singola istanza: l'HA del cluster MySQL non rende automaticamente ridondante questo archivio.
+Queued writes also authenticate the destination calendar. Before delivery or reconciliation, the operation, event ID and ETag must match the encrypted envelope; tampered routing data is rejected with `queue_integrity_failed`. Changes encrypted before this security update lack the calendar binding and are rejected as well. Before upgrading, resolve pending `queued` and `unknown` changes. After upgrading, review the remote outcome before submitting any rejected legacy change with a new idempotency key, especially when its previous delivery was uncertain.
 
-## Configurazione Google, da completare in seguito
+Operational metadata remains in plaintext: user ID, Google account/calendar (often an email address), event ID, ETag, status, incremental synchronization token, idempotency key, fingerprints, counters and dates. The cryptographic key is not in the database. The service decrypts only the data of the user requested by the app, in memory; this solution does not perform computations on encrypted data.
 
-1. In Google Cloud abilitare Calendar API, configurare la schermata di consenso e creare un client OAuth di tipo **Web application**.
-2. Registrare l'URI di ritorno pubblico esatto dell'app, ad esempio `https://progetti.tuaazienda.it/api/calendar/oauth/callback`.
-3. Impostare `GOOGLE_CLIENT_ID` e `GOOGLE_REDIRECT_URI`; inserire il segreto nel file predisposto per `GOOGLE_CLIENT_SECRET_FILE`, senza inserirlo nel repository o nell'interfaccia chat.
-4. Ricreare il servizio con la configurazione completa, poi avviare il consenso dall'app per ogni utente. Configurazioni parziali sono rifiutate all'avvio.
+The service uses only the designated Google destinations, HTTPS with CA and hostname verification, a minimum of TLS 1.2, no automatic redirects and a CONNECT tunnel enforced through Squid. `NO_PROXY` cannot bypass the proxy. The container has no published port, direct Internet access or app database credentials. The API token and encryption key are mounted as read-only secrets.
 
-Gli scope sono `calendar.events` e `calendar.calendarlist.readonly`. Il consenso richiede accesso offline e PKCE `S256`. Refresh token revocati o scaduti richiedono un nuovo consenso. Le regole Google per applicazioni in test, utenti autorizzati e verifica degli scope vanno configurate nel progetto Google prima dell'uso reale.
+For backups, save the `calendar_addon_data` volume consistently with SQLite, including the WAL or using the SQLite Backup function. Keep the `calendar-token-key` key and API token **separately**. Without the key, the data cannot be recovered. Do not delete or replace the key and volume separately; future rotation requires an explicit ciphertext migration. The local secret file is an initial setup, not a KMS. The container is a single instance: MySQL cluster HA does not automatically make this storage redundant.
 
-Variabili principali: `CALENDAR_BIND`, `CALENDAR_PORT`, `CALENDAR_ALLOWED_CLIENT`, `CALENDAR_TLS_CERT_FILE`, `CALENDAR_TLS_KEY_FILE`, `CALENDAR_API_TOKEN_FILE`, `CALENDAR_TOKEN_KEY_FILE`, `CALENDAR_DB_PATH`, `CALENDAR_PROXY_URL`, `CALENDAR_SYNC_INTERVAL`, `CALENDAR_HTTP_TIMEOUT`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET_FILE`, `GOOGLE_REDIRECT_URI`.
+## Google configuration, to be completed later
 
-## Compilazione e collaudo
+1. In Google Cloud, enable Calendar API, configure the consent screen and create an OAuth client of type **Web application**.
+2. Register the app's exact public redirect URI, for example `https://progetti.tuaazienda.it/api/calendar/oauth/callback`.
+3. Set `GOOGLE_CLIENT_ID` and `GOOGLE_REDIRECT_URI`; place the secret in the file prepared for `GOOGLE_CLIENT_SECRET_FILE`, without putting it in the repository or chat interface.
+4. Recreate the service with the complete configuration, then start the consent flow from the app for each user. Partial configurations are rejected at startup.
+
+The scopes are `calendar.events` and `calendar.calendarlist.readonly`. Consent requires offline access and PKCE `S256`. Revoked or expired refresh tokens require new consent. Google's rules for applications in testing, authorized users and scope verification must be configured in the Google project before real use.
+
+Main variables: `CALENDAR_BIND`, `CALENDAR_PORT`, `CALENDAR_ALLOWED_CLIENT`, `CALENDAR_TLS_CERT_FILE`, `CALENDAR_TLS_KEY_FILE`, `CALENDAR_API_TOKEN_FILE`, `CALENDAR_TOKEN_KEY_FILE`, `CALENDAR_DB_PATH`, `CALENDAR_PROXY_URL`, `CALENDAR_SYNC_INTERVAL`, `CALENDAR_HTTP_TIMEOUT`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET_FILE`, `GOOGLE_REDIRECT_URI`.
+
+## Build and testing
 
 ```sh
 make -C calendar-addon
 python3 -m unittest discover -s tests -p 'test_calendar_addon.py' -v
 ```
 
-Dipendenze: compilatore C11, pthread, OpenSSL, libcurl, SQLite, json-c e pkg-config. Il Dockerfile usa un'immagine Debian con utente non privilegiato UID/GID 10004.
+Dependencies: a C11 compiler, pthread, OpenSSL, libcurl, SQLite, json-c and pkg-config. The Dockerfile uses a Debian image with an unprivileged user, UID/GID 10004.
 
-I test usano server OAuth/Calendar HTTPS e proxy CONNECT locali. L'override `CALENDAR_GOOGLE_ORIGIN` è consentito solo con `CALENDAR_TEST_MODE=1`, listener loopback e proxy loopback. `CALENDAR_GOOGLE_CA_FILE` permette di verificare la CA del fixture; la verifica TLS resta obbligatoria. Le prove non usano account Google e non creano eventi reali.
+Tests use local HTTPS OAuth/Calendar servers and CONNECT proxies. The `CALENDAR_GOOGLE_ORIGIN` override is allowed only with `CALENDAR_TEST_MODE=1`, a loopback listener and a loopback proxy. `CALENDAR_GOOGLE_CA_FILE` allows verification of the fixture's CA; TLS verification remains mandatory. Tests do not use Google accounts or create real events.
 
-Questa aggiunta espone il servizio e il bridge API. Non aggiunge ancora una nuova interfaccia grafica del calendario, associazioni automatiche alle commesse o registrazioni automatiche delle ore.
+The service and API bridge are used by Punto's Calendar screen and the explicit synchronization of Ticket service appointments. Time entries are not created automatically.
 
-Riferimenti: [OAuth web server Google](https://developers.google.com/identity/protocols/oauth2/web-server), [sincronizzazione incrementale](https://developers.google.com/workspace/calendar/api/guides/sync), [versioni ed ETag](https://developers.google.com/workspace/calendar/api/guides/version-resources).
+References: [Google web server OAuth](https://developers.google.com/identity/protocols/oauth2/web-server), [incremental synchronization](https://developers.google.com/workspace/calendar/api/guides/sync), [versions and ETags](https://developers.google.com/workspace/calendar/api/guides/version-resources).
+
+## Interface and Ticket
+
+Punto's **Calendar** screen manages the Google connection, personal calendar selection, viewing and queue status. The Ticket app provides a service appointment agenda and explicit synchronization of events associated with a ticket and project; see the [operational workflow](../ticket-app/README.md#agenda-projects-and-google-calendar). Appointments do not automatically generate logged hours.

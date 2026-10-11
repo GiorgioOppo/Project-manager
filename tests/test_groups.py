@@ -445,10 +445,23 @@ class GroupIntegrationTests(unittest.TestCase):
                       "contract_documents", "audit_events", "sqlite_sequence"}
         with closing(sqlite3.connect(self.db_path)) as db:
             # Restore the previous deployed table shape, with genuine persisted assignments/history.
+            current_version = db.execute("PRAGMA user_version").fetchone()[0]
+            expected_migrations = {row[0] for row in db.execute(
+                "SELECT entity_id FROM audit_events WHERE action='system.migration' AND entity_id>2")}
             rows = db.execute("SELECT job_id,user_id,starts_on,ends_on FROM job_assignments").fetchall()
             for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
                 if table not in old_tables:
                     db.execute('DROP TABLE "' + table.replace('"', '""') + '"')
+            # Later lifecycle columns live on retained business tables. Remove
+            # them too, so this is a genuine old shape rather than a current
+            # table with only its version marker rewound.
+            db.execute("DROP INDEX IF EXISTS time_entries_task")
+            for table, later_columns in (("jobs", ("time_closed", "archived", "lifecycle_revision")),
+                                         ("time_entries", ("task_id", "revision"))):
+                existing = {row[1] for row in db.execute("PRAGMA table_info(" + table + ")")}
+                for column in later_columns:
+                    if column in existing:
+                        db.execute("ALTER TABLE " + table + " DROP COLUMN " + column)
             db.execute("DROP TABLE job_assignments")
             db.execute("CREATE TABLE job_assignments (job_id INTEGER NOT NULL REFERENCES jobs(id),"
                        "user_id INTEGER NOT NULL REFERENCES users(id),starts_on TEXT,ends_on TEXT,"
@@ -459,7 +472,7 @@ class GroupIntegrationTests(unittest.TestCase):
             # Remove only later migration records manufactured while creating this old fixture.
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (3,4,5,6,7,8,9,10)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id>2")
             db.execute(trigger)
             db.execute("PRAGMA user_version=2")
             db.commit()
@@ -477,13 +490,12 @@ class GroupIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, history)
         self.assertEqual((history["total_minutes"], history["entries"][0]["id"]), (35, entry))
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
-            self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' AND entity_id IN (3,4,5,6,7,8,9,10)) ORDER BY id").fetchall(), old_audit)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (current_version,))
+            self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' AND entity_id>2) ORDER BY id").fetchall(), old_audit)
         events = self.events()
-        self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == 3 for event in events), 1)
-        self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == 4 for event in events), 1)
-        self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == 5 for event in events), 1)
-        self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == 6 for event in events), 1)
+        for version in expected_migrations:
+            self.assertEqual(sum(event["action"] == "system.migration" and event["entity_id"] == version
+                                 for event in events), 1)
         self.stop_server()
         self.start_server()
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)

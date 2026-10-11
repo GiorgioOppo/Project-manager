@@ -4,9 +4,11 @@
 
 This document collects current behavior affecting work organization and data interpretation. Procedures with interface commands are in the [user](guida-utente.md) and [manager](guida-gestore.md) guides.
 
-## 1. Two authorization levels
+## 1. Functional profiles, teams and project roles
 
-The account profile establishes workspace powers; the project role governs the operator's viewing and time entry on that resource.
+Every active account has implicit Operator access; Manager derives from the identity role. Sales and Finance are explicit profiles assigned locally in **Users → Profiles**, including to Keycloak accounts. No manager receives them automatically. Project roles remain separate and govern the operator’s viewing and time entry on that resource.
+
+A manager’s team includes themselves, members of their organizational groups and their subgroups. Without groups, or when company groups are unavailable, they see only their own hours. This scope applies to detailed day/week logs, work reports, time summaries, corrections, audit and notifications. Finance does not enlarge this team.
 
 | Action | Manager | Operator |
 | --- | --- | --- |
@@ -18,22 +20,28 @@ The account profile establishes workspace powers; the project role governs the o
 | Report a blocker | Yes | With Contributor access valid today |
 | Edit a blocker | All, including owner | Only if creator or owner and still Contributor; cannot change owner |
 | Delete a blocker | Yes | No |
-| Log personal hours | On all existing projects | On shared projects or with time-entry authorization valid today and on the work day |
+| Log personal hours | On all existing projects that are neither closed nor archived | On projects that are neither closed nor archived, shared or with time-entry authorization valid today and on the work day |
 | Read personal log | Yes | Yes, even after grant revocation |
 | Edit or delete personal hours | Yes | No |
-| Edit others' individual hours | Not in the current flow | No |
-| View work Analysis | Aggregates for all users | Personal entries only |
-| View contract values and rates | Yes | No |
-| Administer suppliers, contracts and PDFs | Yes | No |
+| Edit others' individual hours | Only by approving a correction requested by another team member; no generic editor | No |
+| Read detailed hours and work Analysis | Own team, including read-only day/week logs | Personal entries only |
 | Administer users, groups, roles and grants | Yes | No |
 | Create and edit alert rules | Personal rules only | No |
-| Read notifications | Addressed to their account, including about other users | Addressed to their account and about themselves |
-| View History | Yes | No |
+| Read notifications | Addressed to their account; time details limited to their own team | Addressed to their account and about themselves |
+| View History | Yes, with team time scope and profile-based financial details | No |
 | Use Calendar APIs | Personal connection only | Personal connection only |
 
 The server repeats verification. Hiding a button is a consequence of permissions, not the primary protection. Changes to profile, grants, groups and operational roles also apply to open sessions. Account deactivation revokes sessions; reactivation requires a new login.
 
-The manager has administrative history, which can contain information about changes to other users' hours, and configured alerts. Limiting the Time log to personal data therefore does not promise that every work detail is invisible to managers.
+| Financial data | Required profile |
+| --- | --- |
+| View suppliers, contracts, PDF metadata and download originals | Sales or Finance |
+| Create/edit suppliers and contracts, upload PDFs | Sales |
+| Change a project’s contract link | Manager + Sales |
+| Read Contract value, Labor cost and hourly rates | Finance |
+| Create/edit hourly rates | Manager + Finance |
+
+Finance is read-only and receives financial reports aggregated by project, without third-party personal entries or person filters. The Manager role alone does not open contracts, PDFs or costs. Organizational and functional assignments are separate; revocation is checked even for known resources and open sessions.
 
 ## 2. How project access is determined
 
@@ -53,13 +61,14 @@ Revoking one link can leave other paths active. Making a project non-shared does
 
 ## 3. Statuses, closure and deletion
 
-Project statuses are Planned, In progress, Paused, Completed and Cancelled. These are manually managed classifications; no mandatory transitions or approvals exist. **No status, by itself, prevents new hours.** Time entry is limited through access and shared-project property.
+Project statuses are Planned, In progress, Paused, Completed and Cancelled. These are manually managed classifications; no mandatory transitions or approvals exist. Status labels alone do not prevent new hours. Closing or archiving with a reason blocks new entries for everyone, including managers, without deleting data. Reopening requires a reason; the summary and revision protect the decision.
 
-Contract statuses are Draft, Active, Expired, Closed and Cancelled. The manager also edits these; the end date does not generate an automatic transition. Closed or Cancelled contracts cannot be selected for a new project link, while previous links can remain.
+Contract statuses are Draft, Active, Expired, Closed and Cancelled. A user with Sales also edits these; the end date does not generate an automatic transition. Closed or Cancelled contracts cannot be selected for a new project link, while previous links can remain.
 
 | Operation | Existing hours | Access | Other data |
 | --- | --- | --- | --- |
 | Change project status | Retained | Unchanged | Update in History |
+| Close or archive a project | Retained | Viewing retained; new hours blocked for everyone | Data retained, reason and revision in History |
 | Revoke a grant | Retained and viewable by their creator | That path removed; others can remain | Project remains |
 | Deactivate a user | Retained in aggregates and history | Login blocked | Account retained |
 | Delete a personal entry as Manager | That row removed | Unchanged | Event in History |
@@ -83,7 +92,7 @@ Task deletion is rejected if it has children; linked blockers are retained and d
 
 ## 4. Time log rules
 
-Each entry contains person, project, day, minutes and optional note. The note is not a link to a Kanban task. The person is taken from the session and stably identified; it is not a browser-editable field.
+Each entry contains person, project, day, minutes, an optional note and an optional link to a single task from the same project. The note remains descriptive. The person is taken from the session and stably identified; it is not a browser-editable field.
 
 - Duration per row: 1 to 1440 minutes.
 - Total per person and day: maximum 1440 minutes across all projects.
@@ -95,9 +104,9 @@ Each entry contains person, project, day, minutes and optional note. The note is
 
 Durations are whole minutes. Decimal format is converted exactly: `1,5` = 90 minutes; `1:30` = 90 minutes; `1,30` = 78 minutes. A value requiring fractions of a minute is rejected.
 
-The 24-hour limit is an integrity constraint. The 8-hour alert threshold is a separate informational check: fewer or more than 8 hours can be saved, within 24 hours, without automatic timesheet approval.
+The 24-hour limit is an integrity constraint. The alert threshold, defaulting to 8 hours on weekdays and configurable through schedules and exceptions, is a separate informational check: fewer or more than 8 hours can be saved, within 24 hours, without automatic timesheet approval.
 
-The product does not yet contain a weekly grid, copying a day, time approval, operator-requested corrections or offline saving. Normal entries do not yet have the general idempotency receipt designed in the roadmap: if the outcome is uncertain, check the log before entering again.
+The weekly grid, copying the previous week with a preview, atomic multiple insertions and operator-requested corrections are available. Corrections preserve the original and proposal and require a decision by a team manager other than the author. Multiple-entry saving uses an idempotency receipt; for a single entry with an uncertain outcome, check the log before entering it again. Copying a single day, general timesheet approval and offline saving remain to be developed.
 
 ## 5. Relationship between suppliers, contracts, documents and projects
 
@@ -113,7 +122,9 @@ The per-file limit is 10 MiB, with up to 1000 documents per contract. Name, init
 
 Date filters include first and last day and allow at most 366 days. A single date uses the same From and To value. Counts derive from all filtered entries; result groups are limited to 1000 and exceeding this produces an explicit error.
 
-The manager can aggregate multiple people, including deactivated ones. The operator sees only themselves, including personal history on revoked projects. Entry notes are not included in reports; Kanban tasks are not aggregated in time analyses. Saving or sharing a filtered URL does not grant additional permissions.
+The manager can aggregate people in their own team, including deactivated ones. The operator sees only themselves, including personal history on revoked projects. Entry notes are not included in reports; Kanban tasks are not aggregated in time analyses. Saving or sharing a filtered URL does not grant additional permissions.
+
+Financial views require Finance, do not accept the User filter and do not return other people’s personal entries. Labor cost groups by project. Finance can read rates; editing requires Manager + Finance.
 
 ### Contract value
 
@@ -148,11 +159,11 @@ Events predating rule creation are not notified as new anomalies. Lack of author
 
 ### Missing daily hours
 
-Monday–Friday days of monitored active users are examined. A total below 480 minutes produces an alert after at least **48 actual hours from the day's end**, interpreted in Europe/Rome.
+Days of monitored active users with expected minutes greater than zero are examined. A total below the expected minutes produces an alert after at least **48 actual hours from the day’s end**, interpreted in Europe/Rome. Personal exceptions take precedence over holidays, followed by the latest effective schedule; without configuration, the default is 480 minutes Monday–Friday and zero Saturday–Sunday.
 
-Example without a daylight-saving transition: Monday ends Tuesday at 00:00. The grace period expires Thursday at 00:00; a 09:00 rule evaluates it Thursday at 09:00. Weekends are excluded as days requiring completion, but their chronological hours count toward the grace period. A rule can also run Saturday or Sunday to detect a weekday that has become eligible.
+Example without a daylight-saving transition: Monday ends Tuesday at 00:00. The grace period expires Thursday at 00:00; a 09:00 rule evaluates it Thursday at 09:00. The default calendar expects no weekend hours, but an individual schedule can require them. Chronological weekend hours count toward the grace period. A rule can also run Saturday or Sunday to detect a weekday that has become eligible.
 
-The change between standard and daylight-saving time does not turn the grace period into “two calendar dates”: it remains 48 actual hours. Public holidays, leave, part-time work and individual thresholds cannot be configured. All active users are monitored, including managers; selected recipients determine who receives results.
+The change between standard and daylight-saving time does not turn the grace period into “two calendar dates”: it remains 48 actual hours. Managers configure holidays, leave and individual schedules in **Schedules and absences**. Schedule effective dates preserve the expectations for earlier days; personal exceptions define expected minutes for a particular date. Active users in the owner’s team are monitored, including managers; selected recipients receive only time details they are authorized to read.
 
 Monitoring begins at rule creation. A user added later is included from the first check registering them as a subject, without recovering periods before their monitoring began. A previously examined day is not continuously rechecked: the notification preserves the detected total, even if hours are later added or deleted. It does not represent an always-current approval status for the day.
 
@@ -162,13 +173,15 @@ The chosen time's zone is Europe/Rome. Automation saves the last day executed an
 
 A manual run updates the processed day and prevents a second automatic run on the same day. Suspending the rule does not delete pending emails; delivery checks that owner and recipient remain permitted, separately from enabling the daily run. The [alert engine](../tehnical/motore-alert.md) describes cursors and restart cases.
 
-Up to 50 user recipients and 50 email addresses per rule are allowed, with at least one recipient overall. In-app notifications respect recipient profile: an Operator receives only personal events; a Manager can receive every monitored subject's. An email address is instead an explicitly manager-configured destination, not a user subject to the UI's personal filter.
+Up to 50 user recipients and 50 email addresses per rule are allowed, with at least one recipient overall. Time alerts respect both owner and recipient scope: an Operator receives only personal events, a Manager those of their own team. Email addresses must also correspond to authorized active accounts; external addresses do not receive time details. Delivery rechecks current permissions. Inventory rules retain their shared-catalog scope.
 
 The email channel retains queued sends while SMTP is absent. Outcomes can distinguish awaiting configuration, retry, SMTP acceptance, uncertain delivery and error. Uncertain delivery requires investigation and is not automatically resent. Technical states do not yet form an outbox administration page in the interface.
 
 ## 8. Notifications and history
 
 A notification belongs to a recipient. **Mark as read** updates acknowledgment, not the cause of the alert. The list shows the latest 100 accessible notifications, while the counter can include older unread ones.
+
+Time alerts that are no longer authorized are excluded from the list, unread count and read actions even when produced before revocation. The same personal or team scope protects correction originals and proposals and time details in History.
 
 History is a record of authorized changes. Application save and event are atomic; a history error also prevents the change. Events preserve actor, date and before/after details. Passwords, password derivations and salts are not stored in audit payloads. Rejected errors do not become successful-change events; attempts on nonexistent projects instead have the dedicated alert-event channel.
 

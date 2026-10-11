@@ -159,6 +159,7 @@ class ClusterOverlayTests(unittest.TestCase):
             network.apply(self.env, "fixture-context", keycloak=True, tickets=True,
                           keycloak_env_file=keycloak_env, tickets_env_file=tickets_env)
         controller.assert_called_once_with(self.env, "fixture-context", keycloak=True, tickets=True,
+                                           keycloak_groups=False,
                                            keycloak_env_file=keycloak_env, tickets_env_file=tickets_env)
         cluster.require_service_migration_complete.assert_called_once_with()
         cluster.recover.assert_called_once_with()
@@ -172,6 +173,7 @@ class ClusterOverlayTests(unittest.TestCase):
              mock.patch.object(network, "apply") as apply:
             self.assertEqual(network.main(), 0)
         apply.assert_called_once_with(self.env, "fixture-context", keycloak=True, tickets=True,
+                                      keycloak_groups=False,
                                       keycloak_env_file=self.project / "sso.env",
                                       tickets_env_file=self.project / "tickets.env")
         argv = ["configure_network.py", "prepare"]
@@ -180,6 +182,31 @@ class ClusterOverlayTests(unittest.TestCase):
             self.assertEqual(network.main(), 0)
         prepare.assert_called_once_with()
         apply.assert_not_called()
+
+    def test_group_overlay_requires_keycloak_and_is_appended_last(self):
+        with self.assertRaisesRegex(manager.ClusterError, "richiede --keycloak"):
+            manager.Cluster(self.env, "", keycloak_groups=True)
+        cluster = manager.Cluster(self.env, "", keycloak=True, tickets=True, keycloak_groups=True)
+        self.assertEqual(self.selection(cluster.command, "-f")[-1], str(self.project / "compose.keycloak-groups.yaml"))
+        for services in (("keycloak-groups-sync",), ("keycloak-groups-sync", "keycloak", "tickets")):
+            with self.subTest(services=services):
+                cluster, inventory = self.guarded(services, keycloak=True, tickets=True)
+                with mock.patch.object(manager.subprocess, "run", return_value=inventory):
+                    with self.assertRaisesRegex(manager.ClusterError, "--keycloak-groups"):
+                        cluster.require_service_migration_complete()
+                cluster, inventory = self.guarded(services, keycloak=True, tickets=True, keycloak_groups=True)
+                with mock.patch.object(manager.subprocess, "run", return_value=inventory):
+                    cluster.require_service_migration_complete()
+
+    def test_network_apply_preserves_group_overlay_selection(self):
+        cluster = mock.Mock()
+        cluster.local_state.return_value = "ONLINE"
+        with mock.patch.object(network, "load_state", return_value={"initialized": True}), \
+             mock.patch.object(network, "Cluster", return_value=cluster) as controller, \
+             mock.patch.object(network, "prepare"), mock.patch.object(network, "check_engine"), \
+             contextlib.redirect_stdout(io.StringIO()):
+            network.apply(self.env, "fixture-context", keycloak=True, keycloak_groups=True)
+        self.assertTrue(controller.call_args.kwargs["keycloak_groups"])
 
 
 if __name__ == "__main__":

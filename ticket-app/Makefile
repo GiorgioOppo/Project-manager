@@ -8,7 +8,7 @@ LDLIBS += $(shell $(PKG_CONFIG) --libs sqlite3 json-c openssl libcurl)
 .PHONY: all clean
 all: build/punto-tickets
 
-build/punto-tickets: src/tickets.c src/punto_client.c src/punto_client.h src/punto_integration.inc ../auth/oidc.c ../auth/oidc.h Makefile
+build/punto-tickets: src/tickets.c src/punto_client.c src/punto_client.h src/punto_integration.inc src/ticket_calendar.inc ../auth/oidc.c ../auth/oidc.h ../auth/http_transport.h Makefile
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) src/tickets.c src/punto_client.c ../auth/oidc.c $(LDFLAGS) -o $@ $(LDLIBS)
 

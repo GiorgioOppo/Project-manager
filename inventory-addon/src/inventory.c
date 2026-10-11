@@ -276,6 +276,9 @@ static sqlite3_stmt *prepare(const char *sql) {
 }
 static bool directory_migrate(void);
 static bool subjects_migrate(void);
+static bool custody_people_migrate(void);
+static json_object *directory_load(bool identity, sqlite3_int64 id, bool *error);
+static bool directory_active(json_object *entity);
 static bool init_database(void) {
     if (sqlite3_open_v2(config.database, &database,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) return false;
@@ -284,7 +287,7 @@ static bool init_database(void) {
     if (!version) return false;
     int current = sqlite3_step(version) == SQLITE_ROW ? sqlite3_column_int(version, 0) : -1;
     sqlite3_finalize(version);
-    if (current < 0 || current > 5) return false;
+    if (current < 0 || current > 6) return false;
     if (!execute("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;BEGIN IMMEDIATE;")) return false;
     bool ok = true;
     if (current == 0) ok = execute(
@@ -339,6 +342,16 @@ static bool init_database(void) {
         "location_matches INTEGER CHECK(location_matches IN (0,1)),notes TEXT NOT NULL DEFAULT '',actor_id INTEGER NOT NULL CHECK(actor_id>0),created_at TEXT NOT NULL);"
         "CREATE INDEX asset_verifications_page ON asset_verifications(asset_id,id);");
     if (ok && current < 5) ok = directory_migrate() && subjects_migrate();
+    if (ok && current < 6) ok = custody_people_migrate() && execute(
+        "ALTER TABLE asset_relations ADD COLUMN person_id INTEGER REFERENCES inventory_people(id) CHECK(person_id>0);"
+        "ALTER TABLE asset_relations ADD COLUMN identity_id INTEGER REFERENCES inventory_identities(id) CHECK(identity_id>0);"
+        "ALTER TABLE asset_relations ADD COLUMN subject_snapshot TEXT CHECK(subject_snapshot IS NULL OR json_valid(subject_snapshot));"
+        "DROP INDEX active_relation_assignee;"
+        "CREATE UNIQUE INDEX active_relation_assignee ON asset_relations(source_id,relation_type,assignee COLLATE NOCASE) WHERE active=1 AND target_id IS NULL AND person_id IS NULL AND identity_id IS NULL;"
+        "CREATE UNIQUE INDEX active_relation_person ON asset_relations(source_id,relation_type,person_id) WHERE active=1 AND person_id IS NOT NULL;"
+        "CREATE UNIQUE INDEX active_relation_identity ON asset_relations(source_id,relation_type,identity_id) WHERE active=1 AND identity_id IS NOT NULL;"
+        "CREATE INDEX relation_person_id ON asset_relations(person_id,id);"
+        "CREATE INDEX relation_identity_id ON asset_relations(identity_id,id);");
     if (ok) ok = execute(
         "CREATE INDEX IF NOT EXISTS assets_status_id ON assets(status,id);"
         "CREATE INDEX IF NOT EXISTS assets_type_id ON assets(asset_type,id);"
@@ -346,7 +359,7 @@ static bool init_database(void) {
         "CREATE INDEX IF NOT EXISTS asset_context_site ON asset_context(site_id,asset_id);"
         "CREATE INDEX IF NOT EXISTS asset_context_department ON asset_context(department_id,asset_id);"
         "CREATE INDEX IF NOT EXISTS asset_verifications_latest ON asset_verifications(asset_id,verified_on DESC,id DESC);"
-        "PRAGMA user_version=5;");
+        "PRAGMA user_version=6;");
     if (ok) ok = execute("COMMIT");
     if (!ok) (void)execute("ROLLBACK");
     return ok;
@@ -837,7 +850,7 @@ static json_object *asset_history(sqlite3_int64 id, const char *query, int *stat
     if (more && last) addint(o, "next_after_id", last);
     return o;
 }
-#define RELATION_COLUMNS "r.id,r.source_id,r.target_id,r.relation_type,r.assignee,r.quantity,r.installed_version,r.source_port,r.target_port,r.notes,r.created_at,r.actor_id,r.active,s.asset_tag,s.name,s.asset_type,t.id,t.asset_tag,t.name,t.asset_type"
+#define RELATION_COLUMNS "r.id,r.source_id,r.target_id,r.relation_type,r.assignee,r.quantity,r.installed_version,r.source_port,r.target_port,r.notes,r.created_at,r.actor_id,r.active,s.asset_tag,s.name,s.asset_type,t.id,t.asset_tag,t.name,t.asset_type,r.person_id,r.identity_id,r.subject_snapshot"
 #define RELATION_FROM " FROM asset_relations r JOIN assets s ON s.id=r.source_id LEFT JOIN assets t ON t.id=r.target_id "
 static json_object *relation_row(sqlite3_stmt *s, sqlite3_int64 perspective) {
     json_object *row = json_object_new_object();
@@ -871,6 +884,27 @@ static json_object *relation_row(sqlite3_stmt *s, sqlite3_int64 perspective) {
         addstr(target,"asset_type",(const char *)sqlite3_column_text(s,19));
         json_object_object_add(row,"target",target);
     }
+    if (sqlite3_column_type(s,20) == SQLITE_NULL) json_object_object_add(row,"person_id",NULL);
+    else addint(row,"person_id",sqlite3_column_int64(s,20));
+    if (sqlite3_column_type(s,21) == SQLITE_NULL) json_object_object_add(row,"identity_id",NULL);
+    else addint(row,"identity_id",sqlite3_column_int64(s,21));
+    bool person = sqlite3_column_type(s,20) != SQLITE_NULL;
+    bool identity = sqlite3_column_type(s,21) != SQLITE_NULL;
+    if (person || identity) {
+        json_object *snapshot = sqlite3_column_type(s,22) == SQLITE_NULL ? NULL : json_tokener_parse((const char *)sqlite3_column_text(s,22));
+        if (person == identity || !snapshot || !json_object_is_type(snapshot,json_type_object)) {
+            if (snapshot) json_object_put(snapshot);
+            json_object_put(row);
+            return NULL;
+        }
+        addstr(row,"subject_kind",identity ? "identity" : "person");
+        addint(row,"subject_id",sqlite3_column_int64(s,identity ? 21 : 20));
+        json_object_object_add(row,"subject_snapshot",snapshot);
+    } else {
+        json_object_object_add(row,"subject_kind",NULL);
+        json_object_object_add(row,"subject_id",NULL);
+        json_object_object_add(row,"subject_snapshot",NULL);
+    }
     return row;
 }
 static json_object *load_relation(sqlite3_int64 source, sqlite3_int64 id, bool *error) {
@@ -879,7 +913,7 @@ static json_object *load_relation(sqlite3_int64 source, sqlite3_int64 id, bool *
     sqlite3_bind_int64(s,1,id); sqlite3_bind_int64(s,2,source);
     int result = sqlite3_step(s);
     json_object *relation = result == SQLITE_ROW ? relation_row(s,source) : NULL;
-    if (result != SQLITE_ROW && result != SQLITE_DONE) *error = true;
+    if ((result != SQLITE_ROW && result != SQLITE_DONE) || (result == SQLITE_ROW && !relation)) *error = true;
     sqlite3_finalize(s);
     return relation;
 }
@@ -907,6 +941,7 @@ static json_object *list_relations(sqlite3_int64 id, const char *query, int *sta
     while ((result = sqlite3_step(s)) == SQLITE_ROW) {
         if (count >= limit) { more = true; break; }
         json_object *item = relation_row(s,id);
+        if (!item) { result = SQLITE_CORRUPT; break; }
         size_t length = strlen(json_object_to_json_string_ext(item,JSON_C_TO_STRING_PLAIN));
         if (bytes + length + (count ? 1 : 0) > RESPONSE_LIMIT-64) { json_object_put(item); more = true; break; }
         bytes += length + (count ? 1 : 0);
@@ -927,12 +962,14 @@ static bool unavailable(json_object *asset) {
     return !strcmp(status,"retired") || !strcmp(status,"lost");
 }
 static json_object *save_relation(sqlite3_int64 source_id, sqlite3_int64 remove_id, Form *form, int *status) {
-    static const char *const allowed[] = {"actor_id","version","relation_type","target_id","assignee","quantity","installed_version","source_port","target_port","notes"};
-    if (!only_fields(form,allowed,remove_id ? 2 : 10)) return failure(status,400,"Campo relazione sconosciuto.");
-    sqlite3_int64 actor, version, target_id = 0, quantity = 1;
+    static const char *const allowed[] = {"actor_id","version","relation_type","target_id","assignee","quantity","installed_version","source_port","target_port","notes","person_id","identity_id"};
+    if (!only_fields(form,allowed,remove_id ? 2 : 12)) return failure(status,400,"Campo relazione sconosciuto.");
+    sqlite3_int64 actor, version, target_id = 0, person_id = 0, identity_id = 0, quantity = 1;
     if (!integer(field(form,"actor_id"),1,INT64_MAX,&actor) || !integer(field(form,"version"),1,INT64_MAX-1,&version))
         return failure(status,400,"Autore e versione corrente sono obbligatori.");
     if (!remove_id && ((*field(form,"target_id") && !integer(field(form,"target_id"),1,INT64_MAX,&target_id)) ||
+        (has_field(form,"person_id") && !integer(field(form,"person_id"),1,INT64_MAX,&person_id)) ||
+        (has_field(form,"identity_id") && !integer(field(form,"identity_id"),1,INT64_MAX,&identity_id)) ||
         (has_field(form,"quantity") && !integer(field(form,"quantity"),1,1000000,&quantity))))
         return failure(status,400,"Destinazione o quantità non valida.");
     const char *relation_type = field(form,"relation_type"), *assignee = field(form,"assignee"),
@@ -947,11 +984,16 @@ static json_object *save_relation(sqlite3_int64 source_id, sqlite3_int64 remove_
     while (assignee_length && isspace((unsigned char)assignee[assignee_length-1])) assignee_length--;
     memcpy(normalized_assignee,assignee,assignee_length); normalized_assignee[assignee_length] = 0;
     assignee = normalized_assignee;
+    if (!remove_id && (person_id || identity_id) && strcmp(relation_type,"licensed_to"))
+        return failure(status,400,"Persone e identità sono ammesse solo per le assegnazioni di licenza.");
+    if (!remove_id && !strcmp(relation_type,"licensed_to") &&
+        ((target_id != 0) + (person_id != 0) + (identity_id != 0) + (*assignee != 0) != 1))
+        return failure(status,400,"La licenza richiede un solo destinatario.");
     if (!execute("BEGIN IMMEDIATE")) return failure(status,503,"Archivio inventario temporaneamente occupato.");
     int code = 500;
     const char *message = "Modifica relazione non riuscita.";
     bool error = false;
-    json_object *source = load_asset(source_id,&error), *target = NULL, *relation = NULL, *asset = NULL;
+    json_object *source = load_asset(source_id,&error), *target = NULL, *subject = NULL, *relation = NULL, *asset = NULL;
     if (!source) { code = error ? 500 : 404; message = error ? "Impossibile leggere il bene." : "Bene non trovato."; goto fail; }
     if (jint(source,"version") != version) { code = 409; message = "Il bene è stato modificato: aggiorna i dati prima di salvare."; goto fail; }
     if (remove_id) {
@@ -980,10 +1022,18 @@ static json_object *save_relation(sqlite3_int64 source_id, sqlite3_int64 remove_
             json_object *details = NULL;
             json_object_object_get_ex(source,"details",&details);
             const char *model = jstr(details,"license_model");
-            if (!strcmp(model,"per_device")) valid = target && is_device(target) && !*assignee;
-            else if (!strcmp(model,"per_user")) valid = !target && *assignee;
-            else if (!strcmp(model,"concurrent") || !strcmp(model,"site")) valid = (target && is_device(target) && !*assignee) || (!target && *assignee);
+            if (!strcmp(model,"per_device")) valid = target && is_device(target) && !*assignee && !person_id && !identity_id;
+            else if (!strcmp(model,"per_user")) valid = !target && (person_id || identity_id || *assignee);
+            else if (!strcmp(model,"concurrent") || !strcmp(model,"site")) valid = (target && is_device(target)) || (!target && (person_id || identity_id || *assignee));
             else valid = false;
+            if (!valid) { code = 400; message = "Destinatario non compatibile con il modello di licenza."; goto fail; }
+            if (person_id || identity_id) {
+                subject = directory_load(identity_id != 0,identity_id ? identity_id : person_id,&error);
+                if (!subject) { code = error ? 500 : 404; message = "Persona o identità non trovata."; goto fail; }
+                if (!directory_active(subject)) { code = 409; message = "La persona o identità è inattiva."; goto fail; }
+                assignee = jstr(subject,"display_name");
+                if (!*assignee) assignee = jstr(subject,"login");
+            }
             if (unavailable(source) || license_expired(details)) { code = 409; message = "La licenza è dismessa, smarrita o scaduta."; goto fail; }
             sqlite3_int64 allocated = allocated_seats(source_id,&error);
             if (error) goto fail;
@@ -998,7 +1048,7 @@ static json_object *save_relation(sqlite3_int64 source_id, sqlite3_int64 remove_
         s = prepare("UPDATE asset_relations SET active=0,removed_at=?,removed_actor_id=? WHERE id=? AND source_id=? AND active=1");
         if (s) { sqlite3_bind_text(s,1,timestamp,-1,SQLITE_TRANSIENT); sqlite3_bind_int64(s,2,actor); sqlite3_bind_int64(s,3,remove_id); sqlite3_bind_int64(s,4,source_id); }
     } else {
-        s = prepare("INSERT INTO asset_relations(source_id,target_id,relation_type,assignee,quantity,installed_version,source_port,target_port,notes,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+        s = prepare("INSERT INTO asset_relations(source_id,target_id,relation_type,assignee,quantity,installed_version,source_port,target_port,notes,actor_id,created_at,person_id,identity_id,subject_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         if (s) {
             sqlite3_bind_int64(s,1,source_id);
             if (target_id) sqlite3_bind_int64(s,2,target_id); else sqlite3_bind_null(s,2);
@@ -1006,6 +1056,10 @@ static json_object *save_relation(sqlite3_int64 source_id, sqlite3_int64 remove_
             sqlite3_bind_int64(s,5,quantity); sqlite3_bind_text(s,6,installed_version,-1,SQLITE_TRANSIENT);
             sqlite3_bind_text(s,7,source_port,-1,SQLITE_TRANSIENT); sqlite3_bind_text(s,8,target_port,-1,SQLITE_TRANSIENT);
             sqlite3_bind_text(s,9,notes,-1,SQLITE_TRANSIENT); sqlite3_bind_int64(s,10,actor); sqlite3_bind_text(s,11,timestamp,-1,SQLITE_TRANSIENT);
+            if (person_id) sqlite3_bind_int64(s,12,person_id); else sqlite3_bind_null(s,12);
+            if (identity_id) sqlite3_bind_int64(s,13,identity_id); else sqlite3_bind_null(s,13);
+            if (subject) sqlite3_bind_text(s,14,json_object_to_json_string_ext(subject,JSON_C_TO_STRING_PLAIN),-1,SQLITE_TRANSIENT);
+            else sqlite3_bind_null(s,14);
         }
     }
     int result = s ? sqlite3_step(s) : SQLITE_ERROR;
@@ -1034,6 +1088,7 @@ static json_object *save_relation(sqlite3_int64 source_id, sqlite3_int64 remove_
     if (!ok) { message = "Storico relazione non salvato; modifica annullata."; goto fail; }
     json_object_put(source);
     if (target) json_object_put(target);
+    if (subject) json_object_put(subject);
     json_object *o = ok_json();
     json_object_object_add(o,"asset",asset); json_object_object_add(o,"relation",relation);
     *status = remove_id ? 200 : 201;
@@ -1042,6 +1097,7 @@ fail:
     (void)execute("ROLLBACK");
     if (source) json_object_put(source);
     if (target) json_object_put(target);
+    if (subject) json_object_put(subject);
     if (relation) json_object_put(relation);
     if (asset) json_object_put(asset);
     return failure(status,code,message);

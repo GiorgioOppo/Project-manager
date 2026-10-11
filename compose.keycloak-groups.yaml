@@ -1,0 +1,68 @@
+# Optional central groups: append after the Keycloak and Tickets overlays.
+services:
+  auth-config-init:
+    volumes:
+      - ./data/keycloak/secrets/groups-client-secret:/source/groups-client-secret:ro
+      - ./data/keycloak/bindings/groups.json:/source/groups-bindings.json:ro
+      - groups_auth_runtime:/runtime/groups
+      - punto_groups_snapshot:/runtime/groups-snapshot
+
+  keycloak-groups-sync:
+    image: "punto/keycloak-groups-sync:${PUNTO_IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: auth/keycloak/Dockerfile.groups-sync
+    user: "10001:10001"
+    environment:
+      KEYCLOAK_SYNC_ISSUER_URL: "${KEYCLOAK_ISSUER_URL:?Esegui configure_keycloak.py init}"
+      KEYCLOAK_SYNC_BACKCHANNEL_URL: https://keycloak:8443/realms/punto
+      KEYCLOAK_SYNC_CLIENT_ID: punto-groups-sync
+      KEYCLOAK_SYNC_SECRET_FILE: /run/punto-auth/client-secret
+      KEYCLOAK_SYNC_CA_FILE: /run/punto-auth/ca.crt
+      KEYCLOAK_SYNC_GROUP_BINDINGS_FILE: /run/punto-auth/groups.json
+      KEYCLOAK_SYNC_USER_BINDINGS_FILE: /run/punto-auth/users.json
+      KEYCLOAK_SYNC_OUTPUT: /run/punto-groups/groups.json
+      KEYCLOAK_SYNC_INTERVAL: "30"
+    depends_on:
+      auth-config-init:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - groups_auth_runtime:/run/punto-auth:ro
+      - punto_groups_snapshot:/run/punto-groups
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python3", "/app/sync_groups.py", "--health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    networks:
+      auth_api:
+        ipv4_address: 172.30.90.12
+        interface_name: auth_api
+
+  app:
+    environment:
+      AUTH_GROUP_MANAGEMENT: "${KEYCLOAK_GROUP_MANAGEMENT:-keycloak}"
+      AUTH_GROUPS_SNAPSHOT_FILE: /run/punto-groups/groups.json
+    volumes:
+      - punto_groups_snapshot:/run/punto-groups:ro
+    depends_on:
+      keycloak-groups-sync:
+        condition: service_healthy
+
+volumes:
+  groups_auth_runtime:
+  punto_groups_snapshot:

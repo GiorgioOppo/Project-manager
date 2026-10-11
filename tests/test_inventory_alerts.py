@@ -58,7 +58,10 @@ class InventoryAlertTests(unittest.TestCase):
     run_rule = alerts.AlertIntegrationTests.run_rule
     rules = alerts.AlertIntegrationTests.rules
     notifications = alerts.AlertIntegrationTests.notifications
-    worker = alerts.AlertIntegrationTests.worker
+
+    def worker(self, email=roles.WORKER_EMAIL):
+        # Inventory reminders do not depend on sharing a time-visibility team.
+        return alerts.AlertIntegrationTests.worker(self, email, shared_team=False)
 
     @classmethod
     def setUpClass(cls):

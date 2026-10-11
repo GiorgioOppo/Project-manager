@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from oidc_fixture import OIDCProvider
 
@@ -65,7 +65,7 @@ class PuntoOIDCTests(unittest.TestCase):
             self.process.terminate()
             self.process.wait(timeout=5)
 
-    def request(self, method, path, cookie=None, fields=None):
+    def request(self, method, path, cookie=None, fields=None, extra_headers=None):
         headers = {}
         if cookie:
             headers["Cookie"] = cookie
@@ -73,6 +73,8 @@ class PuntoOIDCTests(unittest.TestCase):
         if fields is not None:
             headers.update({"Origin": self.origin, "Content-Type": "application/x-www-form-urlencoded"})
             body = urlencode(fields)
+        if extra_headers:
+            headers.update(extra_headers)
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=8)
         try:
             connection.request(method, path, body=body, headers=headers)
@@ -125,6 +127,70 @@ class PuntoOIDCTests(unittest.TestCase):
             db.execute("UPDATE users SET active=0")
         self.assertEqual(self.sso()[0], 403)
 
+    def test_alias_reaches_canonical_origin_before_starting_sso(self):
+        hostile = "https://attacker.example.test/steal"
+        query = urlencode({"redirect_uri": hostile, "next": hostile, "state": "untrusted-state"})
+        status, headers, body = self.request("GET", "/auth/login?" + query, extra_headers={
+            "Host": f"localhost:{self.port}",
+            "Forwarded": 'host="attacker.example.test";proto=https',
+            "X-Forwarded-Host": "attacker.example.test",
+        })
+        self.assertEqual(status, 303)
+        self.assertEqual(dict(headers)["Location"], self.origin + "/auth/login")
+        self.assertFalse(any(name.lower() == "set-cookie" for name, _ in headers))
+        self.assertNotIn(hostile.encode(), body)
+        self.assertNotIn("attacker.example.test", str(headers))
+        self.assertNotIn("untrusted-state", str(headers))
+
+        # The next request is made on the configured callback origin, so the
+        # transaction cookie and the returning callback share the same host.
+        status, headers, _ = self.request("GET", urlsplit(dict(headers)["Location"]).path)
+        self.assertEqual(status, 303)
+        headers = dict(headers)
+        authorize = parse_qs(urlsplit(headers["Location"]).query)
+        self.assertEqual(authorize["redirect_uri"], [self.origin + "/auth/callback"])
+        query = self.provider.register(headers["Location"])
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        status, headers, _ = self.request("GET", "/auth/callback?" + query, cookie)
+        self.assertEqual(status, 303)
+        session = self.session_cookie(headers)
+        self.assertTrue(json.loads(self.request("GET", "/api/session", session)[2])["authenticated"])
+
+    def test_https_public_aliases_redirect_to_configured_sso_origin(self):
+        self.stop()
+        canonical = "https://punto.example.test"
+        self.environment.update({
+            "OIDC_REDIRECT_URI": canonical + "/auth/callback",
+            "PUBLIC_ORIGINS": canonical + ",https://projects.example.test,http://localhost",
+        })
+        self.start()
+        for host in ("projects.example.test", "projects.example.test:443", "localhost"):
+            with self.subTest(host=host):
+                status, headers, _ = self.request("GET", "/auth/login", extra_headers={"Host": host})
+                self.assertEqual(status, 303)
+                self.assertEqual(dict(headers)["Location"], canonical + "/auth/login")
+                self.assertFalse(any(name.lower() == "set-cookie" for name, _ in headers))
+
+        # As behind NPM, the application receives HTTP with the canonical Host;
+        # PUBLIC_ORIGINS supplies the configured public HTTPS origin.
+        for host in ("punto.example.test", "punto.example.test:443"):
+            with self.subTest(host=host):
+                status, headers, _ = self.request("GET", "/auth/login", extra_headers={"Host": host})
+                self.assertEqual(status, 303)
+                headers = dict(headers)
+                self.assertTrue(headers["Location"].startswith(self.provider.issuer + "/protocol/"))
+                self.assertEqual(parse_qs(urlsplit(headers["Location"]).query)["redirect_uri"],
+                                 [canonical + "/auth/callback"])
+                self.assertIn("; Secure", headers["Set-Cookie"])
+
+    def test_unknown_host_is_rejected_before_sso_redirect(self):
+        status, headers, _ = self.request("GET", "/auth/login", extra_headers={
+            "Host": "attacker.example.test",
+            "X-Forwarded-Host": f"127.0.0.1:{self.port}",
+        })
+        self.assertEqual(status, 403)
+        self.assertFalse(any(name.lower() in ("location", "set-cookie") for name, _ in headers))
+
     def test_oidc_mode_blocks_local_password_login(self):
         self.stop()
         self.environment["AUTH_MODE"] = "oidc"
@@ -153,3 +219,15 @@ class PuntoOIDCTests(unittest.TestCase):
                                          capture_output=True, timeout=5)
                 self.assertNotEqual(process.returncode, 0)
                 self.assertFalse(missing.exists())
+
+    def test_unlisted_https_callback_origin_fails_before_database_creation(self):
+        self.stop()
+        missing = self.directory / "unlisted-callback.db"
+        environment = dict(self.environment, DB_PATH=str(missing),
+                           OIDC_REDIRECT_URI="https://punto.example.test/auth/callback",
+                           PUBLIC_ORIGINS="https://projects.example.test,http://localhost")
+        process = subprocess.run([str(ROOT / "build/punto")], cwd=ROOT, env=environment,
+                                 capture_output=True, timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn(b"OIDC_REDIRECT_URI", process.stderr)
+        self.assertFalse(missing.exists())

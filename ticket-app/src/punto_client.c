@@ -91,11 +91,13 @@ static size_t receive_json(char *data, size_t size, size_t count, void *opaque) 
     memcpy(r->data + r->length, data, bytes); r->length += bytes; r->data[r->length] = 0;
     return bytes;
 }
-int punto_client_get(const char *grant, const char *endpoint, const char *query, json_object **result) {
+static int punto_client_call(const char *grant, const char *endpoint, const char *query, const char *form, json_object **result) {
     *result = NULL;
     if (!configured || !grant || strlen(grant) != 64) return 503;
     for (const char *p = grant; *p; p++) if (!isxdigit((unsigned char)*p)) return 503;
-    if (strcmp(endpoint, "scope") && strcmp(endpoint, "jobs") && strcmp(endpoint, "assets") && strcmp(endpoint, "validate")) return 503;
+    if (strcmp(endpoint,"scope") && strcmp(endpoint,"jobs") && strcmp(endpoint,"assets") && strcmp(endpoint,"validate") &&
+        strcmp(endpoint,"calendar/status") && strcmp(endpoint,"calendar/event") && strcmp(endpoint,"calendar/change") &&
+        strcmp(endpoint,"calendar/create") && strcmp(endpoint,"calendar/update") && strcmp(endpoint,"calendar/delete")) return 503;
     char url[8192], authorization[96];
     int n = snprintf(url, sizeof(url), "%s/api/integrations/tickets/%s%s%s", origin, endpoint, query && *query ? "?" : "", query ? query : "");
     if (n < 0 || (size_t)n >= sizeof(url)) return 503;
@@ -116,13 +118,14 @@ int punto_client_get(const char *grant, const char *endpoint, const char *query,
 #else
     SET(CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS); SET(CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
 #endif
+    if (form) { SET(CURLOPT_POST,1L); SET(CURLOPT_POSTFIELDS,form); SET(CURLOPT_POSTFIELDSIZE,(long)strlen(form)); }
     if (ca_file) SET(CURLOPT_CAINFO, ca_file);
     if (resolve) SET(CURLOPT_RESOLVE, resolve);
 #undef SET
     CURLcode code = ok ? curl_easy_perform(curl) : CURLE_FAILED_INIT; long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(headers); curl_slist_free_all(resolve); curl_easy_cleanup(curl);
-    if (code == CURLE_OK && r.length && !memchr(r.data, 0, r.length) && (status == 200 || status == 400 || status == 401 || status == 403 || status == 404 || status == 503)) {
+    if (code == CURLE_OK && r.length && !memchr(r.data, 0, r.length) && (status == 200 || status == 201 || status == 202 || status == 409 || status == 422 || status == 429 || status == 400 || status == 401 || status == 403 || status == 404 || status == 503)) {
         json_tokener *tok = json_tokener_new_ex(32);
         if (tok) {
             json_tokener_set_flags(tok, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
@@ -136,4 +139,11 @@ int punto_client_get(const char *grant, const char *endpoint, const char *query,
     }
     memset(r.data, 0, r.length); free(r.data);
     return *result ? (int)status : 503;
+}
+
+int punto_client_get(const char *grant,const char *endpoint,const char *query,json_object **result) {
+    return punto_client_call(grant,endpoint,query,NULL,result);
+}
+int punto_client_post(const char *grant,const char *endpoint,const char *form,json_object **result) {
+    return punto_client_call(grant,endpoint,NULL,form,result);
 }

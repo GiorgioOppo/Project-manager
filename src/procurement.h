@@ -11,6 +11,6 @@ bool procurement_handle(const char *method, const char *target, const char *quer
 void procurement_upload(DbInt contract_id, const char *filename,
                         const unsigned char *data, size_t size, DbInt actor_id,
                         const char *role, WorkspaceResponse *response);
-int procurement_download(DbInt document_id, const char *role,
+int procurement_download(DbInt document_id, DbInt actor_id, const char *role,
                          unsigned char **data, size_t *size, char filename[181]);
 #endif

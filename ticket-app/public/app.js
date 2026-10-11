@@ -11,7 +11,9 @@
   const historyActions = {
     created: t("ha aperto il ticket"), create: t("ha aperto il ticket"), updated: t("ha aggiornato il ticket"),
     update: t("ha aggiornato il ticket"), commented: t("ha aggiunto un commento"), comment: t("ha aggiunto un commento"),
-    status_changed: t("ha cambiato lo stato"), assigned: t("ha aggiornato l’assegnazione")
+    status_changed: t("ha cambiato lo stato"), assigned: t("ha aggiornato l’assegnazione"),
+    calendar_requested: t("ha richiesto una modifica al calendario Google"),
+    calendar_reconciled: t("ha verificato il collegamento con l’evento Google")
   };
   const state = {
     user: null, csrf: "", auth: null, users: [], offset: 0, total: 0, limit: 50,
@@ -90,13 +92,245 @@
     return node;
   }
 
+  const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const agendaDateFormat = new Intl.DateTimeFormat(locale, { weekday: "long", day: "numeric", month: "short" });
+  const agendaTimeFormat = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" });
+  const slotFormat = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  Object.assign(state, { agendaWeek: weekStart(new Date()), agendaItems: [], calendarRequest: null, calendarCycle: 0, calendar: null });
+
+  function weekStart(date) {
+    const result = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    result.setDate(result.getDate() - (result.getDay() + 6) % 7);
+    return result;
+  }
+
+  function civilDay(date, days) { return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days); }
+  function localInput(epoch) {
+    if (!epoch) return "";
+    const date = new Date(epoch * 1000), pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+  function offsetLabel(epoch) {
+    const minutes = -new Date(epoch * 1000).getTimezoneOffset();
+    return `UTC${minutes < 0 ? "−" : "+"}${String(Math.floor(Math.abs(minutes) / 60)).padStart(2, "0")}:${String(Math.abs(minutes) % 60).padStart(2, "0")}`;
+  }
+  function localCandidates(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+    if (!match) return [];
+    const [, y, m, d, h, min] = match.map(Number);
+    const guess = new Date(y, m - 1, d, h, min).getTime();
+    const result = [];
+    for (let delta = -180; delta <= 180; delta += 30) {
+      const epoch = Math.floor((guess + delta * 60000) / 1000);
+      if (localInput(epoch) === value) result.push(epoch);
+    }
+    return [...new Set(result)].sort((a, b) => a - b);
+  }
+  function updateScheduleInput(prefix, endpoint, selected = null) {
+    const input = $(`${prefix}-scheduled-${endpoint}`), select = $(`${prefix}-${endpoint}-offset`);
+    const candidates = localCandidates(input.value), previous = selected ?? select.value;
+    const field = $(`${prefix}-${endpoint}-offset-field`);
+    select.replaceChildren();
+    if (candidates.length > 1) {
+      addOption(select, "", t("Scegli il fuso orario"));
+      for (const epoch of candidates) addOption(select, epoch, offsetLabel(epoch));
+      select.value = candidates.includes(Number(previous)) ? String(previous) : "";
+      field.hidden = false;
+    } else { field.hidden = true; if (candidates[0]) addOption(select, candidates[0], offsetLabel(candidates[0])); }
+    updateScheduleHint(prefix);
+  }
+  function updateScheduleHint(prefix) {
+    const original = prefix === "detail" ? state.detail?.ticket : state.editorTicket;
+    $(`${prefix}-schedule-zone`).textContent = original?.scheduled_timezone && original.scheduled_timezone !== browserTimezone ? t("Orari visualizzati in {0}. Fuso salvato: {1}.", [browserTimezone, original.scheduled_timezone]) : t("Orari nel fuso del browser: {0}.", [browserTimezone]);
+    const labels = [];
+    for (const endpoint of ["start", "end"]) {
+      const input = $(`${prefix}-scheduled-${endpoint}`), candidates = localCandidates(input.value);
+      const chosen = candidates.length === 1 ? candidates[0] : Number($(`${prefix}-${endpoint}-offset`).value);
+      if (input.value && !candidates.length) labels.push(t("Orario inesistente nel fuso scelto."));
+      else if (input.value && chosen) labels.push(`${endpoint === "start" ? t("Inizio") : t("Fine")}: ${offsetLabel(chosen)}`);
+    }
+    $(`${prefix}-schedule-offsets`).textContent = labels.join(" · ");
+  }
+  function populateSchedule(prefix, ticket = null) {
+    for (const endpoint of ["start", "end"]) {
+      const epoch = ticket?.[`scheduled_${endpoint}`] || null, input = $(`${prefix}-scheduled-${endpoint}`);
+      input.value = localInput(epoch);
+      input.dataset.originalValue = input.value;
+      input.dataset.originalEpoch = epoch ? String(epoch) : "";
+      updateScheduleInput(prefix, endpoint, epoch ? Math.floor(epoch / 60) * 60 : "");
+    }
+    updateScheduleHint(prefix);
+  }
+  function scheduleValues(prefix, original = null) {
+    const values = {};
+    const inputs = ["start", "end"].map((endpoint) => $(`${prefix}-scheduled-${endpoint}`).value);
+    if (!inputs[0] && !inputs[1]) return { scheduled_start: null, scheduled_end: null, scheduled_timezone: null };
+    if (!inputs[0] || !inputs[1]) throw new Error(t("Indica sia l’inizio sia la fine dell’intervento."));
+    for (const endpoint of ["start", "end"]) {
+      const input = $(`${prefix}-scheduled-${endpoint}`), candidates = localCandidates(input.value);
+      if (!candidates.length) throw new Error(t("Questo orario non esiste nel fuso del browser. Scegli un altro orario."));
+      const selected = candidates.length === 1 ? candidates[0] : Number($(`${prefix}-${endpoint}-offset`).value);
+      if (!candidates.includes(selected)) throw new Error(t("Questo orario si ripete nel cambio d’ora: scegli il fuso per inizio e fine."));
+      const previous = Number(input.dataset.originalEpoch);
+      values[`scheduled_${endpoint}`] = previous && input.value === input.dataset.originalValue && Math.floor(previous / 60) * 60 === selected ? previous : selected;
+    }
+    if (values.scheduled_start <= 0 || values.scheduled_end > 7258118399 || values.scheduled_end <= values.scheduled_start || values.scheduled_end - values.scheduled_start > 366 * 86400) throw new Error(t("La fine deve seguire l’inizio; la durata massima è 366 giorni, entro il 2199."));
+    values.scheduled_timezone = original?.scheduled_start === values.scheduled_start && original?.scheduled_end === values.scheduled_end ? original.scheduled_timezone : browserTimezone;
+    return values;
+  }
+  function scheduleChanges(values, original) {
+    const body = changes(values, original);
+    if (["scheduled_start", "scheduled_end", "scheduled_timezone"].some((key) => Object.hasOwn(body, key))) {
+      for (const key of ["scheduled_start", "scheduled_end", "scheduled_timezone"]) body[key] = values[key];
+    }
+    return body;
+  }
+  function propertyDraft() {
+    return { status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null,
+      slot: Object.fromEntries(["start", "end"].map((endpoint) => [endpoint, { value: $(`detail-scheduled-${endpoint}`).value, offset: $(`detail-${endpoint}-offset`).value }])) };
+  }
+  function propertiesDirty(ticket, draft = propertyDraft()) {
+    const { slot, ...values } = draft;
+    if (Object.keys(changes(values, ticket)).length) return true;
+    try { return Object.keys(changes(scheduleValues("detail", ticket), ticket)).length > 0; } catch { return true; }
+  }
+  function restorePropertyDraft(draft) {
+    $("detail-status").value = draft.status; $("detail-priority").value = draft.priority;
+    $("detail-assignee").value = draft.assignee_id === null ? "" : String(draft.assignee_id);
+    $("detail-due-date").value = draft.due_date || "";
+    for (const endpoint of ["start", "end"]) { $(`detail-scheduled-${endpoint}`).value = draft.slot[endpoint].value; updateScheduleInput("detail", endpoint, draft.slot[endpoint].offset); }
+  }
+  function scheduleBadge(ticket) {
+    if (!ticket.scheduled_start) return null;
+    const badge = element("span", "schedule-badge", t("Programmato · {0}", [slotFormat.format(new Date(ticket.scheduled_start * 1000))]));
+    badge.title = `${slotFormat.format(new Date(ticket.scheduled_start * 1000))} – ${slotFormat.format(new Date(ticket.scheduled_end * 1000))} · ${browserTimezone}`;
+    return badge;
+  }
+  function renderAgenda() {
+    const start = state.agendaWeek, end = civilDay(start, 6);
+    $("agenda-week-label").textContent = `${agendaDateFormat.format(start)} — ${agendaDateFormat.format(end)}`;
+    $("agenda-timezone").textContent = t("Orari nel fuso del browser: {0}.", [browserTimezone]);
+    const fragment = document.createDocumentFragment(), today = new Date();
+    for (let index = 0; index < 7; index += 1) {
+      const day = civilDay(start, index), next = civilDay(day, 1), from = day.getTime() / 1000, to = next.getTime() / 1000;
+      const isToday = day.toDateString() === today.toDateString();
+      const section = element("section", "agenda-day" + (isToday ? " agenda-is-today" : ""));
+      const heading = element("div", "agenda-day-heading"), label = element("h4", "", agendaDateFormat.format(day));
+      if (isToday) label.append(element("span", "agenda-today-label", t("Oggi")));
+      const add = element("button", "button button-quiet agenda-add", "+"); add.type = "button";
+      add.setAttribute("aria-label", t("Programma un ticket il {0}", [agendaDateFormat.format(day)]));
+      add.addEventListener("click", () => {
+        openEditor(); const slot = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 9).getTime() / 1000;
+        populateSchedule("ticket", { scheduled_start: slot, scheduled_end: slot + 3600, scheduled_timezone: browserTimezone });
+      });
+      heading.append(label, add); section.append(heading);
+      const items = state.agendaItems.filter((ticket) => ticket.scheduled_start < to && ticket.scheduled_end > from).sort((a, b) => a.scheduled_start - b.scheduled_start || a.id - b.id);
+      if (!items.length) section.append(element("p", "agenda-day-empty", t("Nessun intervento")));
+      for (const ticket of items) {
+        const card = element("article", `agenda-card card-priority-${ticket.priority}`);
+        const times = `${ticket.scheduled_start < from ? "← " : ""}${agendaTimeFormat.format(new Date(Math.max(from, ticket.scheduled_start) * 1000))} – ${ticket.scheduled_end > to ? "24:00 →" : agendaTimeFormat.format(new Date(ticket.scheduled_end * 1000))}`;
+        card.append(element("div", "agenda-slot", times), ticketLink(ticket, "agenda-ticket-title"), element("span", `badge status-${ticket.status}`, statuses[ticket.status]), resourceBadges(ticket));
+        card.append(element("p", "agenda-person", ticket.assignee_name || t("Non assegnato")));
+        if (ticket.due_date) card.append(deadlineNode(ticket));
+        card.title = `${slotFormat.format(new Date(ticket.scheduled_start * 1000))} – ${slotFormat.format(new Date(ticket.scheduled_end * 1000))} · ${browserTimezone}`;
+        section.append(card);
+      }
+      fragment.append(section);
+    }
+    $("agenda-days").replaceChildren(fragment);
+    $("agenda-container").hidden = false; $("board-container").hidden = true; $("board-hint").hidden = true;
+    $("ticket-table-container").hidden = true; $("pagination").hidden = true; $("list-empty").hidden = true;
+  }
+
+  async function loadTicketCalendar(ticket) {
+    state.calendarRequest?.abort(); const controller = new AbortController(); state.calendarRequest = controller;
+    const cycle = ++state.calendarCycle, generation = state.generation;
+    state.calendar = null; $("ticket-calendar-panel").removeAttribute("aria-busy"); $("calendar-connect").disabled = false; $("ticket-calendar-state").textContent = ""; $("ticket-calendar-description").textContent = "";
+    $("ticket-calendar-loading").hidden = false; $("ticket-calendar-remote").hidden = true; $("ticket-calendar-link").hidden = true;
+    for (const action of ["sync", "remove", "refresh"]) $("calendar-" + action).disabled = true;
+    $("calendar-connect").hidden = true; $("calendar-retry").hidden = true; $("calendar-setup").hidden = true; showError("ticket-calendar-error", "");
+    try {
+      const data = await api(`/api/tickets/${ticket.id}/calendar`, { signal: controller.signal });
+      if (cycle !== state.calendarCycle || generation !== state.generation || state.detailId !== ticket.id || !$("ticket-detail").open) return;
+      renderTicketCalendar(data);
+    } catch (error) { if (error.name !== "AbortError" && cycle === state.calendarCycle && generation === state.generation && state.detailId === ticket.id && $("ticket-detail").open) showError("ticket-calendar-error", error.message); }
+    finally { if (cycle === state.calendarCycle && generation === state.generation) $("ticket-calendar-loading").hidden = true; }
+  }
+  function renderTicketCalendar(data) {
+    state.calendar = data;
+    const labels = { idle: t("Non sincronizzato"), queued: t("In coda"), unknown: t("Esito da verificare"), applied: t("Sincronizzato"), conflict: t("Conflitto"), failed: t("Invio non riuscito"), removed: t("Rimosso da Google"), stale: t("Calendario cambiato"), missing: t("Evento non trovato") };
+    const messages = { idle: t("La programmazione è salvata solo nell’agenda interna."), queued: t("La modifica è accodata. Verifica Google per conoscere l’esito."), unknown: t("L’esito dell’invio non è ancora noto. Usa “Verifica Google” per controllare la stessa operazione."), applied: t("La programmazione è stata applicata al calendario Google."), conflict: t("L’evento Google è cambiato. Verifica i dati prima di sincronizzare di nuovo."), failed: t("Google non ha applicato la modifica. Verifica il collegamento e riprova."), removed: t("L’evento è stato rimosso da Google. La programmazione interna è conservata."), stale: t("Il calendario collegato è cambiato. Il vecchio evento non viene modificato automaticamente."), missing: t("L’evento non è più presente su Google. La programmazione interna è conservata.") };
+    const needsSync = data.state === "applied" && data.remote_diff;
+    $("ticket-calendar-state").textContent = needsSync ? t("Da sincronizzare") : labels[data.state] || labels.idle;
+    $("ticket-calendar-state").className = "calendar-state calendar-state-" + (Object.hasOwn(labels, data.state) ? data.state : "idle");
+    let message = needsSync ? t("Il ticket e Google contengono dati diversi. Verifica prima di sincronizzare.") : messages[data.state] || messages.idle;
+    if (!data.configured) message = t("Google Calendar non è configurato. Puoi usare normalmente l’agenda interna.");
+    else if (!state.punto.connected) message = t("Collega il calendario tramite Punto per inviare gli interventi a Google.");
+    else if (!data.calendar_access) message = t("Autorizza il calendario in Punto con “Collega calendario”.");
+    else if (!data.connected && !data.owner_mismatch) message = t("Configura Google Calendar in Punto e scegli un calendario modificabile.");
+    if (data.owner_mismatch) message += " " + t("Solo l’account Punto proprietario può modificare questo evento Google. Le modifiche locali al ticket restano disponibili.");
+    if (!state.detail?.ticket.scheduled_start) message += " " + t("Imposta inizio e fine dell’intervento e salva il ticket.");
+    $("ticket-calendar-description").textContent = message;
+    showError("ticket-calendar-error", data.error ? t(data.error) : "");
+    const authorized = data.configured && data.connected && data.calendar_access && !data.owner_mismatch;
+    $("calendar-sync").disabled = !data.can_sync;
+    $("calendar-sync").textContent = t("Sincronizza Google");
+    const canRetry = authorized && data.can_retry === true && ["sync", "remove"].includes(data.retry_action);
+    $("calendar-retry").hidden = !canRetry; $("calendar-retry").disabled = !canRetry;
+    $("calendar-remove").disabled = !(authorized && data.state === "applied" && data.event_id && !data.pending);
+    $("calendar-refresh").disabled = !(state.punto.connected && data.calendar_access && !data.owner_mismatch);
+    $("calendar-connect").hidden = !state.punto.configured || (state.punto.connected && data.calendar_access);
+    $("calendar-setup").hidden = !state.punto.origin;
+    if (state.punto.origin) { const url = new URL("/app#calendar", state.punto.origin); $("calendar-setup").href = window.PuntoI18n ? window.PuntoI18n.url(url.href) : url.href; }
+    $("ticket-calendar-link").hidden = true;
+    if (data.event_link) { try { const url = new URL(data.event_link); if (url.protocol === "https:") { $("ticket-calendar-link").href = url.href; $("ticket-calendar-link").hidden = false; } } catch { /* Ignora link non validi. */ } }
+    const remote = $("ticket-calendar-remote"); remote.replaceChildren(); remote.hidden = !data.remote_diff;
+    if (data.remote_diff) {
+      remote.append(element("p", "", t("Google contiene dati diversi dal ticket. La verifica non importa né sovrascrive la programmazione locale.")));
+      const start = new Date(data.remote_event?.start?.dateTime), end = new Date(data.remote_event?.end?.dateTime);
+      if (Number.isFinite(start.getTime()) && Number.isFinite(end.getTime())) remote.append(element("p", "", `${slotFormat.format(start)} – ${slotFormat.format(end)} · ${browserTimezone}`));
+      if (data.remote_event?.summary) remote.append(element("p", "", data.remote_event.summary));
+    }
+  }
+  async function calendarAction(action) {
+    if (!state.detail || !state.calendar) return;
+    const ticket = state.detail.ticket, generation = state.generation;
+    if (propertiesDirty(ticket)) { showError("properties-error", t("Salva le proprietà e la programmazione prima di usare Google Calendar.")); $("save-properties").focus(); return; }
+    const cycle = ++state.calendarCycle;
+    state.calendarRequest?.abort(); const controller = new AbortController(); state.calendarRequest = controller;
+    $("ticket-calendar-panel").setAttribute("aria-busy", "true"); showError("ticket-calendar-error", "");
+    for (const button of $("ticket-calendar-panel").querySelectorAll("button")) button.disabled = true;
+    try {
+      const data = await api(`/api/tickets/${ticket.id}/calendar`, { method: "POST", body: { action, revision: ticket.revision }, signal: controller.signal });
+      if (cycle !== state.calendarCycle || generation !== state.generation || state.detailId !== ticket.id || !$("ticket-detail").open) return;
+      renderTicketCalendar(data);
+      toast(action === "refresh" ? t("Stato Google verificato. La programmazione locale non è stata modificata.") : data.pending ? t("Modifica accodata su Google. L’applicazione è ancora da verificare.") : data.state === "applied" && !data.remote_diff ? t("Programmazione applicata su Google.") : data.state === "removed" ? t("Evento rimosso da Google.") : t("Stato Google aggiornato: {0}.", [$("ticket-calendar-state").textContent]), ["conflict", "failed", "unknown"].includes(data.state));
+    } catch (error) { if (error.name !== "AbortError" && cycle === state.calendarCycle && generation === state.generation && state.detailId === ticket.id && $("ticket-detail").open) { if (state.calendar) renderTicketCalendar(state.calendar); showError("ticket-calendar-error", error.status === 409 ? t("Il ticket è cambiato. Aggiorna il dettaglio prima di usare Google Calendar.") : error.message); } }
+    finally { if (cycle === state.calendarCycle) { $("ticket-calendar-panel").removeAttribute("aria-busy"); $("calendar-connect").disabled = false; } }
+  }
+  async function startPuntoConnection(calendar = false) {
+    if (!state.punto.origin || !state.user) return;
+    const generation = state.generation, intentQuery = state.puntoIntentQuery ?? location.search; state.puntoIntentQuery = null;
+    const errorId = calendar ? "ticket-calendar-error" : "integration-error", button = calendar ? $("calendar-connect") : $("connect-punto");
+    button.disabled = true; showError(errorId, "");
+    try {
+      const data = await api("/api/integrations/punto/start", { method: "POST", body: calendar ? { calendar: true } : {} });
+      if (generation !== state.generation || !state.user) return;
+      const target = new URL(data.url);
+      if (target.origin !== new URL(state.punto.origin).origin || !/^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(target.hash)) throw new Error(t("Il collegamento a Punto non è valido."));
+      try { sessionStorage.setItem("ticket.punto.intent", JSON.stringify({ userId: state.user.id, query: intentQuery })); } catch { /* Ripristino facoltativo. */ }
+      location.assign(window.PuntoI18n ? window.PuntoI18n.url(target.href) : target.href);
+    } catch (error) { if (generation === state.generation && state.user) showError(errorId, error.message); }
+    finally { if (generation === state.generation) button.disabled = false; }
+  }
+
   function preferenceKey() { return `ticket.preferences.v1.${state.user.id}`; }
 
   function restorePreferences() {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(preferenceKey()) || "{}"); } catch { /* Le preferenze sono facoltative. */ }
     if (!saved || typeof saved !== "object") saved = {};
-    state.view = ["board", "list"].includes(saved.view) ? saved.view : "board";
+    state.view = ["board", "list", "agenda"].includes(saved.view) ? saved.view : "board";
     state.queue = Object.hasOwn(queues, saved.queue) ? saved.queue : "active";
     $("status-filter").value = Object.hasOwn(statuses, saved.status) ? saved.status : "";
     $("priority-filter").value = Object.hasOwn(priorities, saved.priority) ? saved.priority : "";
@@ -207,7 +441,7 @@
         sessionStorage.removeItem("ticket.punto.intent");
         if (intent?.userId === state.user.id && typeof intent.query === "string") {
           const params = new URLSearchParams(intent.query), restored = new URL(location.href);
-          for (const key of ["job_id", "asset_id", "new", "ticket"]) if (params.has(key)) restored.searchParams.set(key, params.get(key));
+          for (const key of ["job_id", "asset_id", "new", "ticket", "view", "queue"]) if (params.has(key)) restored.searchParams.set(key, params.get(key));
           history.replaceState(null, "", restored);
         }
       } catch { /* I collegamenti funzionano anche senza ripristinare il filtro. */ }
@@ -244,8 +478,14 @@
       const id = url.searchParams.get(kind + "_id");
       if (id && /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id))) params.set(kind + "_id", id);
     }
+    const requestedView = url.searchParams.get("view");
+    if (["board", "list", "agenda"].includes(requestedView)) state.view = requestedView;
+    const requestedQueue = url.searchParams.get("queue"), hasRequestedQueue = Object.hasOwn(queues, requestedQueue || "");
+    if (hasRequestedQueue || params.size) {
+      state.queue = hasRequestedQueue ? requestedQueue : "all"; state.offset = 0;
+      $("status-filter").value = ""; $("priority-filter").value = ""; $("assignee-filter").value = ""; $("search-input").value = "";
+    }
     if (!params.size) return;
-    state.queue = "all"; $("status-filter").value = "";
     for (const kind of ["job", "asset"]) state.resourceFilters[kind] = params.has(kind + "_id") ? { id: Number(params.get(kind + "_id")), name: "" } : null;
     if (!state.punto.connected) {
       showError("integration-error", t("Collega Punto per consultare i ticket di questa commessa o di questo asset."));
@@ -370,7 +610,9 @@
     for (const controller of state.listControllers) controller.abort();
     state.listCycle += 1;
     state.board.clear();
-    state.items = [];
+    state.items = []; state.agendaItems = []; state.agendaWeek = weekStart(new Date());
+    state.calendarRequest?.abort(); state.calendarCycle += 1; state.calendar = null;
+    $("agenda-days").replaceChildren(); $("agenda-container").hidden = true;
     $("ticket-board").replaceChildren();
     $("ticket-rows").replaceChildren();
     $("ticket-total").textContent = "—";
@@ -499,6 +741,7 @@
     for (const button of document.querySelectorAll(".queue-button")) button.setAttribute("aria-pressed", String(button.dataset.queue === state.queue));
     $("view-board").setAttribute("aria-pressed", String(state.view === "board"));
     $("view-list").setAttribute("aria-pressed", String(state.view === "list"));
+    $("view-agenda").setAttribute("aria-pressed", String(state.view === "agenda"));
     $("board-hint").hidden = state.view !== "board";
     for (const button of document.querySelectorAll(".stat-card")) button.setAttribute("aria-pressed", String(button.dataset.status === $("status-filter").value));
   }
@@ -535,10 +778,10 @@
     $("refresh-tickets").disabled = true;
     for (const button of $("ticket-board").querySelectorAll(".load-column")) button.disabled = true;
     showError("list-error", "");
-    const request = async (query) => {
+    const request = async (query, path = "/api/tickets") => {
       const controller = new AbortController();
       state.listControllers.push(controller);
-      return api(`/api/tickets?${query}`, { signal: controller.signal });
+      return api(`${path}?${query}`, { signal: controller.signal });
     };
     try {
       if (view === "board") {
@@ -557,6 +800,24 @@
         state.total = columns.reduce((sum, column) => sum + column.total, 0);
         if (columns[0]) updateCounts(columns[0].data);
         renderBoard();
+      } else if (view === "agenda") {
+        const from = Math.floor(state.agendaWeek.getTime() / 1000), to = Math.floor(civilDay(state.agendaWeek, 7).getTime() / 1000);
+        const countsQuery = new URLSearchParams(params); countsQuery.set("limit", "1"); countsQuery.set("offset", "0");
+        const countsPromise = request(countsQuery).then((data) => ({ data }), (error) => ({ error }));
+        const items = [], seen = new Set(); let offset = 0, total = 0;
+        do {
+          const query = new URLSearchParams(params); query.set("from", String(from)); query.set("to", String(to)); query.set("limit", "100"); query.set("offset", String(offset));
+          const page = await request(query, "/api/tickets/agenda");
+          if (cycle !== state.listCycle || generation !== state.generation) { await countsPromise.catch(() => {}); return; }
+          total = Number(page.total) || 0;
+          for (const ticket of page.items || []) if (!seen.has(ticket.id)) { seen.add(ticket.id); items.push(ticket); }
+          offset += (page.items || []).length;
+          if (!page.items?.length && offset < total) throw new Error(t("L’agenda è cambiata durante il caricamento. Aggiorna per visualizzare tutti gli interventi."));
+        } while (offset < total);
+        const countsResult = await countsPromise; if (countsResult.error) throw countsResult.error;
+        const counts = countsResult.data;
+        if (cycle !== state.listCycle || generation !== state.generation) return;
+        state.agendaItems = items; state.total = items.length; updateCounts(counts); renderAgenda();
       } else {
         params.set("limit", String(state.limit)); params.set("offset", String(state.offset));
         const data = await request(params);
@@ -575,7 +836,7 @@
     } catch (error) {
       if (error.name !== "AbortError" && cycle === state.listCycle && generation === state.generation && state.user) {
         if (state.punto.configured) {
-          state.board.clear(); state.items = []; $("ticket-board").replaceChildren(); $("ticket-rows").replaceChildren();
+          state.board.clear(); state.items = []; state.agendaItems = []; $("agenda-days").replaceChildren(); $("ticket-board").replaceChildren(); $("ticket-rows").replaceChildren();
           $("ticket-total").textContent = "—"; $("pagination").hidden = true;
           for (const status of Object.keys(statuses)) $("stat-" + status).textContent = "—";
           for (const queue of Object.keys(queues)) $("queue-count-" + queue).textContent = "—";
@@ -601,6 +862,7 @@
     card.append(top, ticketLink(ticket, "board-ticket-title"));
     if (ticket.requester) card.append(element("p", "board-requester", ticket.requester));
     card.append(resourceBadges(ticket));
+    const scheduled = scheduleBadge(ticket); if (scheduled) card.append(scheduled);
     const footer = element("div", "board-card-footer");
     const person = element("span", "board-person", ticket.assignee_name || t("Non assegnato"));
     if (ticket.assignee_name) {
@@ -644,6 +906,7 @@
   }
 
   function renderBoard() {
+    $("agenda-container").hidden = true;
     const fragment = document.createDocumentFragment();
     for (const column of state.board.values()) fragment.append(columnNode(column));
     $("ticket-board").replaceChildren(fragment);
@@ -704,6 +967,7 @@
   }
 
   function renderTickets(items) {
+    $("agenda-container").hidden = true;
     const rows = document.createDocumentFragment();
     for (const ticket of items) {
       const row = element("tr");
@@ -712,6 +976,7 @@
       const title = ticketLink(ticket, "ticket-title-button");
       titleCell.append(title, element("span", "ticket-requester", ticket.requester || t("Nessun richiedente indicato")));
       titleCell.append(resourceBadges(ticket));
+      const scheduled = scheduleBadge(ticket); if (scheduled) titleCell.append(scheduled);
       const mobileMeta = element("div", "ticket-mobile-meta");
       mobileMeta.append(element("span", "ticket-id", `#${ticket.id}`), deadlineNode(ticket), element("span", "mobile-assignee", ticket.assignee_name || t("Non assegnato")));
       titleCell.append(mobileMeta);
@@ -829,6 +1094,7 @@
     $("detail-status").value = ticket.status;
     $("detail-priority").value = ticket.priority;
     $("detail-due-date").value = ticket.due_date || "";
+    populateSchedule("detail", ticket);
     $("detail-tools").hidden = false;
     $("take-ticket").hidden = ["resolved", "closed"].includes(ticket.status);
     $("take-ticket").disabled = ticket.assignee_id === state.user.id && ticket.status === "in_progress";
@@ -867,6 +1133,7 @@
     if (!data.history?.length) history.append(element("li", "comments-empty", t("Nessuna attività registrata.")));
     $("history-list").replaceChildren(history);
     $("detail-content").hidden = false;
+    loadTicketCalendar(ticket);
   }
 
   function populateEditor(ticket = null) {
@@ -883,6 +1150,7 @@
     $("ticket-priority").value = ticket?.priority || "normal";
     $("ticket-status").value = ticket?.status || "open";
     $("ticket-due-date").value = ticket?.due_date || "";
+    populateSchedule("ticket", ticket);
     populateAssignees($("ticket-assignee"), ticket?.assignee_id ?? "", ticket?.assignee_name);
     showError("editor-error", "");
     $("reload-editor").hidden = true;
@@ -909,7 +1177,7 @@
       title: $("ticket-title").value.trim(), description: $("ticket-description").value.trim(), requester: $("ticket-requester").value.trim(),
       priority: $("ticket-priority").value, assignee_id: $("ticket-assignee").value ? Number($("ticket-assignee").value) : null,
       due_date: $("ticket-due-date").value || null,
-      job_id: state.resources.job?.id || null, asset_id: state.resources.asset?.id || null
+      job_id: state.resources.job?.id || null, asset_id: state.resources.asset?.id || null, ...scheduleValues("ticket", state.editorTicket)
     };
   }
 
@@ -917,12 +1185,13 @@
     event.preventDefault();
     const form = $("ticket-form");
     const original = state.editorTicket;
-    const values = editorValues();
+    let values;
+    try { values = editorValues(); } catch (error) { showError("editor-error", error.message); return; }
     if (!values.title) { showError("editor-error", t("Aggiungi un titolo per il ticket.")); $("ticket-title").focus(); return; }
     let body = values;
     if (original) {
       values.status = $("ticket-status").value;
-      body = changes(values, original);
+      body = scheduleChanges(values, original);
       if (!Object.keys(body).length) { $("ticket-editor").close(); return; }
       body.revision = original.revision;
     }
@@ -947,7 +1216,9 @@
     event.preventDefault();
     if (!state.detail) return;
     const ticket = state.detail.ticket;
-    const body = changes({ status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null }, ticket);
+    let body;
+    try { const { slot, ...draft } = propertyDraft(); body = scheduleChanges({ ...draft, ...scheduleValues("detail", ticket) }, ticket); }
+    catch (error) { showError("properties-error", error.message); return; }
     if (!Object.keys(body).length) { toast(t("Non ci sono modifiche da salvare.")); return; }
     body.revision = ticket.revision;
     showError("properties-error", "");
@@ -971,8 +1242,8 @@
     if (!state.detail) return;
     const id = state.detail.ticket.id;
     const revision = state.detail.ticket.revision;
-    const draftProperties = { status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null };
-    const hasDraftProperties = Object.keys(changes(draftProperties, state.detail.ticket)).length > 0;
+    const draftProperties = propertyDraft();
+    const hasDraftProperties = propertiesDirty(state.detail.ticket, draftProperties);
     const body = $("comment-body").value.trim();
     if (!body) { showError("comment-error", t("Scrivi un commento prima di inviarlo.")); $("comment-body").focus(); return; }
     showError("comment-error", "");
@@ -983,10 +1254,7 @@
       const refreshed = await loadDetail(id);
       if (hasDraftProperties && refreshed) {
         if (refreshed.ticket.revision === revision) {
-          $("detail-status").value = draftProperties.status;
-          $("detail-priority").value = draftProperties.priority;
-          $("detail-assignee").value = draftProperties.assignee_id === null ? "" : String(draftProperties.assignee_id);
-          $("detail-due-date").value = draftProperties.due_date || "";
+          restorePropertyDraft(draftProperties);
         } else showError("properties-error", t("Le proprietà sono state aggiornate da un’altra persona. Verifica l’ultima versione e ripeti le modifiche non salvate."));
       }
       loadTickets();
@@ -998,18 +1266,15 @@
   async function refreshCurrentDetail() {
     if (!state.detailId) return;
     const previous = state.detail?.ticket;
-    const draft = previous ? { status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null } : null;
-    const dirty = previous && Object.keys(changes(draft, previous)).length > 0;
+    const draft = previous ? propertyDraft() : null;
+    const dirty = previous && propertiesDirty(previous, draft);
     $("refresh-detail").disabled = true;
     showError("properties-error", "");
     try {
       const data = await loadDetail(state.detailId);
       if (data && dirty) {
         if (data.ticket.revision === previous.revision) {
-          $("detail-status").value = draft.status;
-          $("detail-priority").value = draft.priority;
-          $("detail-assignee").value = draft.assignee_id === null ? "" : String(draft.assignee_id);
-          $("detail-due-date").value = draft.due_date || "";
+          restorePropertyDraft(draft);
         } else showError("properties-error", t("Il ticket è cambiato. Abbiamo caricato l’ultima versione: verifica e ripeti le modifiche non salvate."));
       }
       if (data) toast(t("Ticket aggiornato all’ultima versione."));
@@ -1019,8 +1284,7 @@
   async function takeTicket() {
     if (!state.detail || !state.user) return;
     const ticket = state.detail.ticket, generation = state.generation;
-    const draft = { status: $("detail-status").value, priority: $("detail-priority").value, assignee_id: $("detail-assignee").value ? Number($("detail-assignee").value) : null, due_date: $("detail-due-date").value || null };
-    if (Object.keys(changes(draft, ticket)).length) {
+    if (propertiesDirty(ticket)) {
       showError("properties-error", t("Hai modifiche non salvate alle proprietà. Salvale prima di prendere in carico il ticket."));
       $("save-properties").focus();
       return;
@@ -1126,7 +1390,7 @@
   for (const button of document.querySelectorAll("[data-close-dialog]")) button.addEventListener("click", () => closeDialog($(button.dataset.closeDialog)));
   for (const dialog of document.querySelectorAll("dialog")) dialog.addEventListener("cancel", (event) => { if (dialog.querySelector('[aria-busy="true"]')) event.preventDefault(); });
   $("ticket-detail").addEventListener("close", () => {
-    state.detailRequest?.abort(); state.detailId = null; state.detail = null;
+    state.detailRequest?.abort(); state.calendarRequest?.abort(); state.calendarCycle += 1; state.detailId = null; state.detail = null;
     if (state.suppressDetailClose) { state.suppressDetailClose = false; return; }
     if (state.user && !state.routeSync && ticketRoute()) {
       const url = new URL(location.href); url.searchParams.delete("ticket"); history.replaceState(null, "", url);
@@ -1176,9 +1440,10 @@
     if (["mine", "unassigned"].includes(state.queue)) $("assignee-filter").value = "";
     loadTickets();
   });
-  for (const view of ["board", "list"]) $("view-" + view).addEventListener("click", () => {
+  for (const view of ["board", "list", "agenda"]) $("view-" + view).addEventListener("click", () => {
     if (state.view === view) return;
-    clearTimeout(state.searchTimer); state.view = view; state.offset = 0; loadTickets();
+    clearTimeout(state.searchTimer); state.view = view; state.offset = 0;
+    const url = new URL(location.href); url.searchParams.set("view", view); history.replaceState(null, "", url); loadTickets();
   });
   $("reset-filters").addEventListener("click", resetFilters);
   $("empty-action").addEventListener("click", () => { if (filtersActive()) resetFilters(); else openEditor(); });
@@ -1186,20 +1451,19 @@
   $("previous-page").addEventListener("click", () => { state.offset = Math.max(0, state.offset - state.limit); loadTickets(); });
   $("next-page").addEventListener("click", () => { state.offset += state.limit; loadTickets(); });
   $("new-ticket").addEventListener("click", () => { state.resourceRouteVersion += 1; openEditor(); });
-  $("connect-punto").addEventListener("click", async () => {
-    const generation = state.generation;
-    const intentQuery = state.puntoIntentQuery ?? location.search;
-    state.puntoIntentQuery = null;
-    $("connect-punto").disabled = true; showError("integration-error", "");
-    try {
-      const data = await api("/api/integrations/punto/start", { method: "POST", body: {} });
-      if (generation !== state.generation || !state.user) return;
-      const target = new URL(data.url);
-      if (target.origin !== new URL(state.punto.origin).origin || !/^#ticket-connect\?state=[a-f0-9]{64}$/.test(target.hash)) throw new Error(t("Il collegamento a Punto non è valido."));
-      try { sessionStorage.setItem("ticket.punto.intent", JSON.stringify({ userId: state.user.id, query: intentQuery })); } catch { /* Ripristino facoltativo. */ }
-      location.assign(window.PuntoI18n ? window.PuntoI18n.url(target.href) : target.href);
-    } catch (error) { if (generation === state.generation && state.user) showError("integration-error", error.message); }
-    finally { if (generation === state.generation) $("connect-punto").disabled = false; }
+  $("connect-punto").addEventListener("click", () => startPuntoConnection());
+  $("calendar-connect").addEventListener("click", () => startPuntoConnection(true));
+  $("calendar-retry").addEventListener("click", () => { if (state.calendar?.can_retry && ["sync", "remove"].includes(state.calendar.retry_action)) calendarAction(state.calendar.retry_action); });
+  for (const action of ["sync", "remove", "refresh"]) $("calendar-" + action).addEventListener("click", () => calendarAction(action));
+  for (const prefix of ["ticket", "detail"]) {
+    for (const endpoint of ["start", "end"]) {
+      $(`${prefix}-scheduled-${endpoint}`).addEventListener("input", () => updateScheduleInput(prefix, endpoint, ""));
+      $(`${prefix}-${endpoint}-offset`).addEventListener("change", () => updateScheduleHint(prefix));
+    }
+    $(prefix + "-clear-schedule").addEventListener("click", () => { for (const endpoint of ["start", "end"]) { $(`${prefix}-scheduled-${endpoint}`).value = ""; updateScheduleInput(prefix, endpoint, ""); } });
+  }
+  for (const [id, days] of [["agenda-previous", -7], ["agenda-next", 7], ["agenda-today", 0]]) $(id).addEventListener("click", () => {
+    state.agendaWeek = days ? civilDay(state.agendaWeek, days) : weekStart(new Date()); clearTimeout(state.searchTimer); loadTickets();
   });
   $("disconnect-punto").addEventListener("click", async () => {
     const generation = state.generation;
@@ -1242,6 +1506,8 @@
   });
   window.addEventListener("popstate", () => {
     if (!state.user) return;
+    const view = new URL(location.href).searchParams.get("view");
+    if (["board", "list", "agenda"].includes(view) && view !== state.view) { state.view = view; loadTickets(); }
     const id = ticketRoute();
     if (id && id !== state.detailId) openDetail(id, false);
     else if (!id && $("ticket-detail").open) {

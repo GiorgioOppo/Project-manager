@@ -146,7 +146,7 @@ Una prova di restore riuscita deve registrare tempi effettivi, limiti incontrati
 
 `sent` per email significa accettazione SMTP, non consegna nella casella. `delivery_unknown` e gli esiti terminali richiedono verifica del provider. Non cambiare namespace né cancellare il ledger per forzare il reinvio: potrebbe duplicare messaggi.
 
-Calendar conserva operazioni `queued`, `unknown`, `applied`, `conflict` e `failed`. Un conflitto ETag va risolto acquisendo la versione remota e prendendo una decisione esplicita sul contenuto. Una disconnessione cancella i dati locali dell'utente e tenta la revoca del consenso; non annulla eventi già creati o una richiesta remota in corso. I dettagli sono nel [manuale Calendar](../../calendar-addon/README.md).
+Calendar conserva operazioni `queued`, `unknown`, `applied`, `conflict` e `failed`. Un conflitto ETag va risolto acquisendo la versione remota e prendendo una decisione esplicita sul contenuto. Una disconnessione cancella i dati locali dell'utente e tenta la revoca del consenso; non annulla eventi già creati o una richiesta remota in corso. I dettagli sono nel [manuale Calendar](../../calendar-addon/README.it.md).
 
 Le API e i controlli di stato sono documentati in [API addon](api-addon.md). Non ripulire gli archivi manualmente per eliminare errori di sincronizzazione prima di averne compreso l'esito remoto.
 

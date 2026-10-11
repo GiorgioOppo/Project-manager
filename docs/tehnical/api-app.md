@@ -2,9 +2,32 @@
 
 **Italiano** | [English](../en/tehnical/api-app.md)
 
-Contratto verificato sul codice l’**11 ottobre 2026**, schema dati 10. Le API usano il prefisso `/api` sull'origine pubblica dell'app, per esempio `https://progetti.tuaazienda.it`. I nomi e i metodi sotto sono quelli implementati: l'aggiornamento usa `POST`, non `PUT` o `PATCH`.
+Contratto verificato sul codice l’**11 ottobre 2026**, schema dati 13. Le API usano il prefisso `/api` sull'origine pubblica dell'app, per esempio `https://progetti.tuaazienda.it`. I nomi e i metodi sotto sono quelli implementati: l'aggiornamento usa `POST`, non `PUT` o `PATCH`.
 
 Fonti: [router HTTP](../../src/server.c), [utenti](../../src/accounts.c), [commesse, ore, report, tariffe](../../src/workspace.c), [organizzazione](../../src/organization.c), [attività e blocchi](../../src/work_board.c), [fornitori e contratti](../../src/procurement.c), [alert](../../src/alerts.c), [audit](../../src/storage.c), [bridge calendario](../../src/calendar_client.c). Tipi persistenti nel [modello dati](modello-dati.md); chiamate interne in [API addon](api-addon.md).
+
+## Policy corrente dello schema 13
+
+Questa sezione ha precedenza sulle descrizioni di accesso delle tabelle preesistenti sottostanti. Il server risolve da database ruolo, profili e squadra a ogni richiesta, anche con sessioni aperte: conoscere un ID o conservare un URL non concede accesso.
+
+- `operator` è implicito per ogni account attivo; `manager` deriva dal ruolo dell’identità. `sales` e `finance` sono assegnazioni locali esplicite, anche per Keycloak. Nessun manager le riceve automaticamente.
+- Fornitori, contratti, metadati PDF e download richiedono Sales oppure Finance. Creazione/modifica e caricamento PDF richiedono Sales. Finance è in sola lettura; il solo ruolo manager riceve `403`. Cambiare il contratto di una commessa richiede manager + Sales; i campi contrattuali sono omessi dalle commesse per chi non può leggerli.
+- `view=date|job|user` usa scope `personal` o `team`: sé stesso, membri dei gruppi organizzativi del manager e sottogruppi. Senza gruppi o con gruppi gestiti indisponibili rimane soltanto sé stesso. Gli utenti fuori ambito non sono ammessi nei filtri. Registro dettagliato, settimana, riepiloghi, rettifiche, audit e alert sulle ore rispettano lo stesso ambito corrente.
+- `view=cost|labor_cost` richiede Finance e restituisce scope `financial`; `user_id` viene rifiutato con `403`. `labor_cost` raggruppa per commessa, senza `user_id`, nome o email dei lavoratori nelle righe. Finance non concede il registro personale altrui. Lettura tariffe: Finance; scrittura: manager + Finance.
+- Le notifiche sulle ore sono filtrate prima di elenco e conteggio non lette; originali/proposte delle rettifiche e decisioni restano nella squadra. Le email sulle ore richiedono sia il soggetto nella squadra del proprietario sia un destinatario corrispondente a un account attivo autorizzato. La revoca vale anche per payload già salvati; inventory conserva il proprio ambito del catalogo condiviso.
+
+| Metodo e percorso | Contratto corrente |
+| --- | --- |
+| `GET /api/access-groups` | Manager; catalogo dei quattro profili predefiniti. |
+| `GET /api/users/{id}/access-groups` | Manager; `user_id`, `active`, `role`, `selected` espliciti ed `effective` derivati. |
+| `POST /api/users/{id}/access-groups` | Manager; unico campo form `groups`, array JSON di `sales` e/o `finance`; `[]` revoca entrambi. Sostituzione atomica e audit; funziona anche con identità gestita da Keycloak. |
+| `GET /api/time-team` | Utente attivo, senza query; `{scope,users:[{id,name,email,active}]}` contiene soltanto le persone attualmente visibili, inclusi gli account storici disattivati nella squadra. |
+| `GET /api/time-entries?date=YYYY-MM-DD&user_id=N` | `user_id` facoltativo, predefinito sé stesso; un collega deve appartenere alla squadra corrente. Le righe altrui sono in sola lettura. |
+| `GET /api/time-entries/week?date=YYYY-MM-DD&user_id=N` | Settimana lunedì–domenica contenente la data; stesso ambito personale/squadra. |
+
+`GET /api/session` ora include `user_id` e flag UI distinti: `view_contracts`, `view_suppliers`, `view_costs`, `view_labor_rates`, `manage_labor_rates`, `view_team_hours`, `manage_access_groups`, oltre ai flag amministrativi. `manage_contracts` e `manage_suppliers` dipendono da Sales; i flag di costo da Finance. I flag descrivono la UI e non sostituiscono i controlli live dei moduli.
+
+Fonti della policy: [controllo accessi](../../src/access_control.c), [rettifiche](../../src/time_corrections.inc), [settimana](../../src/time_week.inc). Per i nuovi flussi operativi vedere la [guida schema 13](../prod/flussi-operativi.md).
 
 ## Convenzioni HTTP
 
@@ -73,7 +96,7 @@ Risposta autenticata:
 }
 ```
 
-`/api/session` non restituisce l'ID utente. I permessi sono descrittivi per la UI; il backend controlla comunque ogni operazione. Il contatore login è per processo, non per singolo account o IP.
+L’esempio sopra mostra i flag originari; il contratto corrente include `user_id` e i nuovi flag della policy schema 13. I permessi sono descrittivi per la UI; il backend controlla comunque ogni operazione. Il contatore login è per processo, non per singolo account o IP.
 
 ## Utenti
 

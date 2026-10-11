@@ -27,6 +27,8 @@ Le richieste del browser usano l'issuer pubblico, per esempio `https://auth.exam
 
 Prima configura HTTPS e nomi DNS pubblici per l'identità e ciascuna app. Usa origini diverse, senza slash finale o sottopercorsi; configura anche `PUBLIC_ORIGINS` di Punto e `TICKETS_PUBLIC_ORIGIN` con le rispettive origini HTTPS. Il certificato pubblico del dominio di autenticazione è gestito da NPM.
 
+Punto verifica all'avvio che l'origine di `OIDC_REDIRECT_URI` sia configurata in `PUBLIC_ORIGINS` (per lo sviluppo HTTP è ammesso anche l'indirizzo loopback sulla porta locale/pubblica). Se si avvia l'accesso aziendale da un alias, per esempio `http://localhost`, `/auth/login` risponde con un redirect `303` all'origine della callback, prima di creare lo stato OIDC e il cookie. In questo modo il cookie rimane sullo stesso host della callback. La destinazione proviene soltanto dalla configurazione; parametri URL e header `Forwarded` non possono cambiarla. Per l'origine HTTPS il reverse proxy deve sempre imporre **Force SSL**, anche quando l'upstream applicativo usa HTTP. Dopo un vecchio errore di callback, riparti dalla pagina di accesso: un codice OIDC già consumato non può essere riutilizzato.
+
 ```sh
 python3 scripts/configure_keycloak.py init \
   --issuer https://auth.example.test/realms/punto \
@@ -251,6 +253,62 @@ docker compose --env-file .env.docker --env-file ticket-app/.env \
 ```
 
 Le sessioni delle app sono in memoria e vengono invalidate dalla ricreazione. Verifica SSO condiviso, ID locali preservati, editor assenti, API utenti in scrittura rifiutate, console amministrativa accessibile e fallback locale riservato all'admin. Per i successivi utenti nuovi usa direttamente la console; non serve rieseguire la migrazione né preparare profili nelle app.
+
+## Gruppi e appartenenze esclusivamente in Keycloak
+
+I gruppi operativi di Punto possono essere centralizzati separatamente dagli utenti. La modalità `AUTH_GROUP_MANAGEMENT=keycloak` richiede `AUTH_USER_MANAGEMENT=keycloak`; in Compose le opzioni corrispondono a `KEYCLOAK_GROUP_MANAGEMENT=keycloak` e `KEYCLOAK_USER_MANAGEMENT=keycloak` in `data/keycloak/compose.env`. Il valore predefinito senza attivazione è `local`. Aggiungi esplicitamente `compose.keycloak-groups.yaml` **per ultimo**, dopo gli overlay Keycloak e, se usati, Tickets/Tickets-Keycloak. Il solo file di esempio non attiva il servizio.
+
+In questa modalità nomi, gerarchia e appartenenze si modificano soltanto nella [pagina Groups della console Keycloak](https://auth.localhost/admin/punto/console/#/punto/groups), disponibile all'admin del realm. La sezione **Gruppi e ruoli** di Punto resta consultabile, con albero e membri diretti, e mostra **Gestione gruppi in Keycloak**. Le API locali di creazione, modifica, eliminazione e aggiunta/rimozione membri rispondono `403`. Il catalogo dei ruoli sulle commesse e le abilitazioni di utenti e gruppi alle singole commesse continuano a essere gestiti in Punto.
+
+L'overlay aggiunge `keycloak-groups-sync`, che legge la directory del realm ogni 30 secondi tramite HTTPS verificato e pubblica uno snapshot atomico in un volume condiviso. Punto legge quel volume in sola lettura; il servizio usa il client dedicato `punto-groups-sync`, con i soli ruoli di lettura `realm-management → query-groups` e `view-users`. Non riceve le credenziali bootstrap. Il segreto del client resta nel file protetto `data/keycloak/secrets/groups-client-secret`; il contenuto del realm non viene scritto nei log.
+
+La coppia issuer/ID Keycloak identifica ogni gruppo, indipendentemente da nome e percorso. I binding espliciti della migrazione mantengono gli ID locali, le abilitazioni esistenti e lo storico. Un gruppo nuovo riceve un nuovo ID locale; eliminare un gruppo in Keycloak lo rende inattivo nella proiezione e rimuove le sue appartenenze operative, conservando i riferimenti storici. Ricreare un gruppo con lo stesso nome produce una nuova identità e non recupera le vecchie abilitazioni. Le appartenenze utenti usano i subject persistenti o i binding amministrativi già verificati; la corrispondenza email da sola non associa un account. Per un nuovo utente senza profilo locale, la proiezione dell'appartenenza viene completata dopo il primo SSO in Punto.
+
+Le modifiche alla directory arrivano normalmente al ciclo successivo, circa 30 secondi. Gli utenti disabilitati in Keycloak sono esclusi dalle appartenenze autorizzative anche se il profilo locale conserva uno stato precedente. Uno snapshot mancante, non valido o vecchio di almeno 120 secondi disabilita l'accesso derivato dai gruppi fino alla successiva sincronizzazione valida; le assegnazioni dirette e i privilegi del gestore restano indipendenti. Sono supportati fino a 200 gruppi nel realm, 200 membri per gruppo, 16 livelli e nomi di massimo 120 caratteri. Il superamento di questi limiti interrompe la pubblicazione di nuovi snapshot.
+
+Tickets non ha un catalogo locale di gruppi operativi. In Keycloak puoi assegnare a un gruppo i ruoli dei client `punto` e `punto-tickets`: i suoi membri li ereditano e le app li ricevono nel claim firmato `app_roles` al successivo SSO. Questi ruoli applicativi sono distinti dai ruoli e dalle abilitazioni sulle commesse di Punto.
+
+### Migrazione e attivazione dei gruppi
+
+Prima crea backup consistenti di MySQL, PostgreSQL e `data/keycloak`. Completa la migrazione utenti descritta sopra: `data/keycloak/managed-users-migration.json` deve contenere i subject espliciti di tutti i membri locali. Recupera i gruppi da `GET /api/groups` e, per ogni gruppo, i membri diretti da `GET /api/groups/ID/members`, usando una sessione gestore autenticata. Salva `data/keycloak/legacy-groups-before-managed.json` con permessi `0600`, trasformando `members` nella lista degli ID utenti locali:
+
+```json
+{"groups":[{"id":3,"name":"Area tecnica","parent_id":null,"members":[1,50]},{"id":4,"name":"Progettazione","parent_id":3,"members":[]}]}
+```
+
+Per un'installazione senza gruppi usa `{"groups":[]}`. Mantieni gli ID reali della tua installazione e includi anche i gruppi padre. Non sono ammessi cicli, membri duplicati o nomi uguali fra gruppi con lo stesso padre. La fotografia deve includere tutti i gruppi e solo le appartenenze dirette, senza espandere quelle ereditate.
+
+```sh
+python3 scripts/configure_keycloak_groups.py \
+  --container projectmanament-keycloak-1 \
+  --legacy-groups-file data/keycloak/legacy-groups-before-managed.json
+```
+
+Il helper crea i gruppi Keycloak e le appartenenze esplicite, registra `bindings/groups.json` e `managed-groups-migration.json`, prepara il client di lettura e salva il rapporto `managed-groups-report.json`. Usa `--users-manifest PERCORSO` se il manifest utenti si trova altrove e `--context NOME` per un altro contesto Docker. Non adotta gruppi preesistenti in base al nome e rifiuta un gruppo precedentemente migrato ma mancante. Un rerun non rinomina gruppi già completati né ripristina appartenenze successivamente rimosse nella console. Conserva manifest e binding insieme ai backup.
+
+Imposta poi `KEYCLOAK_GROUP_MANAGEMENT=keycloak` in `data/keycloak/compose.env`, mantenendo `KEYCLOAK_USER_MANAGEMENT=keycloak`, e applica la configurazione con l'overlay finale:
+
+```sh
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  --env-file data/keycloak/compose.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.keycloak.yaml \
+  -f compose.tickets-keycloak.yaml -f compose.keycloak-groups.yaml \
+  run --rm --no-deps auth-config-init
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  --env-file data/keycloak/compose.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.keycloak.yaml \
+  -f compose.tickets-keycloak.yaml -f compose.keycloak-groups.yaml \
+  build app keycloak-groups-sync
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  --env-file data/keycloak/compose.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.keycloak.yaml \
+  -f compose.tickets-keycloak.yaml -f compose.keycloak-groups.yaml \
+  up -d --no-build keycloak-groups-sync app
+```
+
+Per Punto senza Tickets ometti `--env-file ticket-app/.env`, `compose.tickets.yaml` e `compose.tickets-keycloak.yaml`. La ricreazione di Punto invalida le sue sessioni in memoria. Verifica che il servizio di sincronizzazione sia healthy, gli ID dei gruppi e le abilitazioni siano conservati, gli editor locali siano assenti e le API in scrittura siano rifiutate; poi controlla dalla console una modifica di nome o appartenenza e la relativa proiezione in Punto.
+
+Negli avvii e recuperi successivi conserva la selezione completa, per esempio `python3 scripts/manage_cluster.py --keycloak --keycloak-groups --tickets start` oppure `recover`. `--keycloak-groups` richiede `--keycloak`; il controller blocca un avvio che ometta l'overlay quando il servizio di sincronizzazione esiste già, anche arrestato. Per una migrazione reti usa `python3 scripts/configure_network.py --keycloak --keycloak-groups --tickets apply`. Anche nei comandi Compose manuali mantieni sempre `compose.keycloak-groups.yaml` per ultimo.
 
 ## Associazione esplicita con gestione locale
 

@@ -1,13 +1,19 @@
 #include "organization.h"
 #include "storage.h"
+#include "../auth/oidc.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include "db.h"
+#include <json-c/json.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define FORM_LIMIT 32768U
 #define GROUP_LIMIT 200
@@ -28,6 +34,16 @@ typedef struct {
 } Field;
 
 static Db *database;
+static bool groups_managed;
+static char *groups_snapshot_path;
+static char *groups_issuer;
+static char *groups_last_snapshot;
+static size_t groups_last_snapshot_length;
+static DbInt groups_last_identity_count = -1;
+static DbInt groups_last_attempt_identity_count = -1;
+static time_t groups_last_attempt;
+static time_t groups_generated_at;
+static bool groups_sync_ok;
 
 static char *duplicate(const char *text) {
     size_t size = strlen(text) + 1;
@@ -332,7 +348,7 @@ static bool access_query(Db *db, DbInt job_id, DbInt user_id, const char *today,
     static const char sql[] =
         "WITH RECURSIVE user_groups(id,depth) AS ("
         "SELECT m.group_id,1 FROM group_members m "
-        "JOIN organization_groups g ON g.id=m.group_id WHERE m.user_id=? "
+        "JOIN organization_groups g ON g.id=m.group_id WHERE m.user_id=? AND ?=1 "
         "UNION ALL SELECT g.parent_id,u.depth+1 FROM organization_groups g "
         "JOIN user_groups u ON g.id=u.id WHERE g.parent_id IS NOT NULL AND u.depth<17),"
         "grants AS ("
@@ -354,13 +370,13 @@ static bool access_query(Db *db, DbInt job_id, DbInt user_id, const char *today,
         "ORDER BY job_id LIMIT 1002";
     DbStmt *statement = NULL;
     bool okay = db_prepare_v2(db, sql, -1, &statement, NULL) == DB_OK &&
-        bind_id(statement, 1, user_id) && bind_id(statement, 2, user_id) &&
-        bind_id(statement, 3, job_id) && bind_id(statement, 4, job_id) &&
+        bind_id(statement, 1, user_id) && bind_id(statement, 2, organization_groups_available() ? 1 : 0) &&
+        bind_id(statement, 3, user_id) && bind_id(statement, 4, job_id) &&
         bind_id(statement, 5, job_id) && bind_id(statement, 6, job_id) &&
         bind_id(statement, 7, job_id) && bind_id(statement, 8, job_id) &&
-        bind_text(statement, 9, today) && bind_text(statement, 10, today) &&
-        bind_text(statement, 11, work_date) && bind_text(statement, 12, work_date) &&
-        bind_id(statement, 13, user_id);
+        bind_id(statement, 9, job_id) && bind_text(statement, 10, today) &&
+        bind_text(statement, 11, today) && bind_text(statement, 12, work_date) &&
+        bind_text(statement, 13, work_date) && bind_id(statement, 14, user_id);
     int result = DB_ERROR;
     while (okay && (result = db_step(statement)) == DB_ROW) {
         DbInt id = db_column_int64(statement, 0);
@@ -391,6 +407,16 @@ int organization_job_access(Db *db, DbInt job_id, DbInt user_id,
 
 bool organization_open(const char *db_path) {
     organization_close();
+    const char *management = getenv("AUTH_GROUP_MANAGEMENT");
+    if (management && *management && strcmp(management, "local") != 0 && strcmp(management, "keycloak") != 0)
+        return false;
+    groups_managed = management && strcmp(management, "keycloak") == 0;
+    if (groups_managed) {
+        const char *path = getenv("AUTH_GROUPS_SNAPSHOT_FILE"), *issuer = getenv("OIDC_ISSUER_URL");
+        if (!oidc_users_managed() || !path || path[0] != '/' || !issuer || !*issuer ||
+            strlen(issuer) > 1023 || !(groups_snapshot_path = duplicate(path)) ||
+            !(groups_issuer = duplicate(issuer))) { organization_close(); return false; }
+    }
     if (!db_path || !*db_path || db_open_v2(db_path, &database,
         DB_OPEN_READWRITE | DB_OPEN_FULLMUTEX, NULL) != DB_OK ||
         db_busy_timeout(database, 5000) != DB_OK
@@ -404,6 +430,13 @@ bool organization_open(const char *db_path) {
 void organization_close(void) {
     if (database) (void)db_close(database);
     database = NULL;
+    free(groups_snapshot_path); groups_snapshot_path = NULL;
+    free(groups_issuer); groups_issuer = NULL;
+    free(groups_last_snapshot); groups_last_snapshot = NULL;
+    groups_last_snapshot_length = 0; groups_last_identity_count = -1;
+    groups_last_attempt_identity_count = -1;
+    groups_managed = false; groups_sync_ok = false;
+    groups_last_attempt = 0; groups_generated_at = 0;
 }
 
 static bool nullable_id(DbStmt *statement, int index, DbInt id) {
@@ -574,6 +607,8 @@ static int valid_group_graph(DbInt edited_id, DbInt parent_id) {
     }
     return 1;
 }
+
+#include "organization_groups.inc"
 
 static void write_group(const char *body, DbInt actor_id, DbInt id,
                         WorkspaceResponse *response) {
@@ -822,6 +857,19 @@ static void write_grant(const char *body, DbInt actor_id, DbInt job_id,
     if (!require_target("jobs", job_id, "Commessa non trovata.", response) ||
         !require_target("organization_groups", group_id, "Gruppo non trovato.", response) ||
         !require_target("job_roles", role_id, "Ruolo non trovato.", response)) { rollback(); goto cleanup; }
+    if (groups_managed) {
+        if (!organization_groups_available()) {
+            rollback(); error(response, 503, "Sincronizzazione gruppi Keycloak non disponibile. Riprova."); goto cleanup;
+        }
+        if (!prepare(&statement, "SELECT group_id FROM oidc_groups WHERE issuer=? AND group_id=? AND active=1") ||
+            !bind_text(statement, 1, groups_issuer) || !bind_id(statement, 2, group_id)) goto database_failure;
+        int active_group = db_step(statement);
+        db_finalize(statement); statement = NULL;
+        if (active_group == DB_DONE) {
+            rollback(); error(response, 409, "Il gruppo non è più presente in Keycloak."); goto cleanup;
+        }
+        if (active_group != DB_ROW) goto database_failure;
+    }
     int existing = snapshot(grant_select, "WHERE a.job_id=? AND a.group_id=?", job_id, group_id, grant_json, &before);
     if (existing < 0) goto database_failure;
     if (existing) {
@@ -921,7 +969,15 @@ bool organization_handle(const char *method, const char *target, const char *que
     }
     bool get = strcmp(method, "GET") == 0, post = strcmp(method, "POST") == 0;
     bool remove = strcmp(method, "DELETE") == 0;
-    if (groups && get) list_rows(group_select, "ORDER BY g.id", "groups", 0, GROUP_LIMIT, group_json, response);
+    if (groups_managed && (groups || group_item) && (post || remove)) {
+        error(response, 403, "Gestisci gruppi e appartenenze solo in Keycloak."); return true;
+    }
+    if (groups_managed && (groups || group_item) && get && !organization_groups_available()) {
+        error(response, 503, "Sincronizzazione gruppi Keycloak non disponibile. Riprova."); return true;
+    }
+    if (groups && get) list_rows(group_select, groups_managed ?
+        "WHERE g.id IN (SELECT group_id FROM oidc_groups WHERE active=1) ORDER BY g.id" : "ORDER BY g.id",
+        "groups", 0, GROUP_LIMIT, group_json, response);
     else if (groups && post) write_group(body, actor_id, 0, response);
     else if (roles && get) list_rows(role_select, "ORDER BY id", "roles", 0, ROLE_LIMIT, role_json, response);
     else if (roles && post) write_role(body, actor_id, 0, response);

@@ -157,6 +157,32 @@ class CalendarBridgeTests(unittest.TestCase):
         self.assertEqual(request["path"], "/v1/users/%d/events/update" % self.worker_id)
         self.assertEqual(request["fields"], {name: [content] for name, content in fields.items()})
 
+    def test_exact_event_and_change_lookups_keep_authenticated_identity(self):
+        for route, query, value in (
+                ("event", {"event_id": "remote_event-42"},
+                 {"event": {"id": "remote_event-42", "etag": '"revision-3"'}, "calendar_id": "primary@example.test"}),
+                ("change", {"idempotency_key": "ticket:42:create-1"},
+                 {"id": 8, "idempotency_key": "ticket:42:create-1", "event_id": "remote_event-42",
+                  "state": "applied", "error": "", "attempts": 1, "calendar_id": "primary@example.test"})):
+            with self.subTest(route=route):
+                self.service.reply_value = value
+                status, body, _headers = self.api("GET", "/api/calendar/" + route + "?" + urlencode(query), cookie=self.worker_cookie)
+                self.assertEqual(status, 200, body)
+                self.assertEqual(body, value)
+                sent = urlsplit(self.service.requests[-1]["path"])
+                self.assertEqual(sent.path, f"/v1/users/{self.worker_id}/{route}")
+                self.assertEqual(parse_qs(sent.query), {key: [item] for key, item in query.items()})
+        before = len(self.service.requests)
+        for route in ("event", "event?event_id=", "event?event_id=one&event_id=two",
+                      "event?event_id=one&user_id=1", "change", "change?idempotency_key=short",
+                      "change?idempotency_key=valid-key&%69dempotency_key=other-key",
+                      "change?idempotency_key=valid-key&user_id=1"):
+            self.assert_error(400, "GET", "/api/calendar/" + route, cookie=self.worker_cookie)
+        self.assertEqual(len(self.service.requests), before)
+        self.service.reply_status = 404
+        self.service.reply_value = {"ok": False, "error": "event_not_found"}
+        self.assert_error(404, "GET", "/api/calendar/event?event_id=missing", cookie=self.worker_cookie)
+
     def test_provider_errors_and_invalid_json_are_bounded_and_redirects_are_not_followed(self):
         for status, body in ((409, {"error": "conflict"}), (503, {"error": "calendar_not_configured"}),
                              (200, b"not-json"), (302, {"configured": True}), (200, b"[" + b"x" * 300000)):

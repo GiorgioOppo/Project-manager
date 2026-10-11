@@ -27,6 +27,8 @@ Browser requests use the public issuer, for example `https://auth.example.test/r
 
 First configure HTTPS and public DNS names for identity and each app. Use different origins without trailing slashes or subpaths; also configure Punto's `PUBLIC_ORIGINS` and `TICKETS_PUBLIC_ORIGIN` with their respective HTTPS origins. The authentication domain's public certificate is managed by NPM.
 
+At startup, Punto checks that the origin of `OIDC_REDIRECT_URI` is configured in `PUBLIC_ORIGINS` (HTTP development also allows a loopback address on the local/public port). Starting company sign-in from an alias such as `http://localhost` makes `/auth/login` return a `303` redirect to the callback origin before creating OIDC state or a cookie. The cookie therefore belongs to the same host as the callback. The destination comes only from configuration; URL parameters and `Forwarded` headers cannot change it. The reverse proxy must enforce **Force SSL** for the HTTPS origin, even when the application upstream uses HTTP. After an old callback error, restart from the login page: a consumed OIDC code cannot be reused.
+
 ```sh
 python3 scripts/configure_keycloak.py init \
   --issuer https://auth.example.test/realms/punto \
@@ -251,6 +253,62 @@ docker compose --env-file .env.docker --env-file ticket-app/.env \
 ```
 
 App sessions are in memory and are invalidated by recreation. Verify shared SSO, preserved local IDs, absent editors, rejected user write APIs, an accessible administration console and local fallback restricted to the administrator. Use the console directly for subsequent new users; there is no need to rerun migration or prepare profiles in the apps.
+
+## Groups and memberships exclusively in Keycloak
+
+Punto's operational groups can be centralized separately from users. `AUTH_GROUP_MANAGEMENT=keycloak` requires `AUTH_USER_MANAGEMENT=keycloak`; their Compose options are `KEYCLOAK_GROUP_MANAGEMENT=keycloak` and `KEYCLOAK_USER_MANAGEMENT=keycloak` in `data/keycloak/compose.env`. The default without activation is `local`. Explicitly append `compose.keycloak-groups.yaml` **last**, after the Keycloak overlays and, when used, Tickets/Tickets-Keycloak. The example environment file alone does not activate the service.
+
+In this mode, names, hierarchy and memberships are edited only on the [Groups page in the Keycloak console](https://auth.localhost/admin/punto/console/#/punto/groups), available to the realm administrator. Punto's **Groups and roles** section remains available for viewing the tree and direct members and displays **Manage groups in Keycloak**. Local group create, edit and delete APIs and membership add/remove APIs return `403`. The job role catalog and individual user/group grants for jobs remain managed in Punto.
+
+The overlay adds `keycloak-groups-sync`, which reads the realm directory every 30 seconds over verified HTTPS and publishes an atomic snapshot to a shared volume. Punto mounts that volume read-only; the service uses dedicated client `punto-groups-sync`, with only the read roles `realm-management → query-groups` and `view-users`. It does not receive bootstrap credentials. The client secret remains in protected file `data/keycloak/secrets/groups-client-secret`; realm contents are not written to logs.
+
+The issuer/Keycloak ID pair identifies each group independently of its name or path. Explicit migration bindings preserve local IDs, existing grants and history. A new group receives a new local ID; deleting a group in Keycloak makes its projection inactive and removes operational memberships while retaining historical references. Recreating a group with the same name creates a new identity and does not recover old grants. User memberships use persistent subjects or already verified administrative bindings; matching email alone does not link an account. For a new user without a local profile, the membership projection is completed after their first SSO to Punto.
+
+Directory changes normally arrive on the next cycle, about 30 seconds later. Users disabled in Keycloak are excluded from authorization memberships even if their local profile retains an earlier status. A missing or invalid snapshot, or one at least 120 seconds old, disables group-derived access until the next valid synchronization; direct assignments and manager privileges remain independent. The supported limits are 200 groups in the realm, 200 members per group, 16 levels and names of up to 120 characters. Exceeding these limits stops publication of new snapshots.
+
+Tickets has no local catalog of operational groups. In Keycloak, you can assign client roles for `punto` and `punto-tickets` to a group: its members inherit those roles and the apps receive them in the signed `app_roles` claim at their next SSO. These application roles are separate from Punto's job roles and job grants.
+
+### Migrating and activating groups
+
+First create consistent backups of MySQL, PostgreSQL and `data/keycloak`. Complete the user migration above: `data/keycloak/managed-users-migration.json` must contain explicit subjects for all local members. Retrieve groups from `GET /api/groups` and, for each group, direct members from `GET /api/groups/ID/members`, using an authenticated manager session. Save `data/keycloak/legacy-groups-before-managed.json` with `0600` permissions, converting `members` to the list of local user IDs:
+
+```json
+{"groups":[{"id":3,"name":"Technical department","parent_id":null,"members":[1,50]},{"id":4,"name":"Design","parent_id":3,"members":[]}]}
+```
+
+Use `{"groups":[]}` for an installation with no groups. Retain the real IDs from your installation and include parent groups. Cycles, duplicate members and duplicate names under the same parent are rejected. The snapshot must include all groups and only direct memberships, without expanding inherited memberships.
+
+```sh
+python3 scripts/configure_keycloak_groups.py \
+  --container projectmanament-keycloak-1 \
+  --legacy-groups-file data/keycloak/legacy-groups-before-managed.json
+```
+
+The helper creates Keycloak groups and explicit memberships, records `bindings/groups.json` and `managed-groups-migration.json`, provisions the read client and saves `managed-groups-report.json`. Use `--users-manifest PATH` when the user manifest is stored elsewhere and `--context NAME` for another Docker context. It does not adopt existing groups by name and rejects a missing previously migrated group. Rerunning it neither renames completed groups nor restores memberships subsequently removed in the console. Retain manifests and bindings with backups.
+
+Then set `KEYCLOAK_GROUP_MANAGEMENT=keycloak` in `data/keycloak/compose.env`, retaining `KEYCLOAK_USER_MANAGEMENT=keycloak`, and apply the configuration with the final overlay:
+
+```sh
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  --env-file data/keycloak/compose.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.keycloak.yaml \
+  -f compose.tickets-keycloak.yaml -f compose.keycloak-groups.yaml \
+  run --rm --no-deps auth-config-init
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  --env-file data/keycloak/compose.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.keycloak.yaml \
+  -f compose.tickets-keycloak.yaml -f compose.keycloak-groups.yaml \
+  build app keycloak-groups-sync
+docker compose --env-file .env.docker --env-file ticket-app/.env \
+  --env-file data/keycloak/compose.env \
+  -f compose.yaml -f compose.tickets.yaml -f compose.keycloak.yaml \
+  -f compose.tickets-keycloak.yaml -f compose.keycloak-groups.yaml \
+  up -d --no-build keycloak-groups-sync app
+```
+
+For Punto without Tickets, omit `--env-file ticket-app/.env`, `compose.tickets.yaml` and `compose.tickets-keycloak.yaml`. Recreating Punto invalidates its in-memory sessions. Verify that the synchronization service is healthy, group IDs and grants are preserved, local editors are absent and write APIs are rejected; then change a name or membership in the console and check its projection in Punto.
+
+Retain the complete selection on later starts and recovery, for example `python3 scripts/manage_cluster.py --keycloak --keycloak-groups --tickets start` or `recover`. `--keycloak-groups` requires `--keycloak`; the controller blocks a start that omits the overlay when the synchronization service already exists, including when stopped. For a network migration, use `python3 scripts/configure_network.py --keycloak --keycloak-groups --tickets apply`. Also retain `compose.keycloak-groups.yaml` last in manual Compose commands.
 
 ## Explicit association with local management
 

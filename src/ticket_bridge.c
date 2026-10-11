@@ -1,6 +1,7 @@
 #include "ticket_bridge.h"
 #include "organization.h"
 #include "inventory_client.h"
+#include "calendar_client.h"
 
 #include <json-c/json.h>
 #include <ctype.h>
@@ -97,9 +98,9 @@ static void free_query(QueryField *fields, size_t count) {
     for (size_t i = 0; i < count; i++) { free(fields[i].value); fields[i].value = NULL; }
 }
 
-static bool parse_query(const char *query, QueryField *fields, size_t count) {
+static bool parse_fields(const char *query, QueryField *fields, size_t count, size_t maximum) {
     const char *p = query ? query : "";
-    if (strlen(p) > 4096) return false;
+    if (strlen(p) > maximum) return false;
     while (*p) {
         const char *end = strchr(p, '&');
         if (!end) end = p + strlen(p);
@@ -121,6 +122,10 @@ static bool parse_query(const char *query, QueryField *fields, size_t count) {
 invalid:
     free_query(fields, count);
     return false;
+}
+
+static bool parse_query(const char *query, QueryField *fields, size_t count) {
+    return parse_fields(query, fields, count, 4096);
 }
 
 static bool today_date(char out[11]) {
@@ -166,7 +171,7 @@ static bool allowed(const Account *actor, const OrganizationAccess *access, DbIn
     return false;
 }
 
-static void scope(const Account *actor, const char *state, time_t expires,
+static void scope(const Account *actor, const char *state, time_t expires, bool calendar_access,
                   WorkspaceResponse *response) {
     OrganizationAccess access;
     if (!access_list(actor, &access)) { unavailable(response); return; }
@@ -181,6 +186,7 @@ static void scope(const Account *actor, const char *state, time_t expires,
     for (size_t i = 0; i < access.count; i++) json_object_array_add(ids, json_object_new_int64(access.job_ids[i]));
     json_object_object_add(object, "job_ids", ids);
     json_object_object_add(object, "expires_at", json_object_new_int64((int64_t)expires));
+    json_object_object_add(object, "calendar_access", json_object_new_boolean(calendar_access));
     finish(response, 200, object);
 }
 
@@ -358,15 +364,85 @@ static void validate(const char *query, const Account *actor, WorkspaceResponse 
 }
 
 void ticket_bridge_read(const char *resource, const char *query,
-                        const Account *actor, const char *state, time_t expires,
+                        const Account *actor, const char *state, time_t expires, bool calendar_access,
                         WorkspaceResponse *response) {
     if (!database || !actor || !state) { unavailable(response); return; }
     if (!query) query = "";
     if (!strcmp(resource, "scope")) {
         if (*query) fail(response, 400, "Parametri non consentiti.");
-        else scope(actor, state, expires, response);
+        else scope(actor, state, expires, calendar_access, response);
     } else if (!strcmp(resource, "jobs")) jobs(query, actor, response);
     else if (!strcmp(resource, "assets")) assets(query, actor, response);
     else if (!strcmp(resource, "validate")) validate(query, actor, response);
     else fail(response, 404, "Risorsa non trovata.");
+}
+
+/* The grant actor supplies the private calendar identity. A job reference is
+   authorization context only and never crosses into the calendar service. */
+void ticket_bridge_calendar(const char *resource, const char *input,
+                            const Account *actor, WorkspaceResponse *response) {
+    static const struct { const char *name; CalendarOperation operation; bool write; } routes[] = {
+        {"status", CALENDAR_STATUS, false}, {"events", CALENDAR_EVENTS, false},
+        {"changes", CALENDAR_CHANGES, false}, {"event", CALENDAR_EVENT, false},
+        {"change", CALENDAR_CHANGE, false}, {"create", CALENDAR_EVENT_CREATE, true},
+        {"update", CALENDAR_EVENT_UPDATE, true}, {"delete", CALENDAR_EVENT_DELETE, true},
+        {"events/create", CALENDAR_EVENT_CREATE, true}, {"events/update", CALENDAR_EVENT_UPDATE, true},
+        {"events/delete", CALENDAR_EVENT_DELETE, true}
+    };
+    size_t index = 0;
+    while (index < sizeof(routes) / sizeof(routes[0]) && strcmp(resource, routes[index].name)) index++;
+    if (!database || !actor) { unavailable(response); return; }
+    if (index == sizeof(routes) / sizeof(routes[0])) { fail(response, 404, "Risorsa non trovata."); return; }
+    if (!input) input = "";
+    char *canonical = NULL;
+    if (routes[index].write) {
+        QueryField fields[] = {{"idempotency_key", NULL}, {"event", NULL}, {"event_id", NULL}, {"etag", NULL}, {"job_id", NULL},
+                               {"expected_connection_id", NULL}, {"expected_calendar_id", NULL}};
+        if (!parse_fields(input, fields, 7, 32768)) { fail(response, 400, "Parametri calendario non validi."); return; }
+        if (fields[4].value) {
+            DbInt job;
+            if (!positive(fields[4].value, INT64_MAX, false, &job)) {
+                free_query(fields, 7); fail(response, 400, "Commessa non valida."); return;
+            }
+            DbStmt *statement = NULL;
+            if (!prepare(&statement, "SELECT 1 FROM jobs WHERE id=?") || db_bind_int64(statement, 1, job) != DB_OK) {
+                db_finalize(statement); free_query(fields, 7); unavailable(response); return;
+            }
+            int found = db_step(statement);
+            db_finalize(statement);
+            if (found != DB_ROW) {
+                free_query(fields, 7);
+                if (found == DB_DONE) fail(response, 404, "Commessa non trovata."); else unavailable(response);
+                return;
+            }
+            OrganizationAccess access;
+            if (!access_list(actor, &access)) { free_query(fields, 7); unavailable(response); return; }
+            if (!allowed(actor, &access, job)) {
+                free_query(fields, 7); fail(response, 403, "Non sei abilitato a questa commessa."); return;
+            }
+        }
+        canonical = calloc(1, strlen(input) * 3 + 128);
+        if (!canonical) { free_query(fields, 7); unavailable(response); return; }
+        char *out = canonical;
+        const char digits[] = "0123456789ABCDEF";
+        for (size_t field = 0; field < 7; field++) if (field != 4 && fields[field].value) {
+            if (out != canonical) *out++ = '&';
+            size_t name_length = strlen(fields[field].name);
+            memcpy(out, fields[field].name, name_length); out += name_length; *out++ = '=';
+            for (const unsigned char *p = (const unsigned char *)fields[field].value; *p; p++) {
+                if (*p < 128 && (isalnum(*p) || strchr("-_.~", *p))) *out++ = (char)*p;
+                else { *out++ = '%'; *out++ = digits[*p >> 4]; *out++ = digits[*p & 15]; }
+            }
+        }
+        *out = 0;
+        free_query(fields, 7);
+        input = canonical;
+    }
+    CalendarResponse received = {0};
+    calendar_client_call(routes[index].operation, actor->id, input, NULL, &received);
+    free(canonical);
+    response->status = received.status;
+    response->body = received.body;
+    received.body = NULL;
+    calendar_response_free(&received);
 }

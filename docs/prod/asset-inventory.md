@@ -26,7 +26,7 @@ Gli stati sono aggiornati dal Gestore. Assegnazione, consegna e restituzione agg
 
 ## Creare e aggiornare una scheda
 
-Con **Nuovo asset** il Gestore inserisce un'etichetta inventario univoca e un nome. L'etichetta distingue il bene anche quando altri beni hanno lo stesso modello. La categoria è libera e parte da `hardware`; produttore, modello, matricola e note descrivono il bene. Posizione e assegnatario testuali restano compatibili con le vecchie schede; per collegare un bene a una persona dell'app usare l'assegnazione strutturata dalla scheda.
+Con **Nuovo asset** il Gestore inserisce un'etichetta inventario univoca e un nome. L'etichetta distingue il bene anche quando altri beni hanno lo stesso modello. La categoria è libera e parte da `hardware`; produttore, modello, matricola e note descrivono il bene. Posizione e assegnatario testuali restano compatibili con le vecchie schede; per affidare un bene a una persona censita, anche senza account Punto, usare l'assegnazione strutturata dalla scheda.
 
 La tipologia seleziona i campi della scheda, mentre la categoria resta una classificazione libera:
 
@@ -56,21 +56,21 @@ La persona ha un codice univoco, nome, email, organizzazione, ruolo e note. L'id
 
 Dalla scheda identità il Gestore collega una o più persone con ruolo responsabile o utilizzatore. La scheda persona mostra tutte le identità associate. Ricerca e paginazione permettono di consultare e selezionare anche anagrafiche ampie. Le rimozioni conservano lo storico; disattivare una voce mantiene i riferimenti esistenti e impedisce nuovi collegamenti.
 
-Nella scheda asset, **Persone e identità collegate** permette di indicare persone e account con ruolo responsabile, utilizzatore o amministratore. Dalle anagrafiche si consultano i beni collegati direttamente e si può filtrare il catalogo, il cruscotto e l'esportazione con **Vedi beni**. Un account condiviso collegato a un bene non assegna automaticamente quel bene a tutte le persone che lo usano. I collegamenti non cambiano lo stato del bene, le consegne, i posti licenza o i permessi di accesso. Le consegne esistenti continuano a usare gli utenti di Punto.
+Nella scheda asset, **Persone e identità collegate** permette di indicare persone e account con ruolo responsabile, utilizzatore o amministratore. Dalle anagrafiche si consultano i beni collegati direttamente e si può filtrare il catalogo, il cruscotto e l'esportazione con **Vedi beni**. Questi elenchi e filtri considerano solo i collegamenti diretti: consegne, assegnazioni operative e licenze non vi aggiungono beni automaticamente. Un account condiviso collegato a un bene non assegna automaticamente quel bene a tutte le persone che lo usano. I collegamenti non cambiano lo stato del bene, le consegne, i posti licenza o i permessi di accesso. Le consegne precedenti a utenti Punto restano conservate.
 
 ## Sedi, ubicazioni e assegnazioni operative
 
 Il Gestore può gestire le anagrafiche di **sedi**, **reparti** e **ubicazioni**, poi selezionarle nella scheda di un dispositivo IT, apparato di rete o bene fisico. Ogni ubicazione appartiene a una sede; un reparto può essere collegato a una sede. La scheda controlla che i luoghi scelti siano coerenti. Per cambiare la sede di un reparto o un'ubicazione già usati occorre prima rimuoverli dai contesti correnti dei beni. Le anagrafiche possono essere disattivate; le registrazioni precedenti conservano i nomi memorizzati nello storico.
 
-L'assegnazione strutturata collega il bene a un utente attivo dell'app e porta lo stato ad **Assegnato**. Rimuoverla riporta un bene assegnato a **Disponibile**, mantenendo la collocazione. Il filtro **I miei asset** mostra i beni collegati all'utente corrente; il catalogo completo rimane consultabile da tutti gli utenti autenticati.
+L'assegnazione strutturata collega il bene a una persona attiva dell'anagrafica oppure a un utente Punto legacy e porta lo stato ad **Assegnato**. La persona può non avere accesso all'app; i due tipi di destinatario restano distinti. Rimuovere l'assegnazione riporta un bene assegnato a **Disponibile**, mantenendo la collocazione. Il filtro **I miei asset** e la distribuzione per utente riguardano solo gli utenti Punto, senza collegamento automatico alle persone; il catalogo completo rimane consultabile da tutti gli utenti autenticati.
 
-Software e licenze continuano a usare i propri dettagli e relazioni: le assegnazioni personali delle licenze rimangono testuali. L'editor generale e l'importazione CSV non sostituiscono il flusso di assegnazione, consegna e restituzione dei beni già gestiti in modo strutturato.
+Software e licenze usano i propri dettagli e relazioni: le licenze possono avere destinatari persona o identità secondo il modello, mantenendo le assegnazioni testuali precedenti. L'editor generale e l'importazione CSV non sostituiscono il flusso di assegnazione, consegna e restituzione dei beni già gestiti in modo strutturato. Non vengono convertiti testi o utenti precedenti in persone, né creati account di login o collegamenti diretti ai beni automaticamente.
 
 ## Consegnare, restituire e verificare un bene
 
-Dalla scheda il Gestore può registrare una **consegna** a un utente attivo, indicando la data, la restituzione prevista, le condizioni iniziali e le note. Il bene deve essere disponibile oppure già assegnato allo stesso utente in modo strutturato, senza una consegna aperta. La consegna lo assegna all'utente; una restituzione prevista superata appare come ritardo nella scheda.
+Dalla scheda il Gestore può registrare una **consegna** a una persona attiva dell'anagrafica, anche senza account Punto, oppure a un utente Punto legacy, indicando la data, la restituzione prevista, le condizioni iniziali e le note. Il bene deve essere disponibile oppure già assegnato allo stesso destinatario in modo strutturato, senza una consegna aperta. La consegna lo assegna al destinatario; una restituzione prevista superata appare come ritardo nella scheda. I nomi vengono risolti dal server e conservati nello storico.
 
-La **restituzione** registra data, condizioni finali e note, chiude la consegna e rimuove l'assegnazione personale. Il Gestore sceglie se rendere il bene disponibile oppure metterlo in manutenzione. Sede, reparto e ubicazione rimangono registrati. Le date effettive non possono essere future e la restituzione prevista non può precedere la consegna.
+La **restituzione** registra data, condizioni finali e note, chiude la consegna e rimuove l'assegnazione personale. È consentita anche se nel frattempo la persona è stata disattivata. Il Gestore sceglie se rendere il bene disponibile oppure metterlo in manutenzione. Sede, reparto e ubicazione rimangono registrati. Le date effettive non possono essere future e la restituzione prevista non può precedere la consegna.
 
 Con **Verifica fisica** si registrano data, condizioni, ubicazione osservata facoltativa e note. La scheda conserva l'ultima verifica e permette di consultare le precedenti. Un'ubicazione osservata diversa da quella attesa viene registrata come differenza: non sposta automaticamente il bene. Le verifiche sono operazioni manuali; per ricevere avvisi periodici occorre configurare una regola **Verifiche inventario**.
 
@@ -88,9 +88,11 @@ Le relazioni sono registrate manualmente dal Gestore e compaiono sia sulla sorge
 
 - Un **software** può essere installato su un dispositivo IT o un apparato di rete. La relazione può registrare una versione installata diversa da quella della scheda software.
 - Un **dispositivo IT o apparato di rete** può essere collegato a un altro apparato di rete, indicando le porte sui due lati.
-- Una **licenza** può essere assegnata a un dispositivo o a una persona secondo il modello scelto. La persona è un testo libero e non un account dell'app.
+- Una **licenza** può essere assegnata a un dispositivo, a una persona censita oppure a un'identità secondo il modello scelto. Gli assegnatari testuali restano supportati per compatibilità.
 
-Il modello **per dispositivo** richiede una scheda dispositivo IT o apparato di rete. **Per utente** richiede un assegnatario testuale. **Concorrente** e **sito** consentono di registrare un dispositivo oppure un assegnatario, uno alla volta. La quantità della relazione consuma i posti indicati nella licenza: i conteggi mostrano posti assegnati e residui sulla base di queste registrazioni.
+Il modello **per dispositivo** richiede una scheda dispositivo IT o apparato di rete. **Per utente** consente una persona, un'identità oppure un assegnatario testuale legacy. **Concorrente** e **sito** consentono anche un dispositivo. Ogni relazione ha esattamente un destinatario; nuove assegnazioni strutturate richiedono persone o identità attive. La quantità della relazione consuma i posti indicati nella licenza: un'identità condivisa da tre persone, con quantità uno, consuma un posto. Il conteggio non moltiplica i posti per gli utilizzatori dell'identità e non verifica i termini del fornitore.
+
+Il server conserva una copia del destinatario al momento dell'assegnazione: rinomina, disattivazione o cambiamenti dei membri dell'identità non riscrivono la relazione e il suo storico. L'assegnazione di una licenza non crea collegamenti diretti ai beni, consegne, associazioni persona-identità o account Punto.
 
 Non si possono duplicare relazioni attive, superare i posti acquistati, assegnare una licenza scaduta o creare collegamenti con schede dismesse o smarrite. La capacità non può scendere sotto i posti già assegnati. Per cambiare software o modello di una licenza occorre prima rimuovere le sue assegnazioni attive.
 

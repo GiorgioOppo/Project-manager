@@ -1,6 +1,7 @@
 """Scoped report aggregates over real HTTP, using only temporary SQLite data."""
 
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import unittest
@@ -12,7 +13,12 @@ import test_roles as roles
 
 class ReportsIntegrationTests(unittest.TestCase):
     # Reuse the existing isolated HTTP fixture without running its tests twice.
-    setUp = roles.RoleIntegrationTests.setUp
+    def setUp(self):
+        roles.RoleIntegrationTests.setUp(self)
+        manager_id = self.users()[0]["id"]
+        status, data, _ = self.api("POST", f"/api/users/{manager_id}/access-groups",
+                                   {"groups": json.dumps(["sales", "finance"])}, cookie=self.manager_cookie)
+        self.assertEqual(status, 200, data)
     stop_server = roles.RoleIntegrationTests.stop_server
     api = roles.RoleIntegrationTests.api
     login = roles.RoleIntegrationTests.login
@@ -72,6 +78,9 @@ class ReportsIntegrationTests(unittest.TestCase):
         self.other_id = self.create_user(email="second-worker@example.test", name="Secondo tecnico")
         self.other_cookie = self.login("second-worker@example.test", roles.WORKER_PASSWORD)
         self.idle_id = self.create_user(email="no-hours@example.test", name="Senza registrazioni")
+        group = self.create_record("groups", {"name": "Squadra report"})
+        for user_id in (self.manager_id, self.worker_id, self.other_id, self.idle_id):
+            self.create_record(f"groups/{group}/members", {"user_id": user_id})
         supplier = self.create_record("suppliers", {
             "code": "REPORT-SUP", "name": 'Fornitore "Servizi" ✓'})
         self.contracts = {}
@@ -121,7 +130,7 @@ class ReportsIntegrationTests(unittest.TestCase):
     def test_date_aggregation_is_inclusive_and_counts_distinct_jobs_and_users(self):
         self.seed_reports()
         report = self.report()
-        self.assertEqual(report["scope"], "all")
+        self.assertEqual(report["scope"], "team")
         self.assert_summary(report, 380, 7, 5, 3)
         self.assertEqual(report["rows"], [
             {"date": "2026-10-09", "minutes": 210, "entry_count": 3,
@@ -189,8 +198,10 @@ class ReportsIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[self.contracts["ZERO"]]["value_cents"], 0)
         self.assertEqual(rows[self.contracts["ZERO"]]["minutes"], 20)
         # Selecting one linked job restricts hours, but the contract value is whole.
-        filtered = self.report("cost", job_id=self.jobs["A"], user_id=self.worker_id)
-        self.assert_summary(filtered, 30, 1, 1, 1)
+        self.assertEqual(report["scope"], "financial")
+        self.assertEqual(report["options"]["users"], [])
+        filtered = self.report("cost", job_id=self.jobs["A"])
+        self.assert_summary(filtered, 90, 2, 1, 2)
         self.assertEqual(len(filtered["rows"]), 1)
         self.assertEqual(filtered["rows"][0]["value_cents"], 123456)
         self.assertEqual(filtered["summary"]["known_value_cents"], 123456)
@@ -248,7 +259,7 @@ class ReportsIntegrationTests(unittest.TestCase):
         own = self.report("user", cookie=self.worker_cookie, user_id=self.worker_id)
         self.assert_summary(own, 90, 3, 3, 1)
 
-    def test_existing_session_immediately_loses_all_scope_after_manager_demotion(self):
+    def test_existing_session_immediately_loses_team_scope_after_manager_demotion(self):
         self.seed_reports()
         self.create_user(email="remaining-manager@example.test", name="Altro gestore", role="manager")
         name = next(user["name"] for user in self.users() if user["id"] == self.manager_id)
@@ -263,8 +274,8 @@ class ReportsIntegrationTests(unittest.TestCase):
         self.assertEqual({row["job_id"] for row in report["rows"]},
                          {self.jobs["A"], self.jobs["B"]})
         self.assertEqual([row["id"] for row in report["options"]["users"]], [self.manager_id])
-        query = urlencode({"view": "cost", "from": "2026-10-09", "to": "2026-10-10"})
-        self.assert_error(403, "GET", "/api/reports?" + query, cookie=self.manager_cookie)
+        # Finance is an explicit independent group; demotion revokes only team hours.
+        self.assertEqual(self.report("cost")["scope"], "financial")
 
     def test_empty_reports_have_zero_totals_not_invented_rows_or_contracts(self):
         for view in ("date", "job", "user", "cost"):

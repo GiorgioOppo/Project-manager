@@ -19,6 +19,7 @@
 
 #include "workspace.h"
 #include "accounts.h"
+#include "access_control.h"
 #include "storage.h"
 #include "procurement.h"
 #include "documents.h"
@@ -29,6 +30,7 @@
 #include "work_board.h"
 #include "ticket_bridge.h"
 #include "../auth/oidc.h"
+#include "../auth/http_transport.h"
 
 #ifdef __APPLE__
 #include <Security/SecRandom.h>
@@ -43,12 +45,15 @@
 #define WORK_BOARD_BODY_LIMIT 65536
 #define LOGIN_BODY_LIMIT 8192
 #define SESSION_LIMIT 64
+#define SESSIONS_PER_USER 4
+#define LOGIN_FAILURE_LIMIT 128
 #define TOKEN_BYTES 32
 #define TOKEN_LENGTH (TOKEN_BYTES * 2)
 #define SHORT_SESSION (8 * 60 * 60)
 #define LONG_SESSION (30 * 24 * 60 * 60)
 #define PUBLIC_ORIGIN_LIMIT 16
 #define TICKET_GRANT_LIMIT 128
+#define TICKET_GRANTS_PER_SESSION 2
 
 typedef struct {
     char origin[320];
@@ -61,6 +66,7 @@ typedef struct {
     char token[TOKEN_LENGTH + 1];
     time_t expires;
     DbInt user_id;
+    uint64_t order;
 } Session;
 
 typedef struct {
@@ -69,7 +75,15 @@ typedef struct {
     char state[TOKEN_LENGTH + 1];
     time_t expires;
     DbInt user_id;
+    bool calendar_access;
+    uint64_t order;
 } TicketGrant;
+
+typedef struct {
+    char email[255];
+    time_t since;
+    unsigned failures;
+} LoginFailures;
 
 typedef struct {
     char method[12];
@@ -94,9 +108,12 @@ static const char *public_dir;
 static char authority[64], localhost_authority[64], public_authority[64], public_localhost[64];
 static PublicOrigin public_origins[PUBLIC_ORIGIN_LIMIT];
 static size_t public_origin_count;
-static unsigned failed_attempts;
-static time_t attempts_since;
+static PublicOrigin sso_origin;
+static LoginFailures login_failures[LOGIN_FAILURE_LIMIT];
+static uint64_t session_order, grant_order;
 static volatile sig_atomic_t stopping;
+
+static bool calendar_session_binding(const Session *session, char binding[65]);
 
 static void stop_server(int signal_number) {
     (void)signal_number;
@@ -122,16 +139,56 @@ static bool equal_hash(const unsigned char *a, const unsigned char *b, size_t n)
     return difference == 0;
 }
 
-static bool write_all(int socket_fd, const void *data, size_t size) {
-    const unsigned char *bytes = data;
-    while (size) {
-        ssize_t sent = send(socket_fd, bytes, size, 0);
-        if (sent < 0 && errno == EINTR) continue;
-        if (sent <= 0) return false;
-        bytes += sent;
-        size -= (size_t)sent;
+/* Release dependent capabilities immediately, including grants never presented
+   again after logout. Only the revoked session's grants are affected. */
+static void revoke_session(Session *session) {
+    if (!session || !session->user_id) return;
+    char binding[TOKEN_LENGTH + 1];
+    bool bound = calendar_session_binding(session, binding);
+    for (size_t i = 0; i < TICKET_GRANT_LIMIT; i++) {
+        TicketGrant *grant = &ticket_grants[i];
+        if (grant->user_id == session->user_id && (!bound ||
+            equal_hash((const unsigned char *)binding,
+                       (const unsigned char *)grant->session_binding, TOKEN_LENGTH)))
+            erase(grant, sizeof(*grant));
     }
-    return true;
+    erase(binding, sizeof(binding));
+    erase(session, sizeof(*session));
+}
+
+/* A bounded identity-specific failure window. Failures cannot block another
+   identity, and rejected attempts do not extend the fixed sixty-second window. */
+static LoginFailures *login_failure_bucket(const char *email, bool create) {
+    char canonical[255];
+    const char *start = email;
+    while (*start == ' ' || *start == '\t') start++;
+    size_t length = strlen(start);
+    while (length && (start[length - 1] == ' ' || start[length - 1] == '\t')) length--;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)start[i];
+        canonical[i] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : (char)c;
+    }
+    canonical[length] = '\0';
+    time_t now = time(NULL);
+    size_t available = LOGIN_FAILURE_LIMIT, oldest = 0;
+    for (size_t i = 0; i < LOGIN_FAILURE_LIMIT; i++) {
+        LoginFailures *bucket = &login_failures[i];
+        if (bucket->email[0] && (now < bucket->since || now - bucket->since >= 60))
+            erase(bucket, sizeof(*bucket));
+        if (bucket->email[0] && !strcmp(bucket->email, canonical)) return bucket;
+        if (!bucket->email[0] && available == LOGIN_FAILURE_LIMIT) available = i;
+        if (bucket->since < login_failures[oldest].since) oldest = i;
+    }
+    if (!create) return NULL;
+    LoginFailures *bucket = &login_failures[available < LOGIN_FAILURE_LIMIT ? available : oldest];
+    erase(bucket, sizeof(*bucket));
+    memcpy(bucket->email, canonical, length + 1);
+    bucket->since = now;
+    return bucket;
+}
+
+static bool write_all(int socket_fd, const void *data, size_t size) {
+    return http_transport_write(socket_fd, data, size);
 }
 
 static const char *status_text(int status) {
@@ -335,6 +392,24 @@ static bool secure_request(const Request *request) {
     return false;
 }
 
+static bool configure_sso_origin(void) {
+    if (!oidc_enabled()) return true;
+    const char *redirect = oidc_redirect_uri();
+    const char *scheme_end = strstr(redirect, "://");
+    const char *path = scheme_end ? strchr(scheme_end + 3, '/') : NULL;
+    if (!path || strcmp(path, "/auth/callback")) return false;
+    size_t length = (size_t)(path - redirect);
+    char origin[320];
+    if (length >= sizeof(origin)) return false;
+    memcpy(origin, redirect, length);
+    origin[length] = '\0';
+    if (!parse_origin(origin, &sso_origin)) return false;
+    if (!sso_origin.secure && local_host(sso_origin.authority)) return true;
+    for (size_t i = 0; i < public_origin_count; i++)
+        if (!strcmp(public_origins[i].origin, sso_origin.origin)) return true;
+    return false;
+}
+
 /* Bounded HTTP/1.1 parser. One request per connection; no chunked uploads. */
 static bool pdf_upload_target(const char *target) {
     const char prefix[] = "/api/contracts/";
@@ -347,21 +422,41 @@ static bool pdf_upload_target(const char *target) {
         (p[sizeof(suffix) - 1] == '\0' || p[sizeof(suffix) - 1] == '?');
 }
 
-static int read_request(int fd, char **allocation, size_t *capacity, Request *request) {
-    char *buffer = *allocation;
-    size_t used = 0, header_size = 0;
-    while (!header_size) {
-        if (used == HEADER_LIMIT) return 431;
-        ssize_t received = recv(fd, buffer + used, HEADER_LIMIT - used, 0);
-        if (received < 0 && errno == EINTR) continue;
-        if (received <= 0) return received < 0 ? 408 : 400;
-        used += (size_t)received;
-        buffer[used] = '\0';
-        char *end = strstr(buffer, "\r\n\r\n");
-        if (end) header_size = (size_t)(end - buffer) + 4;
-        if (memchr(buffer, '\0', header_size ? header_size : used)) return 400;
-        if (header_size > HEADER_LIMIT || (!header_size && used >= HEADER_LIMIT)) return 431;
-    }
+static size_t request_body_limit(const char *method, const char *target) {
+    bool work_board_form = strcmp(method, "POST") == 0 &&
+        (strcmp(target, "/api/tasks") == 0 || strncmp(target, "/api/tasks/", 11) == 0 ||
+         strcmp(target, "/api/blockers") == 0 || strncmp(target, "/api/blockers/", 14) == 0);
+    bool inventory_import = strcmp(method, "POST") == 0 &&
+        strcmp(target, "/api/inventory/import/preview") == 0;
+    bool workflow_batch = !strcmp(method, "POST") &&
+        (!strcmp(target, "/api/time-entries/batch") || !strcmp(target, "/api/jobs/wizard") ||
+         !strcmp(target, "/api/job-templates"));
+    return strncmp(target, "/api/login", 10) == 0 ? LOGIN_BODY_LIMIT :
+        workflow_batch ? 2U * 1024U * 1024U :
+        (strcmp(method, "POST") == 0 && pdf_upload_target(target) ? DOCUMENTS_MAX_BYTES :
+         work_board_form ? WORK_BOARD_BODY_LIMIT : inventory_import ? 1024U * 1024U : BODY_LIMIT);
+}
+
+static int check_http_headers(const char *raw, size_t header_size,
+                              size_t content_length, void *context) {
+    (void)context;
+    const char *end = strstr(raw, "\r\n");
+    if (!end || (size_t)(end - raw) >= header_size || header_size > HEADER_LIMIT) return 400;
+    char line[HEADER_LIMIT + 1], method[12], target[8192], version[16], trailing;
+    size_t length = (size_t)(end - raw);
+    memcpy(line, raw, length);
+    line[length] = '\0';
+    if (sscanf(line, "%11s %8191s %15s %c", method, target, version, &trailing) != 3 ||
+        strcmp(version, "HTTP/1.1") || target[0] != '/' || strchr(target, '#')) return 400;
+    return content_length > request_body_limit(method, target) ? 413 : 0;
+}
+
+static int read_request(char *buffer, size_t used, Request *request) {
+    char *header_end = strstr(buffer, "\r\n\r\n");
+    if (!header_end) return used >= HEADER_LIMIT ? 431 : 400;
+    size_t header_size = (size_t)(header_end - buffer) + 4;
+    if (header_size > HEADER_LIMIT) return 431;
+    if (memchr(buffer, '\0', header_size)) return 400;
 
     char *first_end = strstr(buffer, "\r\n");
     if (!first_end) return 400;
@@ -423,16 +518,7 @@ static int read_request(int fd, char **allocation, size_t *capacity, Request *re
             errno = 0;
             char *number_end;
             unsigned long long number = strtoull(value, &number_end, 10);
-            bool work_board_form = strcmp(request->method, "POST") == 0 &&
-                (strcmp(request->target, "/api/tasks") == 0 || strncmp(request->target, "/api/tasks/", 11) == 0 ||
-                 strcmp(request->target, "/api/blockers") == 0 || strncmp(request->target, "/api/blockers/", 14) == 0);
-            bool inventory_import = strcmp(request->method,"POST")==0 &&
-                strcmp(request->target,"/api/inventory/import/preview")==0;
-            size_t body_limit = strncmp(request->target, "/api/login", 10) == 0
-                ? LOGIN_BODY_LIMIT :
-                (strcmp(request->method, "POST") == 0 && pdf_upload_target(request->target)
-                    ? DOCUMENTS_MAX_BYTES : work_board_form ? WORK_BOARD_BODY_LIMIT :
-                      inventory_import ? 1024U*1024U : BODY_LIMIT);
+            size_t body_limit = request_body_limit(request->method, request->target);
             if (errno || *number_end || number > body_limit) return 413;
             request->content_length = (size_t)number;
             request->has_content_length = true;
@@ -444,20 +530,6 @@ static int read_request(int fd, char **allocation, size_t *capacity, Request *re
     if (!seen_host || !request->host[0] || request->transfer_encoding) return 400;
     bool host_allowed = allowed_host(request->host);
     size_t total = header_size + request->content_length;
-    if (used > total) return 400;
-    if (total + 1 > *capacity) {
-        char *larger = realloc(buffer, total + 1);
-        if (!larger) return 500;
-        buffer = larger;
-        *allocation = buffer;
-        *capacity = total + 1;
-    }
-    while (used < total) {
-        ssize_t received = recv(fd, buffer + used, total - used, 0);
-        if (received < 0 && errno == EINTR) continue;
-        if (received <= 0) return received < 0 ? 408 : 400;
-        used += (size_t)received;
-    }
     if (used != total) return 400;
     buffer[used] = '\0';
     request->body = buffer + header_size;
@@ -552,7 +624,7 @@ static Session *find_session(const char *cookie) {
                     Account account;
                     /* A temporary database outage must not revoke a valid token. */
                     if (accounts_lookup(sessions[i].user_id, &account) != 0) return &sessions[i];
-                    erase(&sessions[i], sizeof(sessions[i]));
+                    revoke_session(&sessions[i]);
                     return NULL;
                 }
             }
@@ -564,14 +636,26 @@ static Session *find_session(const char *cookie) {
 }
 
 static Session *new_session(int duration, DbInt user_id) {
-    size_t slot = 0;
     time_t now = time(NULL);
+    if (now == (time_t)-1) return NULL;
+    size_t slot = SESSION_LIMIT, own_oldest = SESSION_LIMIT, own_count = 0;
     for (size_t i = 0; i < SESSION_LIMIT; i++) {
-        if (sessions[i].expires <= now) { slot = i; break; }
-        if (sessions[i].expires < sessions[slot].expires) slot = i;
+        if (sessions[i].expires <= now) {
+            revoke_session(&sessions[i]);
+            if (slot == SESSION_LIMIT) slot = i;
+        } else if (sessions[i].user_id == user_id) {
+            own_count++;
+            if (own_oldest == SESSION_LIMIT || sessions[i].order < sessions[own_oldest].order)
+                own_oldest = i;
+        }
     }
+    /* Repeated logins can replace only this account's sessions. A full pool
+       must never silently revoke another user's authenticated session. */
+    if (own_count >= SESSIONS_PER_USER || slot == SESSION_LIMIT) slot = own_oldest;
+    if (slot == SESSION_LIMIT) return NULL;
     unsigned char random[TOKEN_BYTES];
     if (!random_bytes(random, sizeof(random))) return NULL;
+    revoke_session(&sessions[slot]);
     const char digits[] = "0123456789abcdef";
     for (size_t i = 0; i < sizeof(random); i++) {
         sessions[slot].token[2 * i] = digits[random[i] >> 4];
@@ -580,6 +664,7 @@ static Session *new_session(int duration, DbInt user_id) {
     sessions[slot].token[TOKEN_LENGTH] = '\0';
     sessions[slot].expires = now + duration;
     sessions[slot].user_id = user_id;
+    sessions[slot].order = ++session_order;
     erase(random, sizeof(random));
     return &sessions[slot];
 }
@@ -607,9 +692,8 @@ static void login(int fd, Request *request) {
         json(fd, 403, "{\"ok\":false,\"error\":\"Usa l’accesso aziendale.\"}", NULL);
         return;
     }
-    time_t now = time(NULL);
-    if (now - attempts_since >= 60) { failed_attempts = 0; attempts_since = now; }
-    if (failed_attempts >= 8) {
+    LoginFailures *bucket = login_failure_bucket(email, false);
+    if (bucket && bucket->failures >= 8) {
         erase(password, sizeof(password));
         error_response(fd, 429); return;
     }
@@ -618,15 +702,17 @@ static void login(int fd, Request *request) {
     erase(password, sizeof(password));
     if (authenticated < 0) { error_response(fd, 503); return; }
     if (!authenticated) {
-        failed_attempts++;
+        bucket = login_failure_bucket(email, true);
+        bucket->failures++;
         error_response(fd, 401); return;
     }
-    failed_attempts = 0;
+    bucket = login_failure_bucket(email, false);
+    if (bucket) erase(bucket, sizeof(*bucket));
     Session *old = find_session(request->cookie);
-    if (old) erase(old, sizeof(*old));
+    if (old) revoke_session(old);
     int duration = remember ? LONG_SESSION : SHORT_SESSION;
     Session *session = new_session(duration, account.id);
-    if (!session) { error_response(fd, 500); return; }
+    if (!session) { error_response(fd, 503); return; }
     char cookie[256];
     const char *secure = secure_request(request) ? "; Secure" : "";
     if (remember) {
@@ -640,8 +726,18 @@ static void login(int fd, Request *request) {
     json(fd, 200, "{\"ok\":true}", cookie);
 }
 
-static void sso_login(int fd) {
+static void sso_login(int fd, const Request *request) {
     char location[8192], cookie[512], headers[9216];
+    /* A host-only transaction cookie must be issued on the callback origin.
+       Redirect aliases before allocating state; never reflect a requested
+       return URL or trust Forwarded headers to choose the destination. HTTPS
+       for configured secure origins is enforced by the reverse proxy. */
+    if (!origin_matches_host(&sso_origin, request->host) ||
+        secure_request(request) != sso_origin.secure) {
+        snprintf(headers, sizeof(headers), "Location: %s/auth/login\r\n", sso_origin.origin);
+        respond(fd, 303, "text/plain; charset=utf-8", "", 0, headers, false);
+        return;
+    }
     int status = oidc_start(location, cookie);
     if (status != 200) { error_response(fd, status); return; }
     int n = snprintf(headers, sizeof(headers), "Location: %s\r\n%s", location, cookie);
@@ -660,6 +756,7 @@ static void sso_callback(int fd, Request *request, const char *query) {
         if (status == 200) {
             int found = accounts_resolve_oidc(&identity, &account);
             if (found != 1) status = found < 0 ? 503 : 403;
+            else (void)organization_sync_groups();
         }
         erase(&identity, sizeof(identity));
     } else {
@@ -681,7 +778,7 @@ static void sso_callback(int fd, Request *request, const char *query) {
     /* Rotate only after successful authentication, preserving an existing
        session if the identity provider or database is temporarily unavailable. */
     Session *old = find_session(request->cookie);
-    if (old && old != session) erase(old, sizeof(*old));
+    if (old && old != session) revoke_session(old);
     char headers[1024];
     snprintf(headers, sizeof(headers),
         "Location: /app\r\n%sSet-Cookie: punto_session=%s; Path=/; HttpOnly; SameSite=Lax%s\r\n",
@@ -740,20 +837,31 @@ static void session_response(int fd, const Session *session) {
     escape_json(email, account.email);
     escape_json(name, account.name);
     bool manager = strcmp(account.role, "manager") == 0;
+    AccessPolicy policy;
+    if (accounts_access_policy(account.id, &policy) != 1) { error_response(fd, 503); return; }
     const char *allowed = manager ? "true" : "false";
     char origin[6 * sizeof(tickets_app_origin.origin)];
     escape_json(origin, tickets_app_origin.origin);
-    char body[sizeof(email) + sizeof(name) + sizeof(origin) + 768];
+    char body[sizeof(email) + sizeof(name) + sizeof(origin) + 1280];
     snprintf(body, sizeof(body),
-        "{\"authenticated\":true,\"email\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
+        "{\"authenticated\":true,\"user_id\":%lld,\"email\":\"%s\",\"name\":\"%s\",\"role\":\"%s\","
         "\"permissions\":{\"manage_jobs\":%s,\"manage_users\":%s,\"edit_time_entries\":%s,"
         "\"manage_assignments\":%s,\"view_audit\":%s,"
         "\"manage_suppliers\":%s,\"manage_contracts\":%s,"
-        "\"manage_groups\":%s,\"manage_job_roles\":%s},"
+        "\"manage_groups\":%s,\"manage_job_roles\":%s,"
+        "\"view_contracts\":%s,\"view_suppliers\":%s,\"view_costs\":%s,"
+        "\"view_labor_rates\":%s,\"manage_labor_rates\":%s,"
+        "\"view_team_hours\":%s,\"manage_access_groups\":%s%s},"
         "\"tickets\":{\"configured\":%s,\"origin\":%s%s%s}}",
-        email, name, account.role, allowed, manager && !oidc_users_managed() ? "true" : "false",
-        allowed, allowed, allowed, allowed, allowed,
-        allowed, allowed, tickets_configured ? "true" : "false", tickets_configured ? "\"" : "",
+        (long long)account.id, email, name, account.role, allowed,
+        manager && !oidc_users_managed() ? "true" : "false",
+        allowed, allowed, allowed, policy.sales ? "true" : "false", policy.sales ? "true" : "false",
+        allowed, allowed,
+        policy.sales || policy.finance ? "true" : "false", policy.sales || policy.finance ? "true" : "false",
+        policy.finance ? "true" : "false", policy.finance ? "true" : "false",
+        manager && policy.finance ? "true" : "false", allowed, allowed,
+        organization_groups_managed() ? ",\"edit_groups\":false" : "",
+        tickets_configured ? "true" : "false", tickets_configured ? "\"" : "",
         tickets_configured ? origin : "null", tickets_configured ? "\"" : "");
     json(fd, 200, body, NULL);
 }
@@ -783,17 +891,44 @@ static bool ticket_token(const char *value) {
     return true;
 }
 
-static TicketGrant *new_ticket_grant(const Session *session, const char *state) {
+static bool ticket_grant_has_session(const TicketGrant *grant, time_t now) {
+    for (size_t i = 0; i < SESSION_LIMIT; i++) {
+        if (sessions[i].expires <= now || sessions[i].user_id != grant->user_id) continue;
+        char binding[TOKEN_LENGTH + 1];
+        if (!calendar_session_binding(&sessions[i], binding)) return false;
+        bool matches = equal_hash((const unsigned char *)grant->session_binding,
+                                  (const unsigned char *)binding, TOKEN_LENGTH);
+        erase(binding, sizeof(binding));
+        if (matches) return true;
+    }
+    return false;
+}
+
+static TicketGrant *new_ticket_grant(const Session *session, const char *state, bool calendar_access) {
     time_t now = time(NULL);
     if (now == (time_t)-1 || session->expires <= now) return NULL;
-    size_t slot = TICKET_GRANT_LIMIT;
-    for (size_t i = 0; i < TICKET_GRANT_LIMIT; i++) {
-        if (ticket_grants[i].expires <= now) { slot = i; break; }
-    }
-    if (slot == TICKET_GRANT_LIMIT) return NULL;
     TicketGrant next = {0};
+    if (!calendar_session_binding(session, next.session_binding)) return NULL;
+    size_t slot = TICKET_GRANT_LIMIT, own_oldest = TICKET_GRANT_LIMIT, own_count = 0;
+    for (size_t i = 0; i < TICKET_GRANT_LIMIT; i++) {
+        TicketGrant *grant = &ticket_grants[i];
+        if (grant->expires <= now || !ticket_grant_has_session(grant, now)) {
+            erase(grant, sizeof(*grant));
+            if (slot == TICKET_GRANT_LIMIT) slot = i;
+        } else if (grant->user_id == session->user_id &&
+                   equal_hash((const unsigned char *)grant->session_binding,
+                              (const unsigned char *)next.session_binding, TOKEN_LENGTH)) {
+            own_count++;
+            if (own_oldest == TICKET_GRANT_LIMIT || grant->order < ticket_grants[own_oldest].order)
+                own_oldest = i;
+        }
+    }
+    /* Two grants per live session fit the global pool even at its maximum
+       session capacity. A flood rotates only the caller's oldest grant. */
+    if (own_count >= TICKET_GRANTS_PER_SESSION) slot = own_oldest;
+    if (slot == TICKET_GRANT_LIMIT) { erase(&next, sizeof(next)); return NULL; }
     unsigned char random[TOKEN_BYTES];
-    if (!calendar_session_binding(session, next.session_binding) || !random_bytes(random, sizeof(random))) {
+    if (!random_bytes(random, sizeof(random))) {
         erase(&next, sizeof(next)); return NULL;
     }
     const char digits[] = "0123456789abcdef";
@@ -804,6 +939,8 @@ static TicketGrant *new_ticket_grant(const Session *session, const char *state) 
     erase(random, sizeof(random));
     memcpy(next.state, state, TOKEN_LENGTH + 1);
     next.user_id = session->user_id;
+    next.calendar_access = calendar_access;
+    next.order = ++grant_order;
     next.expires = now + SHORT_SESSION;
     if (next.expires > session->expires) next.expires = session->expires;
     erase(&ticket_grants[slot], sizeof(ticket_grants[slot]));
@@ -844,17 +981,51 @@ static TicketGrant *find_ticket_grant(const char *authorization, Account *accoun
     return NULL;
 }
 
+static bool ticket_grant_form(const char *body, char state[TOKEN_LENGTH + 1], bool *calendar_access) {
+    char copy[256];
+    if (!body || strlen(body) >= sizeof(copy)) return false;
+    strcpy(copy, body);
+    bool has_state = false, has_calendar = false;
+    *calendar_access = false;
+    char *part = copy;
+    while (*part) {
+        char *end = strchr(part, '&');
+        if (end) *end = 0;
+        char *equal = strchr(part, '=');
+        if (!equal || equal == part) return false;
+        *equal++ = 0;
+        char name[32], value[TOKEN_LENGTH + 1];
+        if (!decode_form(name, sizeof(name), part) || !decode_form(value, sizeof(value), equal)) return false;
+        if (!strcmp(name, "state") && !has_state && ticket_token(value)) {
+            memcpy(state, value, TOKEN_LENGTH + 1); has_state = true;
+        } else if (!strcmp(name, "calendar") && !has_calendar && !strcmp(value, "1")) {
+            *calendar_access = true; has_calendar = true;
+        } else return false;
+        if (!end) break;
+        part = end + 1;
+        if (!*part) return false;
+    }
+    return has_state;
+}
+
 static bool ticket_bridge_route(int fd, Request *request, const char *query) {
     const char prefix[] = "/api/integrations/tickets/";
     if (strncmp(request->target, prefix, sizeof(prefix) - 1)) return false;
     const char *resource = request->target + sizeof(prefix) - 1;
     bool grant_request = !strcmp(resource, "grant");
+    bool calendar_request = !strncmp(resource, "calendar/", 9);
+    const char *calendar_resource = calendar_request ? resource + 9 : "";
+    bool calendar_write = calendar_request && (!strcmp(calendar_resource, "create") || !strcmp(calendar_resource, "update") ||
+        !strcmp(calendar_resource, "delete") || !strcmp(calendar_resource, "events/create") ||
+        !strcmp(calendar_resource, "events/update") || !strcmp(calendar_resource, "events/delete"));
+    bool calendar_read = calendar_request && (!strcmp(calendar_resource, "status") || !strcmp(calendar_resource, "events") ||
+        !strcmp(calendar_resource, "changes") || !strcmp(calendar_resource, "event") || !strcmp(calendar_resource, "change"));
     bool head = !strcmp(request->method, "HEAD");
     if (!grant_request && strcmp(resource, "scope") && strcmp(resource, "jobs") &&
-        strcmp(resource, "assets") && strcmp(resource, "validate")) {
+        strcmp(resource, "assets") && strcmp(resource, "validate") && !calendar_write && !calendar_read) {
         error_response_head(fd, 404, head); return true;
     }
-    if (strcmp(request->method, grant_request ? "POST" : "GET")) {
+    if (strcmp(request->method, grant_request || calendar_write ? "POST" : "GET")) {
         error_response_head(fd, 405, head); return true;
     }
     if (!tickets_configured) { error_response(fd, 503); return true; }
@@ -874,11 +1045,11 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
             error_response(fd, 415); return true;
         }
         char state[TOKEN_LENGTH + 1];
-        if (*query || strncmp(request->body, "state=", 6) || strchr(request->body, '&') ||
-            !decode_form(state, sizeof(state), request->body + 6) || !ticket_token(state)) {
+        bool calendar_access;
+        if (*query || !ticket_grant_form(request->body, state, &calendar_access)) {
             error_response(fd, 400); return true;
         }
-        TicketGrant *grant = new_ticket_grant(session, state);
+        TicketGrant *grant = new_ticket_grant(session, state, calendar_access);
         if (!grant) { error_response(fd, 503); return true; }
         char destination[sizeof(tickets_app_origin.origin) + 2 * TOKEN_LENGTH + 64];
         snprintf(destination, sizeof(destination), "%s/#punto_grant=%s&state=%s",
@@ -891,7 +1062,7 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
         erase(destination, sizeof(destination));
         return true;
     }
-    if (request->content_length) { error_response(fd, 400); return true; }
+    if (!calendar_write && request->content_length) { error_response(fd, 400); return true; }
     Account account;
     int status;
     TicketGrant *grant = find_ticket_grant(request->authorization, &account, &status);
@@ -901,7 +1072,21 @@ static bool ticket_bridge_route(int fd, Request *request, const char *query) {
         return true;
     }
     WorkspaceResponse response = {0};
-    ticket_bridge_read(resource, query, &account, grant->state, grant->expires, &response);
+    if (calendar_request) {
+        if (!grant->calendar_access) {
+            json(fd, 403, "{\"ok\":false,\"error\":\"Questo collegamento non autorizza l'accesso al calendario. Ricollega Ticket con il consenso calendario.\"}", NULL);
+            return true;
+        }
+        if (calendar_write) {
+            const char type[] = "application/x-www-form-urlencoded";
+            if (strncmp(request->content_type, type, sizeof(type) - 1) ||
+                (request->content_type[sizeof(type) - 1] && request->content_type[sizeof(type) - 1] != ';')) {
+                error_response(fd, 415); return true;
+            }
+            if (*query) { error_response(fd, 400); return true; }
+        }
+        ticket_bridge_calendar(calendar_resource, calendar_write ? request->body : query, &account, &response);
+    } else ticket_bridge_read(resource, query, &account, grant->state, grant->expires, grant->calendar_access, &response);
     if (response.body) json(fd, response.status, response.body, NULL);
     else error_response(fd, 503);
     workspace_response_free(&response);
@@ -927,7 +1112,8 @@ static bool calendar_route(int fd, Request *request, const char *query) {
         {"events/delete", CALENDAR_EVENT_DELETE, false},
         {"sync", CALENDAR_SYNC, false},
         {"disconnect", CALENDAR_DISCONNECT, false},
-        {"changes", CALENDAR_CHANGES, true}
+        {"changes", CALENDAR_CHANGES, true},
+        {"event", CALENDAR_EVENT, true}, {"change", CALENDAR_CHANGE, true}
     };
     size_t index = 0;
     while (index < sizeof(routes) / sizeof(routes[0]) &&
@@ -961,7 +1147,8 @@ static bool calendar_route(int fd, Request *request, const char *query) {
     }
     if ((get && request->content_length) ||
         (*query && !callback && routes[index].operation != CALENDAR_EVENTS &&
-         routes[index].operation != CALENDAR_CALENDARS)) {
+         routes[index].operation != CALENDAR_CALENDARS && routes[index].operation != CALENDAR_EVENT &&
+         routes[index].operation != CALENDAR_CHANGE)) {
         if (callback) calendar_callback_redirect(fd, false);
         else error_response(fd, 400);
         return true;
@@ -1183,7 +1370,12 @@ static bool inventory_route(int fd, Request *request, const char *query) {
 
 static bool workspace_route(int fd, Request *request, const char *query) {
     const char *target = request->target;
-    if (strcmp(target, "/api/jobs") != 0 && strncmp(target, "/api/jobs/", 10) != 0 &&
+    bool workflows = !strncmp(target,"/api/time-corrections",21) || !strcmp(target,"/api/my-work") ||
+        !strcmp(target,"/api/job-templates") || !strncmp(target,"/api/work-schedules",19) ||
+        !strncmp(target,"/api/work-exceptions",20) || !strncmp(target,"/api/business-holidays",22) ||
+        !strncmp(target,"/api/work-notifications",23) || !strcmp(target,"/api/access-groups") ||
+        !strcmp(target,"/api/time-team");
+    if (!workflows && strcmp(target, "/api/jobs") != 0 && strncmp(target, "/api/jobs/", 10) != 0 &&
         strcmp(target, "/api/time-entries") != 0 && strncmp(target, "/api/time-entries/", 18) != 0 &&
         strcmp(target, "/api/users") != 0 && strncmp(target, "/api/users/", 11) != 0 &&
         strcmp(target, "/api/suppliers") != 0 && strncmp(target, "/api/suppliers/", 15) != 0 &&
@@ -1253,7 +1445,7 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         unsigned char *data = NULL;
         size_t size = 0;
         char filename[181] = {0};
-        int status = procurement_download((DbInt)id, account.role, &data, &size, filename);
+        int status = procurement_download((DbInt)id, account.id, account.role, &data, &size, filename);
         if (status != 200) error_response_head(fd, status, head);
         else {
             char extra[1024];
@@ -1282,11 +1474,11 @@ static bool workspace_route(int fd, Request *request, const char *query) {
         Account updated;
         if (!accounts_find(updated_id, &updated)) {
             for (size_t i = 0; i < SESSION_LIMIT; i++) {
-                if (sessions[i].user_id == updated_id) erase(&sessions[i], sizeof(sessions[i]));
+                if (sessions[i].user_id == updated_id) revoke_session(&sessions[i]);
             }
         }
     }
-    if (!handled) handled = storage_handle(request->method, target, query, account.role, &response);
+    if (!handled) handled = storage_handle(request->method, target, query, account.id, account.role, &response);
     if (!handled) handled = alerts_handle(request->method, target, query, request->body,
                                           account.id, account.role, &response);
     if (!handled) handled = work_board_handle(request->method, target, query, request->body,
@@ -1323,6 +1515,7 @@ static void route(int fd, Request *request) {
     }
     char *query = strchr(request->target, '?');
     if (query) *query++ = '\0';
+    (void)organization_sync_groups();
     if (calendar_route(fd, request, query ? query : "")) return;
     if (inventory_route(fd, request, query ? query : "")) return;
     if (ticket_bridge_route(fd, request, query ? query : "")) return;
@@ -1335,17 +1528,28 @@ static void route(int fd, Request *request) {
         if (!get) { error_response_head(fd, 405, head); return; }
         if (oidc_users_managed()) {
             const char *url = oidc_users_admin_url();
-            size_t capacity = 6 * strlen(url) + 160;
-            char *escaped = malloc(capacity), *body = malloc(capacity);
-            if (!escaped || !body) {
-                free(escaped); free(body); error_response(fd, 500); return;
+            char groups_url[1152] = "";
+            if (*url) snprintf(groups_url, sizeof(groups_url), "%.*s#/punto/groups",
+                               (int)strcspn(url, "#"), url);
+            size_t capacity = 6 * (strlen(url) + strlen(groups_url)) + 320;
+            char *escaped = malloc(capacity), *groups_escaped = malloc(capacity), *body = malloc(capacity);
+            if (!escaped || !groups_escaped || !body) {
+                free(escaped); free(groups_escaped); free(body); error_response(fd, 500); return;
             }
             escape_json(escaped, url);
-            snprintf(body, capacity,
-                "{\"sso\":%s,\"local\":%s,\"managed_users\":true,\"users_admin_url\":\"%s\"}",
-                oidc_enabled() ? "true" : "false", oidc_local_enabled() ? "true" : "false", escaped);
+            escape_json(groups_escaped, groups_url);
+            if (organization_groups_managed()) {
+                snprintf(body, capacity,
+                    "{\"sso\":%s,\"local\":%s,\"managed_users\":true,\"users_admin_url\":\"%s\","
+                    "\"managed_groups\":true,\"groups_admin_url\":\"%s\"}",
+                    oidc_enabled() ? "true" : "false", oidc_local_enabled() ? "true" : "false", escaped, groups_escaped);
+            } else {
+                snprintf(body, capacity,
+                    "{\"sso\":%s,\"local\":%s,\"managed_users\":true,\"users_admin_url\":\"%s\"}",
+                    oidc_enabled() ? "true" : "false", oidc_local_enabled() ? "true" : "false", escaped);
+            }
             json(fd, 200, body, NULL);
-            free(escaped); free(body); return;
+            free(escaped); free(groups_escaped); free(body); return;
         } else {
             char body[64];
             snprintf(body, sizeof(body), "{\"sso\":%s,\"local\":%s}",
@@ -1356,7 +1560,7 @@ static void route(int fd, Request *request) {
     if (strcmp(target, "/auth/login") == 0 || strcmp(target, "/auth/callback") == 0) {
         if (!get) { error_response_head(fd, 405, head); return; }
         if (!oidc_enabled()) { error_response(fd, 404); return; }
-        if (strcmp(target, "/auth/login") == 0) sso_login(fd);
+        if (strcmp(target, "/auth/login") == 0) sso_login(fd, request);
         else sso_callback(fd, request, query ? query : "");
         return;
     }
@@ -1372,7 +1576,7 @@ static void route(int fd, Request *request) {
         if (!post) { error_response_head(fd, 405, head); return; }
         if (!same_origin(request)) { error_response_head(fd, 403, head); return; }
         Session *session = find_session(request->cookie);
-        if (session) erase(session, sizeof(*session));
+        if (session) revoke_session(session);
         json(fd, 200, "{\"ok\":true}", secure_request(request)
             ? "Set-Cookie: punto_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure\r\n"
             : "Set-Cookie: punto_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0\r\n");
@@ -1403,6 +1607,7 @@ static void route(int fd, Request *request) {
         {"/workspace.css", "workspace.css", "text/css; charset=utf-8"},
         {"/reports.css", "reports.css", "text/css; charset=utf-8"},
         {"/work-board.css", "work-board.css", "text/css; charset=utf-8"},
+        {"/time-workflows.css", "time-workflows.css", "text/css; charset=utf-8"},
         {"/inventory.css", "inventory.css", "text/css; charset=utf-8"},
         {"/qrcodegen.js", "qrcodegen.js", "text/javascript; charset=utf-8"},
         {"/inventory-qr.js", "inventory-qr.js", "text/javascript; charset=utf-8"},
@@ -1414,6 +1619,24 @@ static void route(int fd, Request *request) {
         }
     }
     error_response_head(fd, 404, head);
+}
+
+static void handle_http_request(int fd, char *buffer, size_t size, void *context) {
+    (void)context;
+    Request request = {0};
+    int status = read_request(buffer, size, &request);
+    if (status) error_response(fd, status);
+    else route(fd, &request);
+}
+
+static void scheduler_tick(void *context) {
+    time_t *last_tick = context;
+    (void)organization_sync_groups();
+    time_t now = time(NULL);
+    if (now != (time_t)-1 && (*last_tick == 0 || difftime(now, *last_tick) >= 30.0 || now < *last_tick)) {
+        alerts_tick_at(now);
+        *last_tick = now;
+    }
 }
 
 int main(void) {
@@ -1475,6 +1698,14 @@ int main(void) {
         return 1;
     }
     if (atexit(oidc_close) != 0) { oidc_close(); return 1; }
+    snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
+    snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
+    snprintf(public_authority, sizeof(public_authority), "127.0.0.1:%ld", public_port);
+    snprintf(public_localhost, sizeof(public_localhost), "localhost:%ld", public_port);
+    if (!configure_sso_origin()) {
+        fprintf(stderr, "OIDC_REDIRECT_URI deve usare un'origine Punto configurata e il percorso /auth/callback.\n");
+        return 1;
+    }
     public_dir = getenv("PUBLIC_DIR");
     if (!public_dir || !*public_dir) public_dir = "public";
 #ifdef PUNTO_MYSQL
@@ -1531,10 +1762,6 @@ int main(void) {
         work_board_close(); alerts_close(); documents_close(); procurement_close(); organization_close(); storage_close(); accounts_close(); workspace_close(); return 1;
     }
     if (atexit(ticket_bridge_close) != 0) { ticket_bridge_close(); return 1; }
-    snprintf(authority, sizeof(authority), "127.0.0.1:%ld", port);
-    snprintf(localhost_authority, sizeof(localhost_authority), "localhost:%ld", port);
-    snprintf(public_authority, sizeof(public_authority), "127.0.0.1:%ld", public_port);
-    snprintf(public_localhost, sizeof(public_localhost), "localhost:%ld", public_port);
     signal(SIGPIPE, SIG_IGN);
     struct sigaction stop_action = {0};
     stop_action.sa_handler = stop_server;
@@ -1555,35 +1782,9 @@ int main(void) {
     printf("\n  punto · Project management\n  http://127.0.0.1:%ld\n  Utenti e dati: %s\n\n", public_port, database_path);
     fflush(stdout);
     time_t last_alert_tick=0;
-    while (!stopping) {
-        time_t now=time(NULL);
-        if (now!=(time_t)-1 && (last_alert_tick==0 || difftime(now,last_alert_tick)>=30.0 || now<last_alert_tick)) {
-            alerts_tick_at(now); last_alert_tick=now;
-        }
-        fd_set readable; FD_ZERO(&readable); FD_SET(server,&readable);
-        struct timeval scheduler_timeout={.tv_sec=30,.tv_usec=0};
-        int ready=select(server+1,&readable,NULL,NULL,&scheduler_timeout);
-        if (ready<0) { if (errno==EINTR) continue; perror("select"); break; }
-        if (ready==0) continue;
-        int client = accept(server, NULL, NULL);
-        if (client < 0) {
-            if (errno == EINTR) continue;
-            perror("accept"); break;
-        }
-        struct timeval timeout = {.tv_sec = 5, .tv_usec = 0};
-        (void)setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        (void)setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-        size_t capacity = HEADER_LIMIT + 1;
-        char *buffer = malloc(capacity);
-        if (!buffer) { error_response(client, 500); close(client); continue; }
-        Request request = {0};
-        int status = read_request(client, &buffer, &capacity, &request);
-        if (status) error_response(client, status);
-        else route(client, &request);
-        erase(buffer, capacity);
-        free(buffer);
-        close(client);
-    }
+    bool transport_ok = http_transport_run(server, &stopping, HEADER_LIMIT, DOCUMENTS_MAX_BYTES,
+                                           5, check_http_headers, handle_http_request,
+                                           scheduler_tick, &last_alert_tick);
     close(server);
     work_board_close();
     alerts_close();
@@ -1596,5 +1797,5 @@ int main(void) {
     accounts_close();
     workspace_close();
     erase(sessions, sizeof(sessions));
-    return stopping ? 0 : 1;
+    return stopping && transport_ok ? 0 : 1;
 }

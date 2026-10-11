@@ -109,7 +109,7 @@ Compose traduce le variabili SQL in `DB_HOST=db-proxy`, `DB_PORT=3306`, `DB_NAME
 
 La password SMTP proviene dal file `data/addon-secrets/smtp-password`, montato come secret. Il token privato è generato da `prepare` nel file `mail-api-token`. Il collegamento interno dell'app è fissato a `https://mail-api:8090`, con CA e token dedicati. L'addon usa il ledger `/var/lib/punto-mailer/delivery.sqlite3` e timeout SMTP di 20 secondi.
 
-L'attivazione richiede anche l'hostname SMTP esatto in [allowed-smtp-domains.txt](../../docker/squid/allowed-smtp-domains.txt). Il segnaposto corrente non autorizza un provider reale. Prima dell'attivazione verificare l'outbox: abilitare SMTP può rendere inviabili anche alert già accodati. La procedura completa è nel [manuale email](../../addon/README.md).
+L'attivazione richiede anche l'hostname SMTP esatto in [allowed-smtp-domains.txt](../../docker/squid/allowed-smtp-domains.txt). Il segnaposto corrente non autorizza un provider reale. Prima dell'attivazione verificare l'outbox: abilitare SMTP può rendere inviabili anche alert già accodati. La procedura completa è nel [manuale email](../../addon/README.it.md).
 
 ### Calendar
 
@@ -121,7 +121,7 @@ L'attivazione richiede anche l'hostname SMTP esatto in [allowed-smtp-domains.txt
 
 Il client secret è nel file `data/addon-secrets/google-client-secret`. `prepare` genera separatamente il token `calendar-api-token` e la chiave AES `calendar-token-key`. Il file del client secret nasce vuoto. Il servizio privato usa `https://calendar-api:8091`, il database `/var/lib/punto-calendar/calendar.sqlite3`, timeout Google di 10 secondi e proxy Squid obbligatorio.
 
-ID, redirect e segreto Google vanno configurati insieme; configurazioni parziali vengono rifiutate. OAuth resta disabilitato finché questa configurazione manca. Gli account Google richiedono poi il consenso individuale. Il [manuale Calendar](../../calendar-addon/README.md) descrive API, scope, limiti e attivazione. L'interfaccia grafica di collegamento non è ancora implementata: le funzionalità esposte in questa versione sono API.
+ID, redirect e segreto Google vanno configurati insieme; configurazioni parziali vengono rifiutate. OAuth resta disabilitato finché questa configurazione manca. Gli account Google richiedono poi il consenso individuale. Il [manuale Calendar](../../calendar-addon/README.it.md) descrive API, scope, limiti e attivazione. L'interfaccia grafica di collegamento non è ancora implementata: le funzionalità esposte in questa versione sono API.
 
 ## Aggiornamento dei servizi esistenti
 

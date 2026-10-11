@@ -1,10 +1,12 @@
 # Documentazione di prodotto
 
+[Flussi operativi migliorati (schema 13)](flussi-operativi.md)
+
 **Italiano** | [English](../en/prod/README.md)
 
 [Indice generale](../README.md) · [Documentazione tecnica](../tehnical/README.md) · [README del progetto](../../README.it.md)
 
-Queste guide spiegano come utilizzare punto, come organizzare l’accesso alle commesse, attività e blocchi, e come interpretare ore, analisi e notifiche. Il riferimento è il prodotto implementato al **11 ottobre 2026**, schema **10**. I piani di sviluppo sono riconoscibili come tali.
+Queste guide spiegano come utilizzare punto, come organizzare l’accesso alle commesse, attività e blocchi, e come interpretare ore, analisi e notifiche. Il riferimento è il prodotto implementato al **11 ottobre 2026**, schema **13**. I piani di sviluppo sono riconoscibili come tali.
 
 ## Guide operative
 

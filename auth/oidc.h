@@ -11,6 +11,8 @@
 bool oidc_init(void);
 bool oidc_enabled(void);
 bool oidc_local_enabled(void);
+/* Immutable, validated callback URL; empty when OIDC is disabled. */
+const char *oidc_redirect_uri(void);
 
 typedef struct {
     char issuer[1024];
@@ -37,11 +39,13 @@ int oidc_callback_identity(const char *query, const char *cookie, OidcIdentity *
    module. The caller redirects only on success. */
 int oidc_start(char location[8192], char cookie[512]);
 
-/* Consume a single pending browser-bound transaction, verify its ID token and
-   resolve its subject through OIDC_BINDINGS_FILE. Return 200 with a canonical
+/* Consume a browser-bound, encrypted-cookie transaction after verifying its ID
+   token and resolve its subject through OIDC_BINDINGS_FILE. Return 200 with a canonical
    local email and bounded session lifetime, or an HTTP error status. The caller
    must verify that this local account is active before issuing its own session.
-   Clear the transaction cookie on every callback, including errors. */
+   Clear the transaction cookie on every callback, including errors. Starts use
+   no shared pending slots. Verified IdP responses retain replay tombstones until
+   cookie expiry; a quota limits only the authenticated subject exceeding it. */
 int oidc_callback(const char *query, const char *cookie, char email[255], int *lifetime);
 const char *oidc_clear_cookie(void);
 void oidc_close(void);

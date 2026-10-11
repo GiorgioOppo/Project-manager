@@ -4,7 +4,7 @@
 
 Verificato sul codice il **10 ottobre 2026**. I servizi sono programmi C separati dall'applicazione, eseguiti in container dedicati. SMTP e credenziali Google sono predisposti, ma **la configurazione dei fornitori reali è rinviata**: i test usano servizi simulati.
 
-Fonti: [mailer.c](../../addon/src/mailer.c), [mail_client.c](../../src/mail_client.c), [calendar.c](../../calendar-addon/src/calendar.c), [calendar_client.c](../../src/calendar_client.c), [scheduler alert](../../src/alerts.c), [Compose](../../compose.yaml). Guide dei componenti: [mail](../../addon/README.md) e [Calendar](../../calendar-addon/README.md).
+Fonti: [mailer.c](../../addon/src/mailer.c), [mail_client.c](../../src/mail_client.c), [calendar.c](../../calendar-addon/src/calendar.c), [calendar_client.c](../../src/calendar_client.c), [scheduler alert](../../src/alerts.c), [Compose](../../compose.yaml). Guide dei componenti: [mail](../../addon/README.it.md) e [Calendar](../../calendar-addon/README.it.md).
 
 ## Trasporto, autenticazione e confini
 
@@ -89,7 +89,7 @@ Non esiste un endpoint di reinvio terminale o consultazione dell'intero ledger. 
 | `MAIL_PROXY_URL` | Proxy CONNECT obbligatorio nel percorso di uscita, `http://squid:3128`. |
 | `MAIL_SMTP_TIMEOUT`, `MAIL_SMTP_CA_FILE` | Timeout e CA SMTP opzionale per un provider/fixture dedicato. |
 
-La configurazione attuale lascia SMTP disabilitato e l'allowlist SMTP con un segnaposto. In seguito bisognerà aggiungere l'hostname esatto alla [allowlist SMTP](../../docker/squid/allowed-smtp-domains.txt), predisporre il secret e ricreare Squid (`proxy-egress`) e `mail` secondo la [guida mail](../../addon/README.md). La configurazione parziale viene rifiutata all'avvio. L'abilitazione può elaborare anche email già accodate, quindi riguarda invii reali pendenti.
+La configurazione attuale lascia SMTP disabilitato e l'allowlist SMTP con un segnaposto. In seguito bisognerà aggiungere l'hostname esatto alla [allowlist SMTP](../../docker/squid/allowed-smtp-domains.txt), predisporre il secret e ricreare Squid (`proxy-egress`) e `mail` secondo la [guida mail](../../addon/README.it.md). La configurazione parziale viene rifiutata all'avvio. L'abilitazione può elaborare anche email già accodate, quindi riguarda invii reali pendenti.
 
 Il container non può contattare gli endpoint Google: la policy Squid della sua sorgente consente solo gli hostname SMTP autorizzati sulle porte ammesse. Nessun SMTP in chiaro sulla porta 25 è previsto nella policy corrente.
 
@@ -190,6 +190,14 @@ L'ordinamento è per ID evento, non per data. La paginazione non è uno snapshot
 
 Le serie ricorrenti rimangono master con eccezioni, **non vengono espanse**. Un master può apparire anche se l'inizio originale precede il filtro; tombstone `status:cancelled` possono non avere orari. Non interpretare quindi il numero degli elementi come numero di appuntamenti nel periodo. Modificare l'ID master può agire sull'intera serie; questa versione non implementa una scelta UI tra occorrenza e serie.
 
+### Lookup puntuali e delega Ticket
+
+`GET /api/calendar/event?event_id=…` restituisce `{calendar_id,event}` dalla cache personale, compreso l’ETag; `GET /api/calendar/change?idempotency_key=…` restituisce una singola operazione persistente. Le corrispondenti route private sono `/v1/users/<id>/event` e `/change`. Una risorsa assente restituisce `404`; non interpretarlo come prova che una scrittura remota non sia mai avvenuta.
+
+La delega standard Ticket rimane di sola lettura dei cataloghi. L’avvio separato con accesso calendario richiede conferma in Punto e produce `calendar_access:true` nello scope della delega, legato alla stessa sessione e al medesimo utente. Le route delegate `/api/integrations/tickets/calendar/…` espongono lettura dello stato, eventi e operazioni, e le scritture create/update/delete. Non espongono OAuth, selezione calendario o disconnessione. Il server ricava l’utente dal grant; un eventuale `job_id` autorizza il contesto della commessa, viene verificato con i permessi attuali e rimosso prima di chiamare il servizio privato. Nessun token privato o segreto Google viene inviato a Ticket o al browser.
+
+Ticket conserva l’intento prima dell’invio e collega proprietario Punto, calendario ed evento alla programmazione locale. Il controllo puntuale della chiave evita di dipendere dalle sole ultime 100 operazioni. Se lo storico non esiste più dopo una disconnessione, l’esito resta da verificare: non viene creata automaticamente una nuova copia. I dati dell’evento Google sono restituiti soltanto al proprietario con una delega calendario attiva e coerente; gli interventi interni restano condivisi secondo le abilitazioni del ticket.
+
 ### Coda, conflitti e retry
 
 Una nuova mutazione risponde prima dell'esecuzione remota:
@@ -204,7 +212,7 @@ Una nuova mutazione risponde prima dell'esecuzione remota:
 }
 ```
 
-`GET changes` restituisce `items` con `id`, `idempotency_key`, `event_id`, `state`, `error`, `attempts`, `replayed:false`. Massimo 100 operazioni recenti in ordine ID decrescente e 90 KiB di dati; `truncated:true` segnala altri risultati, ma non è ancora presente un cursore per sfogliare l'intero storico. Il replay della stessa richiesta restituisce il singolo esito con `replayed:true`.
+`GET changes` restituisce `items` con `id`, `idempotency_key`, `event_id`, `calendar_id`, `state`, `error`, `attempts`, `replayed:false`. Massimo 100 operazioni recenti in ordine ID decrescente e 90 KiB di dati; `truncated:true` segnala altri risultati, ma non è ancora presente un cursore per sfogliare l'intero storico. Il replay della stessa richiesta restituisce il singolo esito con `replayed:true`.
 
 | Stato | Significato e trattamento |
 | --- | --- |
@@ -286,4 +294,4 @@ Le suite [mail-addon](../../tests/test_mail_addon.py), [client mail](../../tests
 
 L'override `CALENDAR_GOOGLE_ORIGIN` viene accettato soltanto con `CALENDAR_TEST_MODE=1`, listener loopback e proxy loopback. Tale modalità non compare nella configurazione Compose produttiva; la verifica TLS resta attiva anche nei fixture. Non indebolire i controlli TLS o abilitare test mode per collegare un provider reale.
 
-L'integrazione calendario esistente è a livello di API e servizio. UI calendario, selezione evento→commessa, contabilizzazione automatica delle ore, mapping tra task ed eventi e politiche avanzate di risoluzione conflitti sono ancora lavoro di prodotto futuro.
+Punto include una schermata Calendario per l'account Google personale. L'agenda Ticket collega gli interventi a ticket, commesse e asset e consente la sincronizzazione esplicita degli eventi. Contabilizzazione automatica delle ore, mapping fra task ed eventi, inviti e ricorrenze nuove restano fuori da questo flusso.

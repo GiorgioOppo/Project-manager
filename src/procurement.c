@@ -1,6 +1,7 @@
 #include "procurement.h"
 #include "documents.h"
 #include "storage.h"
+#include "access_control.h"
 
 #include <limits.h>
 #include "db.h"
@@ -144,6 +145,28 @@ static bool bind_id(DbStmt *statement, int index, DbInt value) {
 static const char *column_text(DbStmt *statement, int column) {
     const unsigned char *text = db_column_text(statement, column);
     return text ? (const char *)text : "";
+}
+
+/* Functional profiles are resolved from live account data on this connection;
+   the administrative manager role does not grant commercial access. */
+static int procurement_permission(DbInt actor, const char *role, bool write) {
+    if (actor <= 0) return 401;
+    if (!database) return 500;
+    AccessPolicy policy = {0};
+    int resolved = access_policy_resolve(database, actor, role, &policy);
+    if (resolved < 0) return 500;
+    if (!resolved) return 403;
+    return (write ? policy.sales : policy.sales || policy.finance) ? 200 : 403;
+}
+
+static bool require_procurement(DbInt actor, const char *role, bool write,
+                                WorkspaceResponse *response) {
+    int status = procurement_permission(actor, role, write);
+    if (status == 200) return true;
+    if (status >= 500) server_error(response);
+    else error(response, status, status == 401 ? "Accedi per continuare." :
+               "Il tuo ruolo non consente questa operazione.");
+    return false;
 }
 
 static bool begin_transaction(WorkspaceResponse *response) {
@@ -499,6 +522,9 @@ static void write_supplier(const char *body, DbInt actor_id, DbInt id,
     const size_t count = sizeof(fields) / sizeof(fields[0]);
     if (!parse_fields(body, fields, count, response)) return;
     if (!begin_transaction(response)) { free_fields(fields, count); return; }
+    if (!require_procurement(actor_id, NULL, true, response)) {
+        rollback(); free_fields(fields, count); return;
+    }
     Json before = {0}, after = {0};
     DbStmt *statement = NULL;
     if (id) {
@@ -557,6 +583,9 @@ static void write_contract(const char *body, DbInt actor_id, DbInt id,
     const size_t count = sizeof(fields) / sizeof(fields[0]);
     if (!parse_fields(body, fields, count, response)) return;
     if (!begin_transaction(response)) { free_fields(fields, count); return; }
+    if (!require_procurement(actor_id, NULL, true, response)) {
+        rollback(); free_fields(fields, count); return;
+    }
     Json before = {0}, after = {0};
     DbStmt *statement = NULL;
     DbInt old_supplier = 0;
@@ -707,8 +736,7 @@ void procurement_upload(DbInt contract_id, const char *filename,
                         const char *role, WorkspaceResponse *response) {
     if (!response) return;
     response->status = 0; response->body = NULL;
-    if (!role || strcmp(role,"manager") != 0) { error(response,403,"Il tuo ruolo non consente questa operazione."); return; }
-    if (!database || actor_id <= 0) { server_error(response); return; }
+    if (!require_procurement(actor_id, role, true, response)) return;
     if (contract_id <= 0 || !valid_pdf_filename(filename) ||
         !data || size < 5 || size > DOCUMENT_LIMIT || memcmp(data,"%PDF-",5) != 0) {
         error(response,400,"Carica un PDF valido fino a 10 MiB con un nome file valido (max 180 byte)."); return;
@@ -720,6 +748,9 @@ void procurement_upload(DbInt contract_id, const char *filename,
     if (!storage_key(key) || !digest(data,size,sha256)) { server_error(response); return; }
     if (!documents_store(key,filename,data,size,sha256)) { error(response,503,"Archivio documenti non disponibile. Riprova."); return; }
     if (!begin_transaction(response)) { (void)documents_remove(key); return; }
+    if (!require_procurement(actor_id, role, true, response)) {
+        rollback(); (void)documents_remove(key); return;
+    }
     DbStmt *statement = NULL;
     Json after = {0};
     if (!prepare(&statement,"SELECT COUNT(*) FROM contract_documents WHERE contract_id=?") ||
@@ -755,11 +786,12 @@ failure:
     db_finalize(statement); rollback(); (void)documents_remove(key); free(after.data); server_error(response);
 }
 
-int procurement_download(DbInt document_id, const char *role,
+int procurement_download(DbInt document_id, DbInt actor_id, const char *role,
                          unsigned char **data, size_t *size, char filename[181]) {
-    if (!role || strcmp(role,"manager") != 0) return 403;
-    if (!data || !size || !filename || !database) return 503;
+    if (!data || !size || !filename) return 503;
     *data = NULL; *size = 0; filename[0] = '\0';
+    int permitted = procurement_permission(actor_id, role, false);
+    if (permitted != 200) return permitted >= 500 ? 503 : permitted;
     if (document_id <= 0) return 404;
     DbStmt *statement = NULL;
     if (!prepare(&statement,"SELECT storage_key,file_name,byte_size,sha256 FROM contract_documents WHERE id=?") ||
@@ -780,6 +812,10 @@ int procurement_download(DbInt document_id, const char *role,
     if (!loaded || memcmp(loaded,"%PDF-",5) != 0 || !digest(loaded,(size_t)bytes,actual) || strcmp(actual,sha256) != 0) {
         free(loaded); return 503;
     }
+    permitted = procurement_permission(actor_id, role, false);
+    if (permitted != 200) {
+        free(loaded); filename[0] = '\0'; return permitted >= 500 ? 503 : permitted;
+    }
     *data = loaded; *size = (size_t)bytes; return 200;
 }
 
@@ -793,9 +829,7 @@ bool procurement_handle(const char *method, const char *target, const char *quer
     bool contract_item = strncmp(target,"/api/contracts/",15) == 0;
     if (!suppliers && !supplier_item && !contracts && !contract_item) return false;
     response->status = 0; response->body = NULL;
-    if (!role || strcmp(role,"manager") != 0) { error(response,403,"Il tuo ruolo non consente questa operazione."); return true; }
-    if (actor_id <= 0) { error(response,401,"Accedi per continuare."); return true; }
-    if (!database) { server_error(response); return true; }
+    if (!require_procurement(actor_id, role, strcmp(method, "GET") != 0, response)) return true;
     if (query && *query) { error(response,400,"Parametri della richiesta non validi."); return true; }
     DbInt id = 0;
     bool docs = false;

@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MYSQL_SCHEMA_VERSION 10
+#define MYSQL_SCHEMA_VERSION 13
 
 static bool open_database(Db **database, int flags) {
     return db_open_v2("mysql", database, flags | DB_OPEN_FULLMUTEX, NULL) == DB_OK;
@@ -96,7 +96,10 @@ static bool ensure_assignment_role(Db *database) {
 
 static bool ensure_job_flags(Db *database) {
     static const struct { const char *name; const char *ddl; } columns[] = {
-        {"is_common", "ALTER TABLE jobs ADD COLUMN is_common TINYINT NOT NULL DEFAULT 0 CHECK(is_common IN (0,1))"}
+        {"is_common", "ALTER TABLE jobs ADD COLUMN is_common TINYINT NOT NULL DEFAULT 0 CHECK(is_common IN (0,1))"},
+        {"time_closed", "ALTER TABLE jobs ADD COLUMN time_closed TINYINT NOT NULL DEFAULT 0 CHECK(time_closed IN (0,1))"},
+        {"archived", "ALTER TABLE jobs ADD COLUMN archived TINYINT NOT NULL DEFAULT 0 CHECK(archived IN (0,1))"},
+        {"lifecycle_revision", "ALTER TABLE jobs ADD COLUMN lifecycle_revision BIGINT NOT NULL DEFAULT 1 CHECK(lifecycle_revision>=1)"}
     };
     for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
         DbStmt *statement = NULL;
@@ -110,6 +113,28 @@ static bool ensure_job_flags(Db *database) {
         db_finalize(statement);
         if (!okay || (!exists && db_exec(database, columns[i].ddl, NULL, NULL, NULL) != DB_OK))
             return false;
+    }
+    return true;
+}
+
+static bool ensure_time_entry_columns(Db *database) {
+    static const struct { const char *name; const char *ddl; } columns[] = {
+        {"revision", "ALTER TABLE time_entries ADD COLUMN revision BIGINT NOT NULL DEFAULT 1 CHECK(revision>=1)"},
+        {"task_id", "ALTER TABLE time_entries ADD COLUMN task_id BIGINT NULL,"
+         "ADD CONSTRAINT time_entries_task_fk FOREIGN KEY(task_id) REFERENCES job_tasks(id) ON DELETE SET NULL,"
+         "ADD KEY time_entries_task(task_id,date,id)"}
+    };
+    for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+        DbStmt *statement = NULL;
+        bool okay = db_prepare_v2(database,
+            "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+            "AND TABLE_NAME='time_entries' AND COLUMN_NAME=?", -1, &statement, NULL) == DB_OK &&
+            db_bind_text(statement, 1, columns[i].name, -1, DB_STATIC) == DB_OK &&
+            db_step(statement) == DB_ROW;
+        bool exists = okay && db_column_int64(statement, 0) == 1;
+        if (okay && db_column_int64(statement, 0) > 1) okay = false;
+        db_finalize(statement);
+        if (!okay || (!exists && db_exec(database, columns[i].ddl, NULL, NULL, NULL) != DB_OK)) return false;
     }
     return true;
 }
@@ -255,6 +280,19 @@ bool mysql_schema_prepare(void) {
         "CONSTRAINT oidc_identities_user_fk FOREIGN KEY(user_id) REFERENCES users(id)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
+        "CREATE TABLE IF NOT EXISTS access_groups ("
+        "code VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+        "name VARCHAR(120) NOT NULL,builtin TINYINT NOT NULL DEFAULT 1,"
+        "CHECK(builtin=1),CHECK(code IN ('operator','manager','sales','finance'))) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS access_group_members ("
+        "group_code VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,user_id BIGINT NOT NULL,"
+        "PRIMARY KEY(group_code,user_id),KEY access_group_members_user(user_id,group_code),"
+        "CONSTRAINT access_group_members_group_fk FOREIGN KEY(group_code) REFERENCES access_groups(code),"
+        "CONSTRAINT access_group_members_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CHECK(group_code IN ('sales','finance'))) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
         "CREATE TABLE IF NOT EXISTS suppliers ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "code VARCHAR(40) COLLATE utf8mb4_general_ci NOT NULL,"
@@ -300,11 +338,12 @@ bool mysql_schema_prepare(void) {
         "name VARCHAR(120) NOT NULL,client VARCHAR(120) NOT NULL DEFAULT '',"
         "description VARCHAR(1000) NOT NULL DEFAULT '',"
         "status VARCHAR(16) NOT NULL,contract_id BIGINT NULL,"
-        "is_common TINYINT NOT NULL DEFAULT 0,"
+        "is_common TINYINT NOT NULL DEFAULT 0,time_closed TINYINT NOT NULL DEFAULT 0,"
+        "archived TINYINT NOT NULL DEFAULT 0,lifecycle_revision BIGINT NOT NULL DEFAULT 1,"
         "UNIQUE KEY jobs_code(code),KEY jobs_contract(contract_id,id),"
         "CONSTRAINT jobs_contract_fk FOREIGN KEY(contract_id) REFERENCES contracts(id),"
         "CHECK(status IN ('planned','active','paused','completed','cancelled')),"
-        "CHECK(is_common IN (0,1))"
+        "CHECK(is_common IN (0,1)),CHECK(time_closed IN (0,1)),CHECK(archived IN (0,1)),CHECK(lifecycle_revision>=1)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS job_tasks ("
@@ -349,15 +388,83 @@ bool mysql_schema_prepare(void) {
         "owner VARCHAR(254) COLLATE utf8mb4_general_ci NOT NULL,"
         "date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
         "minutes SMALLINT NOT NULL,note VARCHAR(1000) NOT NULL DEFAULT '',"
-        "user_id BIGINT NULL,"
+        "user_id BIGINT NULL,revision BIGINT NOT NULL DEFAULT 1,task_id BIGINT NULL,"
         "KEY time_entries_owner_date(owner,date),"
         "KEY time_entries_job_owner(job_id,owner),"
         "KEY time_entries_user_date(user_id,date),"
-        "KEY time_entries_job_user(job_id,user_id),"
+        "KEY time_entries_job_user(job_id,user_id),KEY time_entries_task(task_id,date,id),"
         "CONSTRAINT time_entries_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id),"
         "CONSTRAINT time_entries_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
-        "CHECK(minutes BETWEEN 1 AND 1440),CHECK(CHAR_LENGTH(date)=10)"
+        "CONSTRAINT time_entries_task_fk FOREIGN KEY(task_id) REFERENCES job_tasks(id) ON DELETE SET NULL,"
+        "CHECK(minutes BETWEEN 1 AND 1440),CHECK(CHAR_LENGTH(date)=10),CHECK(revision>=1)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS time_entry_batches (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "user_id BIGINT NOT NULL,request_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,ids_json MEDIUMTEXT NOT NULL,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL "
+        "DEFAULT (DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-%dT%H:%i:%sZ')),"
+        "UNIQUE KEY time_entry_batches_request(user_id,request_key),"
+        "CONSTRAINT time_entry_batches_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CHECK(CHAR_LENGTH(request_key)>=1)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS time_corrections (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "entry_id BIGINT NULL,original_entry_id BIGINT NOT NULL,requester_id BIGINT NOT NULL,entry_revision BIGINT NOT NULL,"
+        "original_job_id BIGINT NOT NULL,original_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "original_minutes INT NOT NULL,original_note TEXT NOT NULL,before_json MEDIUMTEXT NOT NULL,job_id BIGINT NOT NULL,"
+        "date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,minutes INT NOT NULL,note TEXT NOT NULL,reason TEXT NOT NULL,"
+        "delete_requested TINYINT NOT NULL DEFAULT 0,status VARCHAR(16) NOT NULL DEFAULT 'pending',"
+        "decision_reason TEXT NOT NULL DEFAULT (''),decided_by BIGINT NULL,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL "
+        "DEFAULT (DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-%dT%H:%i:%sZ')),"
+        "decided_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "KEY time_corrections_requester(requester_id,status,id),KEY time_corrections_entry(entry_id,status,id),"
+        "CONSTRAINT time_corrections_entry_fk FOREIGN KEY(entry_id) REFERENCES time_entries(id) ON DELETE SET NULL,"
+        "CONSTRAINT time_corrections_requester_fk FOREIGN KEY(requester_id) REFERENCES users(id),"
+        "CONSTRAINT time_corrections_decider_fk FOREIGN KEY(decided_by) REFERENCES users(id) ON DELETE SET NULL,"
+        "CHECK(entry_revision>=1),CHECK(original_minutes BETWEEN 1 AND 1440),CHECK(minutes BETWEEN 1 AND 1440),"
+        "CHECK(delete_requested IN (0,1)),CHECK(status IN ('pending','approved','rejected','cancelled','conflict'))) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS user_work_schedules (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,user_id BIGINT NOT NULL,"
+        "mon INT NOT NULL DEFAULT 480,tue INT NOT NULL DEFAULT 480,wed INT NOT NULL DEFAULT 480,"
+        "thu INT NOT NULL DEFAULT 480,fri INT NOT NULL DEFAULT 480,sat INT NOT NULL DEFAULT 0,sun INT NOT NULL DEFAULT 0,"
+        "starts_on CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '0001-01-01',"
+        "UNIQUE KEY user_work_schedules_start(user_id,starts_on),"
+        "CONSTRAINT user_work_schedules_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CHECK(mon BETWEEN 0 AND 1440),CHECK(tue BETWEEN 0 AND 1440),CHECK(wed BETWEEN 0 AND 1440),"
+        "CHECK(thu BETWEEN 0 AND 1440),CHECK(fri BETWEEN 0 AND 1440),CHECK(sat BETWEEN 0 AND 1440),CHECK(sun BETWEEN 0 AND 1440)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS user_work_exceptions (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "user_id BIGINT NOT NULL,date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "expected_minutes INT NOT NULL,reason TEXT NOT NULL DEFAULT (''),UNIQUE KEY user_work_exceptions_date(user_id,date),"
+        "CONSTRAINT user_work_exceptions_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CHECK(expected_minutes BETWEEN 0 AND 1440)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS business_holidays (date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,"
+        "name VARCHAR(160) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS job_templates (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "name VARCHAR(120) COLLATE utf8mb4_general_ci NOT NULL,definition_json MEDIUMTEXT NOT NULL,created_by BIGINT NOT NULL,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL "
+        "DEFAULT (DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-%dT%H:%i:%sZ')),UNIQUE KEY job_templates_name(name),"
+        "CONSTRAINT job_templates_creator_fk FOREIGN KEY(created_by) REFERENCES users(id)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS work_notifications (id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "user_id BIGINT NOT NULL,job_id BIGINT NOT NULL,task_id BIGINT NULL,blocker_id BIGINT NULL,"
+        "event_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,type VARCHAR(32) NOT NULL,"
+        "title TEXT NOT NULL,message TEXT NOT NULL,work_date CHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "read_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL,"
+        "created_at CHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL "
+        "DEFAULT (DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-%dT%H:%i:%sZ')),"
+        "UNIQUE KEY work_notifications_event(user_id,event_key),KEY work_notifications_recipient(user_id,read_at,id),"
+        "CONSTRAINT work_notifications_user_fk FOREIGN KEY(user_id) REFERENCES users(id),"
+        "CONSTRAINT work_notifications_job_fk FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE,"
+        "CONSTRAINT work_notifications_task_fk FOREIGN KEY(task_id) REFERENCES job_tasks(id) ON DELETE CASCADE,"
+        "CONSTRAINT work_notifications_blocker_fk FOREIGN KEY(blocker_id) REFERENCES job_blockers(id) ON DELETE CASCADE) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS labor_rates ("
         "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,user_id BIGINT NOT NULL,"
@@ -392,6 +499,14 @@ bool mysql_schema_prepare(void) {
         "KEY group_members_user(user_id,group_id),"
         "CONSTRAINT group_members_group_fk FOREIGN KEY(group_id) REFERENCES organization_groups(id),"
         "CONSTRAINT group_members_user_fk FOREIGN KEY(user_id) REFERENCES users(id)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
+
+        "CREATE TABLE IF NOT EXISTS oidc_groups ("
+        "issuer VARCHAR(1023) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "subject VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,"
+        "group_id BIGINT NOT NULL UNIQUE,active TINYINT NOT NULL,PRIMARY KEY(issuer,subject),"
+        "CONSTRAINT oidc_groups_group_fk FOREIGN KEY(group_id) REFERENCES organization_groups(id),"
+        "CHECK(active IN (0,1))"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin",
 
         "CREATE TABLE IF NOT EXISTS job_group_grants ("
@@ -510,6 +625,12 @@ bool mysql_schema_prepare(void) {
          "CREATE TRIGGER labor_rates_preserve_user_update BEFORE UPDATE ON labor_rates "
          "FOR EACH ROW BEGIN IF NEW.user_id<>OLD.user_id THEN "
          "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='rate user_id is immutable'; END IF; END"},
+        {"access_groups_no_update",
+         "CREATE TRIGGER access_groups_no_update BEFORE UPDATE ON access_groups "
+         "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='functional groups are immutable'"},
+        {"access_groups_no_delete",
+         "CREATE TRIGGER access_groups_no_delete BEFORE DELETE ON access_groups "
+         "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='functional groups are immutable'"},
         {"contract_documents_no_update",
          "CREATE TRIGGER contract_documents_no_update BEFORE UPDATE ON contract_documents "
          "FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='contract documents are immutable'"},
@@ -532,6 +653,7 @@ bool mysql_schema_prepare(void) {
     if (okay) okay = ensure_job_contract(database);
     if (okay) okay = ensure_assignment_role(database);
     if (okay) okay = ensure_job_flags(database);
+    if (okay) okay = ensure_time_entry_columns(database);
     if (okay) okay = ensure_email_statuses(database);
     if (okay) okay = ensure_inventory_alerts(database);
     if (okay) okay = db_exec(database,

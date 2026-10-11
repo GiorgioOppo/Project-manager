@@ -162,7 +162,7 @@ class InventorySubjectsTests(unittest.TestCase):
         with closing(sqlite3.connect(self.db)) as db:
             db.execute("PRAGMA foreign_keys=ON")
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 6)
 
 
 if __name__ == '__main__':

@@ -5,12 +5,12 @@ RUN apt-get update \
 WORKDIR /build/ticket-app
 COPY ticket-app/Makefile ./
 COPY ticket-app/src/ ./src/
-COPY auth/oidc.c auth/oidc.h /build/auth/
+COPY auth/oidc.c auth/oidc.h auth/http_transport.h /build/auth/
 RUN make
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libssl3 libsqlite3-0 libjson-c5 libcurl4 ca-certificates curl \
+    && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends libssl3 libsqlite3-0 libjson-c5 libcurl4 ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10006 punto-tickets \
     && useradd --uid 10006 --gid 10006 --no-create-home --shell /usr/sbin/nologin punto-tickets \

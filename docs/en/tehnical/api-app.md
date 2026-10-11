@@ -2,9 +2,32 @@
 
 [Italiano](../../tehnical/api-app.md) | **English**
 
-Contract verified against the code on **11 October 2026**, data schema 10. APIs use the `/api` prefix on the app's public origin, for example `https://progetti.tuaazienda.it`. The names and methods below are those implemented: updates use `POST`, not `PUT` or `PATCH`.
+Contract verified against the code on **11 October 2026**, data schema 13. APIs use the `/api` prefix on the app's public origin, for example `https://progetti.tuaazienda.it`. The names and methods below are those implemented: updates use `POST`, not `PUT` or `PATCH`.
 
 Sources: [HTTP router](../../../src/server.c), [users](../../../src/accounts.c), [projects, time, reports, rates](../../../src/workspace.c), [organization](../../../src/organization.c), [tasks and blockers](../../../src/work_board.c), [suppliers and contracts](../../../src/procurement.c), [alerts](../../../src/alerts.c), [audit](../../../src/storage.c), [calendar bridge](../../../src/calendar_client.c). Persistent types are in the [data model](modello-dati.md); internal calls are in the [addon API](api-addon.md).
+
+## Current schema 13 policy
+
+This section takes precedence over access descriptions in the pre-existing tables below. The server resolves roles, profiles and team scope from the database on every request, including open sessions: knowing an ID or retaining a URL does not grant access.
+
+- `operator` is implicit for every active account; `manager` derives from the identity role. `sales` and `finance` are explicit local assignments, including for Keycloak identities. No manager receives them automatically.
+- Suppliers, contracts, PDF metadata and downloads require Sales or Finance. Creating/editing and PDF upload require Sales. Finance is read-only; the manager role alone receives `403`. Changing a project’s contract requires manager + Sales; contract fields are omitted from project responses for users unable to read them.
+- `view=date|job|user` uses `personal` or `team` scope: the manager themselves, members of their organizational groups and subgroups. Without groups, or with managed groups unavailable, only the individual remains visible. Filters cannot select users outside scope. Detailed logs, weeks, summaries, corrections, audit and time alerts apply the same current scope.
+- `view=cost|labor_cost` requires Finance and returns `financial` scope; `user_id` is rejected with `403`. `labor_cost` groups by project, without workers’ `user_id`, name or email in its rows. Finance does not grant other people’s personal logs. Reading rates requires Finance; writing requires manager + Finance.
+- Time notifications are filtered before listing and unread counting; correction originals/proposals and decisions remain within the team. Time-alert emails require both a subject in the owner’s team and a recipient matching an authorized active account. Revocation also applies to stored payloads; inventory retains its shared-catalog scope.
+
+| Method and path | Current contract |
+| --- | --- |
+| `GET /api/access-groups` | Manager; catalog of the four predefined profiles. |
+| `GET /api/users/{id}/access-groups` | Manager; `user_id`, `active`, `role`, explicit `selected` and derived `effective`. |
+| `POST /api/users/{id}/access-groups` | Manager; sole form field `groups`, a JSON array of `sales` and/or `finance`; `[]` revokes both. Atomic replacement with audit; also works for Keycloak-managed identities. |
+| `GET /api/time-team` | Active account, no query; `{scope,users:[{id,name,email,active}]}` contains only currently visible people, including deactivated historical accounts within the team. |
+| `GET /api/time-entries?date=YYYY-MM-DD&user_id=N` | Optional `user_id`, defaulting to self; a colleague must be in the current team. Other people’s rows are read-only. |
+| `GET /api/time-entries/week?date=YYYY-MM-DD&user_id=N` | Monday–Sunday week containing the date; the same personal/team scope. |
+
+`GET /api/session` now includes `user_id` and separate UI flags: `view_contracts`, `view_suppliers`, `view_costs`, `view_labor_rates`, `manage_labor_rates`, `view_team_hours`, `manage_access_groups`, alongside administrative flags. `manage_contracts` and `manage_suppliers` depend on Sales; cost flags depend on Finance. Flags describe the UI and do not replace live module checks.
+
+Policy sources: [access control](../../../src/access_control.c), [corrections](../../../src/time_corrections.inc), [weekly logs](../../../src/time_week.inc). New operational flows are described in the [schema 13 guide](../prod/flussi-operativi.md).
 
 ## HTTP conventions
 
@@ -73,7 +96,7 @@ Authenticated response:
 }
 ```
 
-`/api/session` does not return the user ID. Permissions are descriptive for the UI; the backend still checks every operation. The login counter is per process, not per individual account or IP.
+The example above shows the original flags; the current contract includes `user_id` and the new schema 13 policy flags. Permissions are descriptive for the UI; the backend still checks every operation. The login counter is per process, not per individual account or IP.
 
 ## Users
 

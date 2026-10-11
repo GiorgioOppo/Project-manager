@@ -12,6 +12,12 @@ typedef struct {
 
 bool organization_open(const char *db_path);
 void organization_close(void);
+/* Managed groups are a read-only projection of a private Keycloak snapshot.
+   Local mode is a successful no-op. A false sync result keeps existing rows,
+   but disables group-derived authorization until a fresh snapshot succeeds. */
+bool organization_groups_managed(void);
+bool organization_sync_groups(void);
+bool organization_groups_available(void);
 bool organization_handle(const char *method, const char *target, const char *query,
                          const char *body, DbInt actor_id, const char *role,
                          WorkspaceResponse *response);

@@ -1,7 +1,8 @@
-"""Main-app schema 8/9→10 preserves alert delivery state and rolls back atomically."""
+"""Main-app schema 8/9→13 preserves alert delivery state and rolls back atomically."""
 
 from contextlib import closing
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -14,6 +15,14 @@ SCHEMA_EIGHT = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
 INSERT INTO users VALUES(1,'Gestore','manager@example.test'),(2,'Tecnico','worker@example.test');
+CREATE TABLE jobs(id INTEGER PRIMARY KEY,code TEXT NOT NULL,name TEXT NOT NULL,status TEXT NOT NULL);
+INSERT INTO jobs VALUES(1,'MIGRATION','Commessa conservata','active');
+CREATE TABLE job_tasks(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs(id));
+CREATE TABLE job_blockers(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs(id));
+CREATE TABLE time_entries(id INTEGER PRIMARY KEY,job_id INTEGER NOT NULL REFERENCES jobs(id),
+ user_id INTEGER NOT NULL REFERENCES users(id),owner TEXT NOT NULL,date TEXT NOT NULL,
+ minutes INTEGER NOT NULL,note TEXT NOT NULL);
+INSERT INTO time_entries VALUES(1,1,2,'worker@example.test','2026-10-02',60,'Ore conservate');
 CREATE TABLE audit_events(id INTEGER PRIMARY KEY AUTOINCREMENT,
  created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%SZ','now')),
  actor_id INTEGER REFERENCES users(id),actor_name TEXT NOT NULL,actor_email TEXT NOT NULL,
@@ -95,12 +104,15 @@ class InventoryAlertMigrationTests(unittest.TestCase):
         cls.compilation = tempfile.TemporaryDirectory(prefix="punto-inventory-migration-build-")
         cls.addClassCleanup(cls.compilation.cleanup)
         source = Path(cls.compilation.name) / "migration.c"
-        source.write_text('#include "storage.h"\nint main(int argc,char **argv) {\n'
+        source.write_text('#include "storage.h"\nbool organization_groups_available(void) { return true; }\n'
+                          'int main(int argc,char **argv) {\n'
                           'if(argc!=2) return 2; bool okay=storage_open(argv[1]);\n'
                           'if(okay) okay=storage_health(); storage_close(); return okay ? 0 : 1;\n}\n')
         cls.binary = source.with_suffix("")
+        flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "json-c"], text=True))
         subprocess.run(["cc", "-D_POSIX_C_SOURCE=200809L", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
-                        "-I", str(ROOT / "src"), str(source), str(ROOT / "src/storage.c"), "-lsqlite3", "-o", str(cls.binary)],
+                        "-I", str(ROOT / "src"), str(source), str(ROOT / "src/storage.c"),
+                        str(ROOT / "src/access_control.c"), "-lsqlite3", *flags, "-o", str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
     def setUp(self):
@@ -125,7 +137,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
             original_columns = [row[1] for row in database.execute("PRAGMA table_info(alert_rules)")]
         self.migrate()
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (13,))
             self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(database.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_rules'").fetchone(), (sequence,))
             for table, rows in self.original.items():
@@ -134,6 +146,9 @@ class InventoryAlertMigrationTests(unittest.TestCase):
                 if table == "alert_rules":
                     self.assertEqual(database.execute("SELECT " + ",".join(original_columns) + " FROM alert_rules ORDER BY id").fetchall(), rows)
                     self.assertEqual(database.execute("SELECT verification_days FROM alert_rules ORDER BY id").fetchall(), [(90,)] * len(rows))
+                elif table in ("jobs", "time_entries"):
+                    columns = "id,code,name,status" if table == "jobs" else "id,job_id,user_id,owner,date,minutes,note"
+                    self.assertEqual(database.execute('SELECT ' + columns + ' FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
                 else:
                     self.assertEqual(database.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(database.execute("SELECT * FROM audit_events WHERE action!='system.migration' ORDER BY id").fetchall(), self.original["audit_events"])
@@ -158,7 +173,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), migrated, "Restart must preserve rules and avoid a duplicate migration audit.")
 
     def test_schema_eight_upgrade_preserves_children_high_water_sequence_and_audit(self):
-        self.assert_preserved_upgrade([9, 10], 900)
+        self.assert_preserved_upgrade([9, 10, 12, 13], 900)
 
     def schema_nine(self):
         self.db.unlink()
@@ -168,7 +183,7 @@ class InventoryAlertMigrationTests(unittest.TestCase):
 
     def test_schema_nine_upgrade_preserves_existing_inventory_rule_and_deliveries(self):
         self.schema_nine()
-        self.assert_preserved_upgrade([10], 1000)
+        self.assert_preserved_upgrade([10, 12, 13], 1000)
 
     def test_schema_nine_audit_failure_rolls_back_complete_rebuild(self):
         self.schema_nine()

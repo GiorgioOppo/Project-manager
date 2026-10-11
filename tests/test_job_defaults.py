@@ -1,6 +1,7 @@
 """Common activities and deliberate permanent job cleanup, over isolated HTTP."""
 
 from contextlib import closing
+import json
 import sqlite3
 import unittest
 
@@ -101,7 +102,10 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM job_group_grants WHERE job_id=?",
                                         (common,)).fetchone(), (0,))
         report = self.report("job")
-        self.assertEqual((report["summary"]["minutes"], report["summary"]["user_count"]), (40, 2))
+        # A common job grants the right to work, independently from team-hour visibility.
+        self.assertEqual((report["summary"]["minutes"], report["summary"]["user_count"]), (0, 0))
+        self.assertEqual(self.report("job", cookie=existing)["summary"]["minutes"], 20)
+        self.assertEqual(self.report("job", cookie=future)["summary"]["minutes"], 20)
 
     def test_revoking_common_flag_reapplies_private_assignment_permissions(self):
         assigned_id, assigned = self.worker()
@@ -173,6 +177,8 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
         self.assign_job(survivor, worker_id)
         group = self.create_record("groups", {"name": "Gruppo da conservare"})
         self.post("/api/groups/%d/members" % group, {"user_id": other_id})
+        for member in (self.users()[0]["id"], worker_id):
+            self.post("/api/groups/%d/members" % group, {"user_id": member})
         self.post("/api/jobs/%d/group-grants" % doomed, {"group_id": group, "role_id": 2})
         self.post("/api/jobs/%d/group-grants" % survivor, {"group_id": group, "role_id": 2})
         for cookie, minutes in ((self.manager_cookie, 20), (worker, 35), (other_worker, 45)):
@@ -209,10 +215,16 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
         self.assert_error(404, "POST", "/api/time-entries", self.time_fields(doomed), cookie=self.manager_cookie)
         deleted = next(event for event in self.events(doomed) if event["action"] == "jobs.delete")
         self.assertEqual(deleted["before"]["code"], "DELETE-001")
+        self.assertNotIn("deleted_minutes", deleted["before"])
+        self.assertNotIn("deleted_time_entries", deleted["before"])
         self.assertEqual({key: deleted["before"][key] for key in (
-            "deleted_time_entries", "deleted_minutes", "deleted_assignments", "deleted_group_grants")},
-            {"deleted_time_entries": 3, "deleted_minutes": 100,
-             "deleted_assignments": 1, "deleted_group_grants": 1})
+            "deleted_assignments", "deleted_group_grants")},
+            {"deleted_assignments": 1, "deleted_group_grants": 1})
+        # The immutable internal record remains complete; the public feed hides unscoped hours.
+        with closing(sqlite3.connect(self.db_path)) as db:
+            stored = json.loads(db.execute("SELECT before_json FROM audit_events WHERE action='jobs.delete' AND entity_id=?",
+                                           (doomed,)).fetchone()[0])
+        self.assertEqual((stored["deleted_time_entries"], stored["deleted_minutes"]), (3, 100))
         self.assertIsNone(deleted["after"])
 
     def test_failed_delete_rolls_back_job_hours_grants_and_audit_together(self):
@@ -261,7 +273,7 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (5,6,7,8,9,10)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (5,6,7,8,9,10,12,13)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=4")
             db.commit()
@@ -274,14 +286,14 @@ class JobDefaultsIntegrationTests(unittest.TestCase):
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         worker = self.login(roles.WORKER_EMAIL, roles.WORKER_PASSWORD)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
             self.assertEqual(db.execute("SELECT * FROM time_entries ORDER BY id").fetchall(), old_entries)
             self.assertEqual(db.execute("SELECT * FROM users ORDER BY id").fetchall(), old_users)
             self.assertEqual(db.execute("SELECT * FROM job_assignments ORDER BY job_id,user_id").fetchall(), old_assignments)
             self.assertEqual(db.execute("SELECT id,code,name,client,description,status,contract_id FROM jobs ORDER BY id").fetchall(), old_jobs)
             self.assertEqual(db.execute("SELECT is_common FROM jobs WHERE id=?", (job_id,)).fetchone(), (0,))
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (5,6,7,8,9,10)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (5,6,7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=5").fetchone(), (1,))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "

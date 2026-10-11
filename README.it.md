@@ -1,12 +1,14 @@
 # punto — Commesse e ore di lavoro in C
 
+[Flussi operativi migliorati (schema 13)](docs/prod/flussi-operativi.md)
+
 **Italiano** | [English](README.md)
 
 Web app in italiano, inglese, cinese semplificato, spagnolo, francese e tedesco con server HTTP in C e interfaccia responsive in HTML, CSS e JavaScript, senza pacchetti npm. Gestisce utenti, gruppi gerarchici, ruoli sulle commesse, fornitori, contratti e PDF originali, attività e sottoattività, bacheca Kanban, registro dei blocchi, registrazioni delle ore, alert giornalieri e storico delle modifiche.
 
 Sono disponibili due modalità indipendenti: **Docker con MySQL** per i dati strutturati e **MongoDB GridFS** per i PDF, oppure **avvio nativo con SQLite** e archivio documentale locale. Le due modalità non condividono dati e non eseguono importazioni automatiche.
 
-È disponibile anche **[Punto Ticket](ticket-app/README.md)**, un'app C autonoma per gestire ticket, assegnazioni, priorità, scadenze, commenti e storico, con account e database dedicati. Il collegamento verificato a Punto permette di associare commesse e asset, filtrare i ticket per riferimento e aprirli dai due moduli, rispettando le abilitazioni alle commesse. Compilazione: `make tickets`; verifica: `make test-tickets`. La guida include l'avvio nativo, Docker indipendente e l'affiancamento allo stack tramite Nginx Proxy Manager.
+È disponibile anche **[Punto Ticket](ticket-app/README.it.md)**, un'app C autonoma per gestire ticket, assegnazioni, priorità, scadenze, commenti e storico, con account e database dedicati. Il collegamento verificato a Punto permette di associare commesse e asset, filtrare i ticket per riferimento e aprirli dai due moduli, rispettando le abilitazioni alle commesse. Compilazione: `make tickets`; verifica: `make test-tickets`. La guida include l'avvio nativo, Docker indipendente e l'affiancamento allo stack tramite Nginx Proxy Manager.
 
 ## Lingue dell’interfaccia
 
@@ -498,7 +500,7 @@ Il POST riceve `idempotency_key`, `to`, `subject` e `body` codificati come form.
 
 Gli stati della coda sono `pending_configuration`, `retrying`, `sent`, `delivery_unknown` e `delivery_failed`. La migrazione 7 aggiorna il vincolo degli stati, conservando righe e identificativi; non aggiunge tabelle applicative. Prima di attivare un provider reale occorre configurare mittente, host, modalità TLS, credenziali e hostname esatto nella allowlist SMTP di Squid. **SMTP rimane disabilitato finché questa configurazione non viene completata.**
 
-Il [manuale dell’addon](addon/README.md) descrive formato API, errori, configurazione futura e ripristino. Il backup MySQL non include il ledger: outbox, ledger e `MAIL_API_NAMESPACE` devono essere salvati e ripristinati insieme per conservare la deduplicazione.
+Il [manuale dell’addon](addon/README.it.md) descrive formato API, errori, configurazione futura e ripristino. Il backup MySQL non include il ledger: outbox, ledger e `MAIL_API_NAMESPACE` devono essere salvati e ripristinati insieme per conservare la deduplicazione.
 
 ## Addon Google Calendar
 
@@ -514,7 +516,7 @@ La callback `/api/calendar/oauth/callback` eredita le restrizioni di accesso del
 
 **Google OAuth resta non configurato nello stack locale.** Per attivarlo occorrono Calendar API abilitata nel proprio progetto Google Cloud, client OAuth Web, `GOOGLE_CLIENT_ID`, `GOOGLE_REDIRECT_URI` e client secret nel file locale `data/addon-secrets/google-client-secret`. La redirect URI deve coincidere esattamente con quella registrata in Google Cloud e terminare con `/api/calendar/oauth/callback`; in produzione usare HTTPS. Non inserire il client secret in `.env.docker`, sorgenti o messaggi. Ogni utente deve poi concedere il consenso. [Configurazione OAuth Google](https://developers.google.com/identity/protocols/oauth2/web-server), [scope Calendar](https://developers.google.com/workspace/calendar/api/auth)
 
-Questa integrazione espone API: la schermata Calendario e il collegamento evento → commessa/ore sono sviluppi successivi. Non crea automaticamente registrazioni di lavoro a partire dagli appuntamenti. Il [manuale Calendar](calendar-addon/README.md) descrive contratto API, stati della coda, limiti e attivazione del provider.
+La schermata **Calendario** di Punto permette di collegare Google, selezionare un calendario modificabile, richiedere la sincronizzazione e consultare eventi e operazioni. L’app **Ticket** offre un’agenda settimanale degli interventi, filtrata per commessa e asset, e la sincronizzazione esplicita nel calendario personale dell’utente collegato. L’accesso calendario richiede un consenso separato dalla delega di lettura dei cataloghi. Le modifiche Google sono verificate tramite il collegamento all’evento e il suo ETag; non sovrascrivono automaticamente la programmazione del ticket. Non crea automaticamente registrazioni di lavoro a partire dagli appuntamenti. Vedere il [flusso operativo Ticket](ticket-app/README.it.md#agenda-commesse-e-google-calendar). Il [manuale Calendar](calendar-addon/README.it.md) descrive contratto API, stati della coda, limiti e attivazione del provider.
 
 ### Asset inventory
 
@@ -534,7 +536,7 @@ docker compose --env-file .env.docker build inventory app
 docker compose --env-file .env.docker up -d inventory app
 ```
 
-`prepare` crea soltanto certificato e token mancanti, conservando gli originali. In modalità nativa il modulo è facoltativo; se configurato richiede insieme `INVENTORY_API_URL`, `INVENTORY_API_CA_FILE` e `INVENTORY_API_TOKEN_FILE`, sempre con HTTPS verificato. La [guida prodotto](docs/prod/asset-inventory.md), la [guida tecnica](docs/tehnical/asset-inventory.md) e il [manuale del servizio](inventory-addon/README.md) descrivono permessi, API, limiti e backup.
+`prepare` crea soltanto certificato e token mancanti, conservando gli originali. In modalità nativa il modulo è facoltativo; se configurato richiede insieme `INVENTORY_API_URL`, `INVENTORY_API_CA_FILE` e `INVENTORY_API_TOKEN_FILE`, sempre con HTTPS verificato. La [guida prodotto](docs/prod/asset-inventory.md), la [guida tecnica](docs/tehnical/asset-inventory.md) e il [manuale del servizio](inventory-addon/README.it.md) descrivono permessi, API, limiti e backup.
 
 ## Registro ore
 
@@ -574,7 +576,7 @@ La base attuale gestisce fino a 200 utenti, 200 gruppi, 100 ruoli sulle commesse
 
 ## Tabelle del database
 
-Nel backend MySQL il database applicativo, predefinito `punto`, contiene **25 tabelle InnoDB**; lo schema corrente è la **versione 10**. Il passo 9 aggiunge alle regole alert il tipo `inventory_due` e l’anticipo `days_before`; il passo 10 aggiunge `inventory_return`, `inventory_verification` e `verification_days` (1–365, predefinito 90), senza nuove tabelle applicative e conservando ID, FK e storico. L’inizializzazione include inoltre `oidc_identities`, che conserva il collegamento permanente fra identità del provider e utenti locali senza cambiare il numero di versione. Ogni tabella ha una chiave primaria; le relazioni usano chiavi esterne senza operazioni `CASCADE`.
+Nel backend MySQL il database applicativo, predefinito `punto`, usa lo schema corrente **13**. I passi 9 e 10 estendono gli alert inventory; il passo 11 aggiunge i gruppi aziendali gestiti; il passo 12 introduce rettifiche, orari, notifiche operative, modelli e ciclo di vita delle commesse; il passo 13 introduce `access_groups` e `access_group_members` per Commerciali e Finance espliciti. Le migrazioni non assegnano automaticamente questi profili ai gestori. Ogni tabella ha una chiave primaria e relazioni con chiavi esterne; le nuove risorse dichiarano i propri comportamenti di cancellazione. Il [catalogo API corrente](docs/tehnical/api-app.md) descrive la policy applicata.
 
 | Tabella | Dati principali e struttura |
 | --- | --- |
@@ -592,6 +594,11 @@ Nel backend MySQL il database applicativo, predefinito `punto`, contiene **25 ta
 | `job_roles` | ID, codice univoco, nome, `can_log_time` e `builtin`; Lettore e Collaboratore predefiniti |
 | `job_group_grants` | Chiave composta `(job_id,group_id)`, riferimento al ruolo e date di validità facoltative |
 | `time_entries` | ID registrazione `BIGINT`, riferimenti a commessa e utente, copia storica dell’email, giornata, minuti e nota |
+| `access_groups`, `access_group_members` | Profili funzionali predefiniti e appartenenze esplicite Sales/Finance, separate dai gruppi organizzativi |
+| `oidc_groups` | Collegamento dei gruppi aziendali gestiti con l’albero organizzativo locale |
+| `time_entry_batches`, `time_corrections` | Ricevute idempotenti e richieste di rettifica con originale, proposta e decisione |
+| `user_work_schedules`, `user_work_exceptions`, `business_holidays` | Orari con decorrenza, eccezioni personali e festività |
+| `job_templates`, `work_notifications` | Modelli di avvio e feed operativo personale |
 | `labor_rates` | ID `BIGINT`, utente immutabile `user_id`, tariffa `hourly_cents BIGINT`, valuta `EUR`, date di validità; univocità `(user_id,starts_on)` |
 | `alert_rules` | Regola, gestore proprietario, tipo, orario locale, attivazione e ultimo controllo persistente |
 | `alert_rule_users`, `alert_rule_emails` | Destinatari di ogni regola, con chiavi composte e indirizzi email univoci |
@@ -605,7 +612,7 @@ Nel backend MySQL il database applicativo, predefinito `punto`, contiene **25 ta
 
 I testi usano `utf8mb4`; email e codici sono univoci senza distinzione tra maiuscole e minuscole. Le giornate e gli intervalli sono stringhe ISO `YYYY-MM-DD`, le durate sono minuti interi e i JSON dello storico sono testo. I trigger proteggono lo storico da aggiornamenti ed eliminazioni e impediscono di cambiare l’utente già associato a una registrazione. La definizione completa si trova in `src/mysql_schema.c`.
 
-SQLite conserva **23 tabelle applicative**, oltre alla tabella interna `sqlite_sequence`, e usa `PRAGMA user_version=10` per la versione dello schema. `schema_metadata` e `cluster_write_guard` appartengono alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
+SQLite conserva le tabelle applicative, oltre alla tabella interna `sqlite_sequence`, e usa `PRAGMA user_version=13` per la versione dello schema. `schema_metadata` e `cluster_write_guard` appartengono alla modalità MySQL; il database SQLite di NPM contiene soltanto la configurazione del reverse proxy e non è una replica dei dati applicativi. L’addon email usa un database SQLite separato con una sola tabella `deliveries` nel proprio volume, dedicata agli esiti e alla deduplicazione.
 
 Il database MongoDB, predefinito **`punto_documents`**, contiene i PDF nel bucket GridFS `contract_pdfs`:
 

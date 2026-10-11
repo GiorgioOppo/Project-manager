@@ -4,7 +4,7 @@
 
 This documentation describes the web app for projects and time tracking, the services that run it, and its workflows. It is organized into **`tehnical/`** for developers and system administrators and **`prod/`** for people configuring and using the product. The `tehnical` directory name is retained as required by the project.
 
-**Reference:** workspace code as of 11 October 2026, application schema 10, 25 MySQL tables, 11 Docker services (12 with Ticket), and 8 networks. Native mode uses 23 functional SQLite tables and local documents; Docker mode uses MySQL and MongoDB GridFS. The [main README](../../README.md) contains the general startup instructions.
+**Reference:** workspace code as of 11 October 2026, application schema **13**. Native mode uses SQLite and local documents; Docker mode uses MySQL and MongoDB GridFS. Current schema and policy are described in the [API catalog](tehnical/api-app.md) and [operational workflows](prod/flussi-operativi.md); previous test counts remain historical evidence. The [main README](../../README.md) contains the general startup instructions.
 
 ## Reading paths
 
@@ -41,7 +41,7 @@ Examples use fictional data. Test procedures describe what to check and the expe
 | Implemented and usable | Code, APIs, and interface are available, subject to normal installation configuration | Projects, tasks/subtasks, Kanban, blockers, hours, users, groups, contracts/PDFs, analysis, rates, internal notifications, asset inventory |
 | Implemented; provider configuration required | Service and APIs exist; real integration requires credentials and external configuration | SMTP email delivery and Google OAuth connection |
 | Available through the API | Functionality is accessible through the application bridge; no dedicated screen exists yet | Google Calendar synchronization and event management |
-| Planned / partial | Requirement or release plan; any existing parts are identified in the roadmap | Weekly timesheet, approvals, full finance, multiple companies/currencies, event–project–hours links |
+| Planned / partial | Requirement or release plan; any existing parts are identified in the roadmap | General timesheet approval, full finance, multiple companies/currencies, event–project–hours links |
 | Historical evidence | Results of checks performed at an earlier stage, with their scope | Schema 3 UI testing |
 
 Plans also describe future tables and APIs: their presence in a planning document does not mean they exist in the software. The [implemented schema](tehnical/modello-dati.md) and [current API catalog](tehnical/api-app.md) identify the actual resources.

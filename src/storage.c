@@ -1,4 +1,6 @@
 #include "storage.h"
+#include "access_control.h"
+#include <json-c/json.h>
 #ifdef PUNTO_MYSQL
 #include "mysql_schema.h"
 #endif
@@ -10,7 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define SCHEMA_VERSION 10
+#define SCHEMA_VERSION 13
 #define JSON_LIMIT (4U * 1024U * 1024U)
 
 static Db *database;
@@ -135,6 +137,20 @@ bool storage_audit(Db *db, DbInt actor_id, const char *action,
 }
 
 #ifndef PUNTO_MYSQL
+static bool ensure_sqlite_column(const char *table, const char *name, const char *ddl) {
+    char sql[128];
+    int length = snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+    DbStmt *statement = NULL;
+    if (length <= 0 || (size_t)length >= sizeof(sql) || !prepare(database, &statement, sql)) return false;
+    int result;
+    bool exists = false;
+    while ((result = db_step(statement)) == DB_ROW) {
+        if (strcmp(column(statement, 1), name) == 0) exists = true;
+    }
+    db_finalize(statement);
+    return result == DB_DONE && (exists || db_exec(database, ddl, NULL, NULL, NULL) == DB_OK);
+}
+
 static bool migrate(void) {
     DbStmt *statement = NULL;
     /* Rebuild the referenced alert-rule table while preserving child rows.
@@ -484,6 +500,85 @@ static bool migrate(void) {
             !storage_audit(database,0,"system.migration","system",10,NULL,"{\"schema_version\":10}") ||
             db_exec(database,"PRAGMA user_version=10",NULL,NULL,NULL) != DB_OK) goto failure;
     }
+    if (version <= 11) {
+        if (!ensure_sqlite_column("jobs", "time_closed", "ALTER TABLE jobs ADD COLUMN time_closed INTEGER NOT NULL DEFAULT 0 CHECK(time_closed IN (0,1))") ||
+            !ensure_sqlite_column("jobs", "archived", "ALTER TABLE jobs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))") ||
+            !ensure_sqlite_column("jobs", "lifecycle_revision", "ALTER TABLE jobs ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 1 CHECK(lifecycle_revision>=1)") ||
+            !ensure_sqlite_column("time_entries", "revision", "ALTER TABLE time_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1)") ||
+            !ensure_sqlite_column("time_entries", "task_id", "ALTER TABLE time_entries ADD COLUMN task_id INTEGER REFERENCES job_tasks(id) ON DELETE SET NULL") ||
+            db_exec(database,
+            "CREATE INDEX IF NOT EXISTS time_entries_task ON time_entries(task_id,date,id);"
+            "CREATE TABLE IF NOT EXISTS time_entry_batches (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL REFERENCES users(id),request_key TEXT NOT NULL CHECK(length(request_key) BETWEEN 1 AND 128),"
+            "payload_hash TEXT NOT NULL CHECK(length(payload_hash)=64),ids_json TEXT NOT NULL,"
+            "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),UNIQUE(user_id,request_key));"
+            "CREATE TABLE IF NOT EXISTS time_corrections (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "entry_id INTEGER REFERENCES time_entries(id) ON DELETE SET NULL,original_entry_id INTEGER NOT NULL,"
+            "requester_id INTEGER NOT NULL REFERENCES users(id),entry_revision INTEGER NOT NULL CHECK(entry_revision>=1),"
+            "original_job_id INTEGER NOT NULL,original_date TEXT NOT NULL CHECK(length(original_date)=10),"
+            "original_minutes INTEGER NOT NULL CHECK(original_minutes BETWEEN 1 AND 1440),original_note TEXT NOT NULL,"
+            "before_json TEXT NOT NULL,job_id INTEGER NOT NULL,date TEXT NOT NULL CHECK(length(date)=10),"
+            "minutes INTEGER NOT NULL CHECK(minutes BETWEEN 1 AND 1440),note TEXT NOT NULL,reason TEXT NOT NULL,"
+            "delete_requested INTEGER NOT NULL DEFAULT 0 CHECK(delete_requested IN (0,1)),"
+            "status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','cancelled','conflict')),"
+            "decision_reason TEXT NOT NULL DEFAULT '',decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+            "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),decided_at TEXT);"
+            "CREATE INDEX IF NOT EXISTS time_corrections_requester ON time_corrections(requester_id,status,id);"
+            "CREATE INDEX IF NOT EXISTS time_corrections_entry ON time_corrections(entry_id,status,id);"
+            "CREATE TABLE IF NOT EXISTS user_work_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id),"
+            "mon INTEGER NOT NULL DEFAULT 480 CHECK(mon BETWEEN 0 AND 1440),"
+            "tue INTEGER NOT NULL DEFAULT 480 CHECK(tue BETWEEN 0 AND 1440),"
+            "wed INTEGER NOT NULL DEFAULT 480 CHECK(wed BETWEEN 0 AND 1440),"
+            "thu INTEGER NOT NULL DEFAULT 480 CHECK(thu BETWEEN 0 AND 1440),"
+            "fri INTEGER NOT NULL DEFAULT 480 CHECK(fri BETWEEN 0 AND 1440),"
+            "sat INTEGER NOT NULL DEFAULT 0 CHECK(sat BETWEEN 0 AND 1440),"
+            "sun INTEGER NOT NULL DEFAULT 0 CHECK(sun BETWEEN 0 AND 1440),"
+            "starts_on TEXT NOT NULL DEFAULT '0001-01-01' CHECK(length(starts_on)=10),UNIQUE(user_id,starts_on));"
+            "CREATE TABLE IF NOT EXISTS user_work_exceptions (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "user_id INTEGER NOT NULL REFERENCES users(id),date TEXT NOT NULL CHECK(length(date)=10),"
+            "expected_minutes INTEGER NOT NULL CHECK(expected_minutes BETWEEN 0 AND 1440),reason TEXT NOT NULL DEFAULT '',"
+            "UNIQUE(user_id,date));"
+            "CREATE TABLE IF NOT EXISTS business_holidays (date TEXT PRIMARY KEY CHECK(length(date)=10),name TEXT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS job_templates (id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL COLLATE NOCASE UNIQUE,"
+            "definition_json TEXT NOT NULL,created_by INTEGER NOT NULL REFERENCES users(id),"
+            "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')));"
+            "CREATE TABLE IF NOT EXISTS work_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id),"
+            "job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,"
+            "task_id INTEGER REFERENCES job_tasks(id) ON DELETE CASCADE,"
+            "blocker_id INTEGER REFERENCES job_blockers(id) ON DELETE CASCADE,"
+            "event_key TEXT NOT NULL CHECK(length(event_key) BETWEEN 1 AND 128),type TEXT NOT NULL CHECK(length(type) BETWEEN 1 AND 32),"
+            "title TEXT NOT NULL,message TEXT NOT NULL,work_date TEXT,read_at TEXT,"
+            "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),UNIQUE(user_id,event_key));"
+            "CREATE INDEX IF NOT EXISTS work_notifications_recipient ON work_notifications(user_id,read_at,id);",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",12,NULL,"{\"schema_version\":12}") ||
+            db_exec(database,"PRAGMA user_version=12",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (version <= 12) {
+        if (db_exec(database,
+            "CREATE TABLE IF NOT EXISTS access_groups (code TEXT PRIMARY KEY COLLATE BINARY,"
+            "name TEXT NOT NULL,builtin INTEGER NOT NULL DEFAULT 1 CHECK(builtin=1),"
+            "CHECK(code IN ('operator','manager','sales','finance')));"
+            "CREATE TABLE IF NOT EXISTS access_group_members (group_code TEXT NOT NULL COLLATE BINARY "
+            "REFERENCES access_groups(code),user_id INTEGER NOT NULL REFERENCES users(id),"
+            "PRIMARY KEY(group_code,user_id),CHECK(group_code IN ('sales','finance')));"
+            "CREATE INDEX IF NOT EXISTS access_group_members_user ON access_group_members(user_id,group_code);"
+            "INSERT OR IGNORE INTO access_groups(code,name,builtin) VALUES"
+            "('operator','Operatori',1),('manager','Gestori',1),('sales','Commerciali',1),('finance','Finance',1);"
+            "CREATE TRIGGER IF NOT EXISTS access_groups_no_update BEFORE UPDATE ON access_groups "
+            "BEGIN SELECT RAISE(ABORT,'functional groups are immutable'); END;"
+            "CREATE TRIGGER IF NOT EXISTS access_groups_no_delete BEFORE DELETE ON access_groups "
+            "BEGIN SELECT RAISE(ABORT,'functional groups are immutable'); END;",
+            NULL,NULL,NULL) != DB_OK ||
+            !storage_audit(database,0,"system.migration","system",13,NULL,"{\"schema_version\":13}") ||
+            db_exec(database,"PRAGMA user_version=13",NULL,NULL,NULL) != DB_OK) goto failure;
+    }
+    if (db_exec(database,
+        "CREATE TABLE IF NOT EXISTS oidc_groups ("
+        "issuer TEXT NOT NULL COLLATE BINARY,subject TEXT NOT NULL COLLATE BINARY,"
+        "group_id INTEGER NOT NULL UNIQUE REFERENCES organization_groups(id),"
+        "active INTEGER NOT NULL CHECK(active IN (0,1)),PRIMARY KEY(issuer,subject));",
+        NULL,NULL,NULL) != DB_OK) goto failure;
     if (!prepare(database, &statement, "PRAGMA foreign_key_check") || db_step(statement) != DB_DONE) goto failure;
     db_finalize(statement); statement = NULL;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) {
@@ -541,6 +636,15 @@ static bool migrate(void) {
     if (version <= 9 &&
         (!storage_audit(database,0,"system.migration","system",10,NULL,"{\"schema_version\":10}") ||
          db_exec(database,"UPDATE schema_metadata SET version=10 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 11 &&
+        (!storage_audit(database,0,"system.migration","system",12,NULL,"{\"schema_version\":12}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=12 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
+    if (version <= 12 &&
+        (db_exec(database,"INSERT IGNORE INTO access_groups(code,name,builtin) VALUES"
+                          "('operator','Operatori',1),('manager','Gestori',1),"
+                          "('sales','Commerciali',1),('finance','Finance',1)",NULL,NULL,NULL) != DB_OK ||
+         !storage_audit(database,0,"system.migration","system",13,NULL,"{\"schema_version\":13}") ||
+         db_exec(database,"UPDATE schema_metadata SET version=13 WHERE id=1",NULL,NULL,NULL) != DB_OK)) goto failure;
     if (db_exec(database, "COMMIT", NULL, NULL, NULL) == DB_OK) return true;
 failure:
     db_finalize(statement);
@@ -648,7 +752,48 @@ static bool query_fields(const char *query, DbInt *limit,
     return true;
 }
 
-static void list_audit(const char *query, WorkspaceResponse *response) {
+static DbInt audit_subject(const char *raw) {
+    struct json_object *obj = raw && *raw ? json_tokener_parse(raw) : NULL, *value = NULL;
+    DbInt subject = 0;
+    if (obj && json_object_is_type(obj, json_type_object)) {
+        if (json_object_object_get_ex(obj, "requester_id", &value) || json_object_object_get_ex(obj, "user_id", &value))
+            subject = json_object_get_int64(value);
+    }
+    if (obj) json_object_put(obj);
+    return subject;
+}
+
+/* Job audit snapshots remain complete on disk. The reading policy removes
+   monetary/contract data and unscoped historical job totals from the API. */
+static void audit_redact(struct json_object *obj, const AccessPolicy *policy, bool time_record, unsigned depth) {
+    if (!obj || depth > 32) return;
+    if (json_object_is_type(obj, json_type_array)) {
+        for (size_t i = 0; i < json_object_array_length(obj); i++) audit_redact(json_object_array_get_idx(obj, i), policy, time_record, depth+1);
+    } else if (json_object_is_type(obj, json_type_object)) {
+        if (!policy->sales && !policy->finance) {
+            const char *keys[] = {"contract_id","contract_code","contract_title","supplier_name","value_cents"};
+            for (size_t i=0;i<sizeof(keys)/sizeof(keys[0]);i++) json_object_object_del(obj,keys[i]);
+        }
+        if (!policy->finance) {
+            const char *keys[] = {"hourly_cents","cost_cents","estimated_cost_cents","known_value_cents"};
+            for (size_t i=0;i<sizeof(keys)/sizeof(keys[0]);i++) json_object_object_del(obj,keys[i]);
+        }
+        if (!time_record) {
+            const char *keys[] = {"minutes","total_minutes","time_entries","users_with_hours","deleted_minutes","deleted_time_entries"};
+            for (size_t i=0;i<sizeof(keys)/sizeof(keys[0]);i++) json_object_object_del(obj,keys[i]);
+        }
+        json_object_object_foreach(obj,key,value) { (void)key; audit_redact(value,policy,time_record,depth+1); }
+    }
+}
+
+static void audit_snapshot(Json *json, const char *raw, const AccessPolicy *policy, bool time_record) {
+    struct json_object *obj = raw && *raw ? json_tokener_parse(raw) : NULL;
+    if (!obj) { append(json,"null"); return; }
+    audit_redact(obj,policy,time_record,0);
+    append(json,json_object_to_json_string_ext(obj,JSON_C_TO_STRING_PLAIN)); json_object_put(obj);
+}
+
+static void list_audit(const char *query, DbInt actor, const AccessPolicy *policy, WorkspaceResponse *response) {
     DbInt limit = 30, before_id = 0;
     char type[32] = "";
     if (!query_fields(query, &limit, &before_id, type)) {
@@ -666,13 +811,24 @@ static void list_audit(const char *query, WorkspaceResponse *response) {
     }
     Json json = {0};
     append(&json, "{\"events\":[");
-    DbInt count = 0, last_id = 0;
+    DbInt count = 0, scanned = 0, last_id = 0;
     int result;
     bool more = false;
     while ((result = db_step(statement)) == DB_ROW) {
-        if (count == limit) { more = true; break; }
-        if (count++) append(&json, ",");
+        if (scanned++ == limit) { more = true; break; }
         last_id = db_column_int64(statement, 0);
+        const char *entity = column(statement,6);
+        bool time_record = !strcmp(entity,"time_entry") || !strcmp(entity,"time_correction");
+        if ((!strcmp(entity,"contract") || !strcmp(entity,"supplier") || !strcmp(entity,"contract_document")) && !policy->sales && !policy->finance) continue;
+        if (!strcmp(entity,"labor_rate") && !policy->finance) continue;
+        if (time_record) {
+            DbInt subject=audit_subject(column(statement,9));
+            if (!subject) subject=audit_subject(column(statement,8));
+            int visible=subject ? access_policy_can_view_time(database,actor,subject,policy->manager) : 0;
+            if (visible < 0) { db_finalize(statement);free(json.text);error(response,500,"Impossibile leggere lo storico. Riprova.");return; }
+            if (!visible) continue;
+        }
+        if (count++) append(&json, ",");
         append(&json, "{\"id\":"); integer(&json, last_id);
         append(&json, ",\"created_at\":"); string(&json, column(statement, 1));
         append(&json, ",\"actor_id\":");
@@ -684,9 +840,9 @@ static void list_audit(const char *query, WorkspaceResponse *response) {
         append(&json, ",\"entity_type\":"); string(&json, column(statement, 6));
         append(&json, ",\"entity_id\":"); integer(&json, db_column_int64(statement, 7));
         append(&json, ",\"before\":");
-        append(&json, db_column_type(statement, 8) == DB_NULL ? "null" : column(statement, 8));
+        audit_snapshot(&json,column(statement,8),policy,time_record);
         append(&json, ",\"after\":");
-        append(&json, db_column_type(statement, 9) == DB_NULL ? "null" : column(statement, 9));
+        audit_snapshot(&json,column(statement,9),policy,time_record);
         append(&json, "}");
     }
     db_finalize(statement);
@@ -701,13 +857,18 @@ static void list_audit(const char *query, WorkspaceResponse *response) {
 }
 
 bool storage_handle(const char *method, const char *target, const char *query,
-                    const char *role, WorkspaceResponse *response) {
+                    DbInt actor_id, const char *role, WorkspaceResponse *response) {
     if (!method || !target || !response || strcmp(target, "/api/audit") != 0) return false;
     response->status = 0; response->body = NULL;
     if (!role || strcmp(role, "manager") != 0)
         error(response, 403, "Solo i gestori possono consultare lo storico delle modifiche.");
     else if (strcmp(method, "GET") != 0) error(response, 405, "Metodo non consentito.");
     else if (!database) error(response, 500, "Impossibile leggere lo storico. Riprova.");
-    else list_audit(query, response);
+    else {
+        AccessPolicy policy;
+        if (access_policy_resolve(database,actor_id,role,&policy)!=1 || !policy.manager)
+            error(response,403,"Solo i gestori possono consultare lo storico delle modifiche.");
+        else list_audit(query,actor_id,&policy,response);
+    }
     return true;
 }

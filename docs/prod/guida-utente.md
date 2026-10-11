@@ -2,7 +2,7 @@
 
 **Italiano** | [English](../en/prod/guida-utente.md)
 
-Questa guida descrive il percorso dell’**Operatore** nell’interfaccia attuale. Le azioni amministrative sono nella [guida del gestore](guida-gestore.md). I nomi in grassetto corrispondono alle etichette dei comandi.
+Questa guida descrive il percorso dell’**Operatore** nell’interfaccia attuale. Per registro settimanale, rettifiche, ore sulle attività e vista personale consulta i [flussi operativi migliorati](flussi-operativi.md). Le azioni amministrative sono nella [guida del gestore](guida-gestore.md). I nomi in grassetto corrispondono alle etichette dei comandi.
 
 ## Accedere e uscire
 
@@ -22,7 +22,9 @@ In alto sono visibili il tuo nome, email e profilo. Usa **Esci** al termine dell
 | --- | --- |
 | **Commesse** | Consultare le commesse a cui hai accesso e il loro stato |
 | **Attività e blocchi** | Consultare la bacheca della commessa, aggiornare le attività assegnate e segnalare impedimenti quando abilitato |
-| **Registro ore** | Inserire e consultare il tuo tempo per giornata |
+| **Registro ore** | Inserire e consultare il tuo tempo per giornata o settimana, copiare la settimana precedente e richiedere rettifiche |
+| **La mia giornata** | Ritrovare attività assegnate, blocchi e ore di oggi |
+| **Orari e assenze** | Consultare orari personali, assenze e festività configurati dal gestore |
 | **Analisi** | Riepilogare le tue ore su un intervallo, per commessa o per utente |
 | **Notifiche** | Leggere gli avvisi indirizzati al tuo account |
 
@@ -40,7 +42,7 @@ Su schermi piccoli le tabelle possono scorrere orizzontalmente nel loro riquadro
 
 L’elenco mostra soltanto le commesse attualmente autorizzate e quelle comuni a tutti. Una commessa assegnata con ruolo **Lettore** può essere consultata ma non usata per nuove registrazioni. Il ruolo **Collaboratore**, o un ruolo equivalente configurato dal gestore, permette anche di registrare ore.
 
-Le ore visualizzate nell’elenco delle commesse sono **le tue ore complessive**, su tutte le date. Per il totale di un periodo usa Analisi. Lo stato della commessa non determina da solo la possibilità di registrare ore: se la procedura aziendale richiede un blocco, il gestore deve intervenire sulle abilitazioni.
+Le ore visualizzate nell’elenco delle commesse sono **le tue ore complessive**, su tutte le date. Per il totale di un periodo usa Analisi. Le etichette di stato non bloccano da sole le ore; la chiusura o l’archiviazione eseguita dal gestore impedisce invece nuove registrazioni, conservando lo storico.
 
 ## Seguire attività e impedimenti
 
@@ -53,7 +55,7 @@ Le ore visualizzate nell’elenco delle commesse sono **le tue ore complessive**
 
 Il ruolo Lettore consente la sola consultazione. Perdere l’abilitazione impedisce di aggiornare un’attività anche se risulti ancora responsabile. Il gestore può riassegnarla. Le descrizioni di attività e blocchi sono condivise con chi può leggere quella commessa.
 
-Gli stati dell’attività, dei suoi figli e dei blocchi non si aggiornano a vicenda: risolvere un blocco non sposta automaticamente l’attività. Le ore si registrano ancora sulla commessa; il campo **Attività svolta / nota** è testo libero e non collega la registrazione a una scheda della bacheca.
+Gli stati dell’attività, dei suoi figli e dei blocchi non si aggiornano a vicenda: risolvere un blocco non sposta automaticamente l’attività. Le ore appartengono alla commessa e possono collegare facoltativamente una sua attività. Il campo **Attività svolta / nota** rimane testo libero.
 
 Se un’altra persona ha già salvato una modifica, l’app segnala il conflitto. Non ripetere il salvataggio della vecchia versione: usa **Chiudi e ricarica la versione aggiornata**, controlla il contenuto corrente e riporta le variazioni ancora necessarie. La bozza chiusa non viene conservata. **Aggiorna** rilegge attività e blocchi della commessa.
 
@@ -97,9 +99,9 @@ Le commesse comuni non richiedono un’abilitazione personale e rimangono dispon
 3. Premi **Oggi** per tornare alla giornata corrente del browser.
 4. Leggi le registrazioni e il totale della giornata.
 
-Il registro rimane personale. Se perdi l’abilitazione a una commessa, le tue registrazioni già salvate restano consultabili finché la commessa esiste. L’eliminazione definitiva della commessa, eseguita dal gestore, rimuove invece anche tutte le ore collegate, oltre alle attività e ai blocchi.
+Il registro parte dalle proprie ore. Il gestore può selezionare un membro della propria squadra per consultarne giorno e settimana in sola lettura; non può modificare direttamente le righe altrui. Se perdi l’abilitazione a una commessa, le tue registrazioni già salvate restano consultabili finché la commessa esiste. L’eliminazione definitiva della commessa, eseguita dal gestore, rimuove invece anche tutte le ore collegate, oltre alle attività e ai blocchi.
 
-Come Operatore non puoi modificare o eliminare una registrazione salvata. In caso di errore contatta il gestore indicando data, commessa, durata e correzione richiesta. Non inserire una seconda riga per simulare una correzione: aumenterebbe il totale. La gestione delle richieste di rettifica e dell’approvazione è ancora pianificata; il gestore non dispone oggi di un editor generico delle ore altrui.
+Come Operatore puoi usare **Richiedi rettifica** su una tua registrazione: proponi la correzione o la cancellazione e indica il motivo. La richiesta non cambia le ore finché un gestore diverso dall’autore non la approva. La coda conserva originale, proposta, decisione e conflitti. Non inserire una seconda riga per simulare una correzione: aumenterebbe il totale. Il gestore non dispone di un editor generico delle ore altrui.
 
 ## Analizzare il proprio lavoro
 
@@ -128,7 +130,7 @@ Sono mostrate le ultime 100 notifiche accessibili. Il contatore indica quelle no
 I controlli disponibili sono:
 
 - **Commessa inesistente**: un tentativo di salvare ore su una commessa inesistente o eliminata è stato respinto; quelle ore non sono state salvate.
-- **Ore giornaliere mancanti**: una giornata dal lunedì al venerdì ha meno di 8 ore dopo la tolleranza prevista. La regola non tiene ancora conto di festività, ferie o part time.
+- **Ore giornaliere mancanti**: una giornata ha meno minuti dell’orario atteso, dopo la tolleranza prevista. Il controllo considera orari individuali, festività ed eccezioni personali; senza configurazione usa 8 ore dal lunedì al venerdì.
 
 La lettura non corregge automaticamente la registrazione e non elimina la notifica. Il messaggio conserva il contesto rilevato quando il controllo è stato eseguito. Se hai poi integrato le ore, confronta la notifica con il registro aggiornato.
 
@@ -145,8 +147,8 @@ La lettura non corregge automaticamente la registrazione e non elimina la notifi
 | Conflitto durante una modifica di attività o blocchi | Rileggi la versione aggiornata e confrontala con le tue variazioni; la versione precedente non viene sovrascritta |
 | Durata rifiutata | Usa minuti interi, controlla il formato e il totale già presente nella giornata |
 | Sessione terminata | Effettua nuovamente il login; una bozza non confermata non è una registrazione salvata |
-| Errore o attesa durante un salvataggio | Prima di ripetere l’invio, controlla nel registro se la riga è già comparsa; la registrazione ore non dispone ancora della deduplicazione generale prevista dalla roadmap |
-| Avviso di 8 ore durante ferie o festività | Il controllo attuale usa una soglia fissa: segnala al gestore il contesto, senza inserire lavoro non svolto |
+| Errore o attesa durante un salvataggio | Per un inserimento singolo verifica il registro prima di ripetere l’invio. Il salvataggio multiplo settimanale conserva una ricevuta per riconoscere i tentativi ripetuti della stessa richiesta |
+| Avviso di ore mancanti durante ferie o festività | Controlla Orari e assenze e segnala al gestore eventuali dati mancanti; non inserire lavoro non svolto |
 | Manca una schermata Calendario | La sincronizzazione è predisposta tramite API, ma la schermata e il collegamento evento–commessa sono ancora da implementare |
 
-Le regole complete sono in [Processi e regole](processi-e-regole.md). La [roadmap](roadmap.md) elenca le evoluzioni previste per griglia settimanale, copie, rettifiche e calendario.
+Le regole complete sono in [Processi e regole](processi-e-regole.md). I [flussi operativi migliorati](flussi-operativi.md) spiegano griglia settimanale, copia della settimana precedente, rettifiche e orari. La [roadmap](roadmap.md) distingue le estensioni ancora previste.

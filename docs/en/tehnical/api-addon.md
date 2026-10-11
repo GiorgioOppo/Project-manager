@@ -190,6 +190,14 @@ Ordering is by event ID, not date. Pagination is not an immutable snapshot acros
 
 Recurring series remain masters with exceptions; **they are not expanded**. A master may appear even if its original start precedes the filter; `status:cancelled` tombstones may have no times. Do not interpret item counts as the number of appointments in the period. Editing the master ID may affect the entire series; this version does not implement a UI choice between occurrence and series.
 
+### Exact lookups and Ticket delegation
+
+`GET /api/calendar/event?event_id=…` returns `{calendar_id,event}` from the personal cache, including the ETag; `GET /api/calendar/change?idempotency_key=…` returns one persistent operation. The corresponding private routes are `/v1/users/<id>/event` and `/change`. An absent resource returns `404`; this does not prove that a remote write never happened.
+
+Standard Ticket delegation remains limited to read-only catalog access. Starting a separate connection with calendar access requires confirmation in Punto and produces `calendar_access:true` in the delegation scope, bound to the same session and user. The delegated `/api/integrations/tickets/calendar/…` routes expose reads of status, events and operations, and create/update/delete writes. They do not expose OAuth, calendar selection or disconnection. The server derives the user from the grant; an optional `job_id` authorizes the project context, is checked against current permissions and is removed before calling the private service. No private token or Google secret is sent to Ticket or the browser.
+
+Ticket persists the intent before sending it and associates the Punto owner, calendar and event with the local schedule. Looking up the exact key avoids relying on only the latest 100 operations. If the history no longer exists after disconnection, the outcome remains unverified: a new copy is not created automatically. Google event data is returned only to its owner with an active, matching calendar delegation; internal appointments remain shared according to ticket permissions.
+
 ### Queue, conflicts and retries
 
 A new mutation responds before remote execution:
@@ -204,7 +212,7 @@ A new mutation responds before remote execution:
 }
 ```
 
-`GET changes` returns `items` with `id`, `idempotency_key`, `event_id`, `state`, `error`, `attempts`, `replayed:false`. Maximum 100 recent operations in descending ID order and 90 KiB of data; `truncated:true` signals more results, but no cursor is yet available for browsing the full history. Replaying the same request returns the individual outcome with `replayed:true`.
+`GET changes` returns `items` with `id`, `idempotency_key`, `event_id`, `calendar_id`, `state`, `error`, `attempts`, `replayed:false`. Maximum 100 recent operations in descending ID order and 90 KiB of data; `truncated:true` signals more results, but no cursor is yet available for browsing the full history. Replaying the same request returns the individual outcome with `replayed:true`.
 
 | State | Meaning and handling |
 | --- | --- |

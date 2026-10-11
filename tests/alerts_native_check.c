@@ -82,3 +82,6 @@ int main(int argc, char **argv) {
     }
     return 0;
 }
+
+/* This isolated alert fixture uses local accounts only. */
+bool oidc_users_managed(void) { return false; }

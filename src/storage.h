@@ -16,6 +16,6 @@ bool storage_audit(Db *db, DbInt actor_id, const char *action,
                    const char *entity_type, DbInt entity_id,
                    const char *before_json, const char *after_json);
 bool storage_handle(const char *method, const char *target, const char *query,
-                    const char *role, WorkspaceResponse *response);
+                    DbInt actor_id, const char *role, WorkspaceResponse *response);
 
 #endif

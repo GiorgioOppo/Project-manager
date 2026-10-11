@@ -37,7 +37,7 @@
   };
   loadAuthConfig();
 
-  const linkedRoute = /^#ticket-connect\?state=[a-f0-9]{64}$/.test(location.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(location.hash);
+  const linkedRoute = /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(location.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(location.hash) || location.hash === "#calendar";
   if (linkedRoute) {
     try { sessionStorage.setItem("punto.ticket.return", JSON.stringify({ hash: location.hash, at: Date.now() })); } catch { /* Il login locale conserva comunque il frammento. */ }
     fetch("/api/session", { credentials: "same-origin", cache: "no-store" }).then((response) => response.json()).then((session) => {
@@ -157,7 +157,7 @@
         else localStorage.removeItem(rememberedEmailKey);
       } catch (_) { /* Saving an email is optional and must not block login. */ }
       status.textContent = t("Accesso completato. Apertura del tuo spazio.");
-      const reportHash = (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(window.location.hash) || /^#ticket-connect\?state=[a-f0-9]{64}$/.test(window.location.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(window.location.hash))
+      const reportHash = (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(window.location.hash) || /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(window.location.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(window.location.hash) || window.location.hash === "#calendar")
         && window.location.hash.length <= 2048 ? window.location.hash : "";
       window.location.assign(window.PuntoI18n ? window.PuntoI18n.url("/app" + reportHash) : "/app" + reportHash);
     } catch (error) {

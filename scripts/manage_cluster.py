@@ -79,11 +79,14 @@ def ensure_secrets(env_file):
 
 
 class Cluster:
-    def __init__(self, env_file, context, *, keycloak=False, tickets=False,
+    def __init__(self, env_file, context, *, keycloak=False, tickets=False, keycloak_groups=False,
                  keycloak_env_file=None, tickets_env_file=None):
+        if keycloak_groups and not keycloak:
+            raise ClusterError("--keycloak-groups richiede --keycloak.")
         self.env_file = env_file.resolve()
         self.keycloak = keycloak
         self.tickets = tickets
+        self.keycloak_groups = keycloak_groups
         env_files = [self.env_file]
         compose_files = [PROJECT / "compose.yaml"]
         self.values = read_env(self.env_file)
@@ -95,6 +98,8 @@ class Cluster:
             compose_files.append(PROJECT / "compose.keycloak.yaml")
             if tickets:
                 compose_files.append(PROJECT / "compose.tickets-keycloak.yaml")
+        if keycloak_groups:
+            compose_files.append(PROJECT / "compose.keycloak-groups.yaml")
         for selected in env_files[1:]:
             if not selected.is_file():
                 raise ClusterError("File ambiente dell'overlay non trovato: " + str(selected) +
@@ -171,6 +176,8 @@ class Cluster:
             missing.append("--keycloak")
         if "tickets" in configured and not getattr(self, "tickets", False):
             missing.append("--tickets")
+        if "keycloak-groups-sync" in configured and not getattr(self, "keycloak_groups", False):
+            missing.append("--keycloak-groups")
         if missing:
             raise ClusterError("Overlay già presenti nel progetto: ripeti l'operazione selezionando " +
                 " ".join(missing) + ". I container arrestati sono inclusi nel controllo; "
@@ -418,6 +425,7 @@ def main():
     parser.add_argument("--env-file", type=Path, default=PROJECT / ".env.docker")
     parser.add_argument("--docker-context", default=os.environ.get("DOCKER_CONTEXT", "desktop-linux" if sys.platform == "darwin" else ""))
     parser.add_argument("--keycloak", action="store_true", help="Carica l'overlay Keycloak e il suo ambiente preparato")
+    parser.add_argument("--keycloak-groups", action="store_true", help="Conserva la sincronizzazione gruppi Keycloak; richiede --keycloak")
     parser.add_argument("--tickets", action="store_true", help="Carica anche Punto Tickets e, se selezionato, il suo overlay Keycloak")
     parser.add_argument("--keycloak-env-file", type=Path, help="Ambiente Keycloak alternativo, usato solo con --keycloak")
     parser.add_argument("--tickets-env-file", type=Path, help="Ambiente Tickets alternativo, usato solo con --tickets")
@@ -425,6 +433,8 @@ def main():
     args = parser.parse_args()
     lock = None
     try:
+        if args.keycloak_groups and not args.keycloak:
+            raise ClusterError("--keycloak-groups richiede --keycloak.")
         if args.keycloak_env_file and not args.keycloak:
             raise ClusterError("--keycloak-env-file richiede la selezione esplicita --keycloak.")
         if args.tickets_env_file and not args.tickets:
@@ -439,6 +449,7 @@ def main():
         if args.action == "init":
             ensure_secrets(args.env_file)
         cluster = Cluster(args.env_file, args.docker_context, keycloak=args.keycloak, tickets=args.tickets,
+                          keycloak_groups=args.keycloak_groups,
                           keycloak_env_file=args.keycloak_env_file, tickets_env_file=args.tickets_env_file)
         if args.action == "backup":
             online = [node for node in NODES if cluster.local_state(node) == "ONLINE"]

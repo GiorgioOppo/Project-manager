@@ -1,5 +1,7 @@
 # punto — Projects and time tracking in C
 
+[Improved operational workflows (schema 13)](docs/en/prod/flussi-operativi.md)
+
 **English** | [Italiano](README.it.md)
 
 Web app in Italian, English, Simplified Chinese, Spanish, French and German, with an HTTP server in C and a responsive HTML, CSS and JavaScript interface, without npm packages. It manages users, hierarchical groups, project roles, suppliers, contracts and original PDFs, tasks and subtasks, a Kanban board, a blocker register, time entries, daily alerts and change history.
@@ -401,6 +403,10 @@ The server checks permissions on every request, including when a user attempts t
 
 Passwords are stored as PBKDF2-HMAC-SHA256 derivations with a random salt. Sessions use random tokens and HttpOnly/SameSite cookies, last 8 hours or 30 days with “Remember me,” and end when the server restarts. For authorized HTTPS origins, the cookie also includes `Secure`; the TLS certificate is managed by Nginx Proxy Manager.
 
+Local login allows eight failed attempts per normalized email in a fixed 60-second window (twenty in Ticket). Further attempts return `429` before password verification and do not extend the window; failures on another account do not consume that allowance. Punto retains at most four sessions per user, replacing only that user's oldest session. Each Punto session can retain two Ticket grants; logout, expiry or replacement revokes its grants. Anonymous SSO starts use encrypted browser cookies rather than shared pending slots, while verified callbacks retain replay protection until the five-minute transaction expires.
+
+Punto and Ticket receive and send HTTP through a bounded, nonblocking connection loop. Absolute request and response deadlines are five seconds in Punto and ten seconds in Ticket. Route-specific payload limits are checked as soon as headers arrive, and new incomplete connections cannot evict responses already being sent.
+
 ## Groups and project roles
 
 The **Groups and roles** tab, reserved for managers, displays a group tree with the members of each group. A group has a name and an optional parent group; a user can belong to several groups. Up to 200 groups and 16 levels are allowed, counting the root as the first level. The server rejects cycles and moves that exceed the maximum depth. A group can be deleted only when it has no members, subgroups, or project permissions.
@@ -514,15 +520,17 @@ The `/api/calendar/oauth/callback` callback inherits the NPM Proxy Host's access
 
 **Google OAuth remains unconfigured in the local stack.** Enabling it requires the Calendar API to be enabled in your Google Cloud project, a Web OAuth client, `GOOGLE_CLIENT_ID`, `GOOGLE_REDIRECT_URI`, and the client secret in the local `data/addon-secrets/google-client-secret` file. The redirect URI must exactly match the one registered in Google Cloud and end with `/api/calendar/oauth/callback`; use HTTPS in production. Do not put the client secret in `.env.docker`, source code, or messages. Each user must then grant consent. [Google OAuth configuration](https://developers.google.com/identity/protocols/oauth2/web-server), [Calendar scopes](https://developers.google.com/workspace/calendar/api/auth)
 
-This integration exposes APIs: the Calendar screen and the event → project/hours link are later developments. It does not automatically create work entries from appointments. The [Calendar manual](calendar-addon/README.md) describes the API contract, queue states, limits, and provider activation.
+The **Calendar** screen in Punto lets each user connect Google, select a writable calendar, request synchronization and inspect events and queued operations. The separate **Ticket** app provides a weekly intervention agenda with project and asset filters; ticket interventions can be explicitly synchronized to the connected user’s Google calendar. Calendar access requires a separate session delegation consent, while the standard catalog delegation remains read-only. Changes in Google are checked against the linked event and its ETag rather than silently overwriting ticket scheduling. It does not automatically create work entries from appointments. See the [Ticket calendar workflow](ticket-app/README.md#agenda-projects-and-google-calendar). The [Calendar manual](calendar-addon/README.md) describes the API contract, queue states, limits, and provider activation.
 
 ### Asset inventory
 
-The module manages IT devices, network equipment, physical assets, software, and licenses with manual relationships. It includes filtered CSV export, import with a preview and atomic confirmation, configurable deadline alerts, and automatic backups. Alerts require application schema 10; the separate inventory database migrates to version 5. The `inventory_return` rules report overdue returns, and `inventory_verification` reports assets never verified or due for re-verification, with `verification_days` defaulting to 90 days (1–365).
+The module manages IT devices, network equipment, physical assets, software, and licenses with manual relationships. It includes filtered CSV export, import with a preview and atomic confirmation, configurable deadline alerts, and automatic backups. Alerts require application schema 10; the separate inventory database migrates to version 6. The `inventory_return` rules report overdue returns, and `inventory_verification` reports assets never verified or due for re-verification, with `verification_days` defaulting to 90 days (1–365).
 
 **`inventory`** is a separate C application, with asset records, statuses, assignment, purchase, warranty, and persistent history. The app's **Asset inventory** tab lets all authenticated users view the catalog and revisions; Managers can create and edit records. The asset tag is unique, and changes use a version to prevent concurrent overwrites. Use the Retired status to retire an asset; deletion is not available.
 
-The **People** and **Identity** registries distinguish real individuals from system accounts, independently of Punto login accounts. Links are many-to-many and support shared accounts. People and identities can be linked directly to assets, with a role, notes, history, and filters shared with the dashboard and export. Inventory schema 5 migrates earlier versions while preserving data; the [operational guide](docs/en/prod/asset-inventory.md#people-and-identities) describes the workflow.
+The **People** and **Identity** registries distinguish real individuals from system accounts, independently of Punto login accounts. Links are many-to-many and support shared accounts. People and identities can be linked directly to assets, with a role, notes, history, and filters shared with the dashboard and export. **View assets** and `person_id`/`identity_id` filters use only these direct links, separately from operational assignments, checkouts, and license allocations. The [operational guide](docs/en/prod/asset-inventory.md#people-and-identities) describes the workflow.
+
+Operational assignment and checkout support registered people without a Punto account, alongside legacy Punto users. Licenses support person or identity recipients for `per_user`, `concurrent`, and `site`; the latter two also accept devices, while `per_device` requires a device. Legacy text assignees remain supported. The server stores recipient snapshots, and shared identities consume only the allocation quantity, without multiplying by their members. Inventory schema 6 migrates earlier versions while preserving IDs, legacy assignments, and history; it creates no implicit login mapping, person–identity membership, or direct asset links. Rollback requires a backup compatible with the earlier image; changing `PRAGMA user_version` is insufficient.
 
 The service listens on `https://inventory-api:8092` (`172.30.80.2`) and accepts only the app at `172.30.80.10`, with a dedicated token and TLS verification. Its sole `inventory_api` network provides no access to the Internet, Squid, or the app's databases. The `inventory_addon_data` volume contains an independent SQLite database, which must be backed up separately from the MySQL backup. Compose keeps verified automatic copies every 24 hours in the separate `inventory_addon_backups` volume, retaining the last 14. It does not perform autodiscovery or network scans.
 
@@ -574,7 +582,7 @@ The current base supports up to 200 users, 200 groups, 100 project roles, 1000 p
 
 ## Database tables
 
-In the MySQL backend, the application database, which defaults to `punto`, contains **25 InnoDB tables**; the current schema is **version 10**. Step 9 adds the `inventory_due` type and `days_before` lead time to alert rules; step 10 adds `inventory_return`, `inventory_verification` and `verification_days` (1–365, default 90), without new application tables and preserving IDs, foreign keys and history. Initialization also includes `oidc_identities`, which retains the permanent link between provider identities and local users without changing the version number. Every table has a primary key; relationships use foreign keys without `CASCADE` operations.
+In the MySQL backend, the application database, which defaults to `punto`, uses current schema **13**. Steps 9 and 10 extend inventory alerts; step 11 adds managed company groups; step 12 introduces corrections, schedules, operational notifications, templates and project lifecycle; step 13 introduces `access_groups` and `access_group_members` for explicit Sales and Finance profiles. Migrations do not automatically assign these profiles to managers. Every table has a primary key and foreign-key relationships; new resources declare their own deletion behavior. The [current API catalog](docs/en/tehnical/api-app.md) describes the enforced policy.
 
 | Table | Main data and structure |
 | --- | --- |
@@ -592,6 +600,11 @@ In the MySQL backend, the application database, which defaults to `punto`, conta
 | `job_roles` | ID, unique code, name, `can_log_time` and `builtin`; predefined Viewer and Contributor roles |
 | `job_group_grants` | Composite `(job_id,group_id)` key, role reference and optional validity dates |
 | `time_entries` | `BIGINT` entry ID, references to project and user, historical email copy, day, minutes and note |
+| `access_groups`, `access_group_members` | Predefined functional profiles and explicit Sales/Finance membership, separate from organizational groups |
+| `oidc_groups` | Links managed company groups to the local organization tree |
+| `time_entry_batches`, `time_corrections` | Idempotency receipts and corrections with original, proposal and decision |
+| `user_work_schedules`, `user_work_exceptions`, `business_holidays` | Effective-dated schedules, personal exceptions and holidays |
+| `job_templates`, `work_notifications` | Setup templates and personal operational feed |
 | `labor_rates` | `BIGINT` ID, immutable `user_id` user reference, `hourly_cents BIGINT` rate, `EUR` currency, validity dates; unique `(user_id,starts_on)` |
 | `alert_rules` | Rule, owning manager, type, local time, enabled state and persistent last check |
 | `alert_rule_users`, `alert_rule_emails` | Recipients for each rule, with composite keys and unique email addresses |
@@ -605,7 +618,7 @@ In the MySQL backend, the application database, which defaults to `punto`, conta
 
 Text uses `utf8mb4`; emails and codes are unique without case sensitivity. Days and intervals are ISO `YYYY-MM-DD` strings, durations are whole minutes and history JSON is text. Triggers protect history from updates and deletions and prevent changing the user already associated with an entry. The complete definition is in `src/mysql_schema.c`.
 
-SQLite retains **23 application tables**, plus the internal `sqlite_sequence` table, and uses `PRAGMA user_version=10` for the schema version. `schema_metadata` and `cluster_write_guard` belong to MySQL mode; NPM's SQLite database contains only reverse proxy configuration and is not a replica of application data. The email addon uses a separate SQLite database with a single `deliveries` table in its own volume, dedicated to outcomes and deduplication.
+SQLite retains application tables, plus the internal `sqlite_sequence` table, and uses `PRAGMA user_version=13` for the schema version. `schema_metadata` and `cluster_write_guard` belong to MySQL mode; NPM's SQLite database contains only reverse proxy configuration and is not a replica of application data. The email addon uses a separate SQLite database with a single `deliveries` table in its own volume, dedicated to outcomes and deduplication.
 
 The MongoDB database, which defaults to **`punto_documents`**, contains PDFs in the `contract_pdfs` GridFS bucket:
 

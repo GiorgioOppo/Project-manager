@@ -1,10 +1,12 @@
 # Product documentation
 
+[Improved operational workflows (schema 13)](flussi-operativi.md)
+
 [Italiano](../../prod/README.md) | **English**
 
 [General index](../README.md) · [Technical documentation](../tehnical/README.md) · [Project README](../../../README.md)
 
-These guides explain how to use punto, organize access to projects, tasks and blockers, and interpret hours, analyses and notifications. They refer to the product implemented as of **11 October 2026**, schema **10**. Development plans are clearly identified as such.
+These guides explain how to use punto, organize access to projects, tasks and blockers, and interpret hours, analyses and notifications. They refer to the product implemented as of **11 October 2026**, schema **13**. Development plans are clearly identified as such.
 
 ## Operational guides
 

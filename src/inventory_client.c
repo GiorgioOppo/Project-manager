@@ -372,12 +372,12 @@ static bool allowed_field(InventoryOperation operation, const char *name, const 
         if (place_write && !strcmp(name,"name")) maximum=160;
     }
     if (operation == INVENTORY_CONTEXT) {
-        if (!strcmp(name,"assignee_user_id") || !strcmp(name,"site_id") ||
+        if (!strcmp(name,"assignee_user_id") || !strcmp(name,"assignee_person_id") || !strcmp(name,"site_id") ||
             !strcmp(name,"department_id") || !strcmp(name,"location_id"))
             return !*value || positive_number(value,LLONG_MAX);
     }
     if (operation == INVENTORY_CHECKOUT) {
-        if (!strcmp(name,"user_id")) return positive_number(value,LLONG_MAX);
+        if (!strcmp(name,"user_id") || !strcmp(name,"person_id")) return positive_number(value,LLONG_MAX);
         if (!strcmp(name,"checkout_on") || !strcmp(name,"due_on")) maximum=10;
         if (!strcmp(name,"condition_out")) return !strcmp(value,"good") || !strcmp(value,"fair") || !strcmp(value,"damaged");
     }
@@ -436,7 +436,8 @@ static bool allowed_field(InventoryOperation operation, const char *name, const 
     if (operation == INVENTORY_RELATION_CREATE) {
         if (!strcmp(name, "relation_type")) return !strcmp(value, "installed_on") ||
             !strcmp(value, "connected_to") || !strcmp(value, "licensed_to");
-        if (!strcmp(name, "target_id")) return positive_number(value, LLONG_MAX);
+        if (!strcmp(name, "target_id") || !strcmp(name,"person_id") || !strcmp(name,"identity_id"))
+            return positive_number(value, LLONG_MAX);
         if (!strcmp(name, "quantity")) return positive_number(value, 1000000);
         if (!strcmp(name, "assignee")) maximum = 160;
         else if (!strcmp(name, "installed_version") || !strcmp(name, "source_port") || !strcmp(name, "target_port")) maximum = 80;
@@ -514,6 +515,30 @@ static char *build_form(InventoryOperation operation, const char *input, DbInt a
         operation == INVENTORY_IDENTITY_UPDATE ? 772U : operation == INVENTORY_IDENTITY_PERSON_CREATE ? 1028U :
         operation == INVENTORY_SUBJECT_CREATE ? 6148U : 4U;
     if (write && ((present & required) != required || actor_id <= 0)) valid = false;
+    /* Validate recipient alternatives before any application-user lookup. People
+       and inventory identities have their own ID spaces and never use it. */
+    if (valid && (operation == INVENTORY_CONTEXT || operation == INVENTORY_CHECKOUT)) {
+        const char *user_key=operation == INVENTORY_CONTEXT ? "assignee_user_id" : "user_id";
+        const char *person_key=operation == INVENTORY_CONTEXT ? "assignee_person_id" : "person_id";
+        bool user=false, person=false;
+        for (size_t i=0;i<count;i++) {
+            if (!strcmp(fields[i].name,user_key) && *fields[i].value) user=true;
+            if (!strcmp(fields[i].name,person_key) && *fields[i].value) person=true;
+        }
+        if ((user && person) || (operation == INVENTORY_CHECKOUT && !user && !person)) valid=false;
+    }
+    if (valid && operation == INVENTORY_RELATION_CREATE) {
+        unsigned recipients=0;
+        bool structured=false, license=false;
+        for (size_t i=0;i<count;i++) {
+            const char *name=fields[i].name;
+            if (!strcmp(name,"relation_type")) license=!strcmp(fields[i].value,"licensed_to");
+            if ((!strcmp(name,"target_id") || !strcmp(name,"assignee") ||
+                 !strcmp(name,"person_id") || !strcmp(name,"identity_id")) && *fields[i].value) recipients++;
+            if (!strcmp(name,"person_id") || !strcmp(name,"identity_id")) structured=true;
+        }
+        if (recipients != 1 || (structured && !license)) valid=false;
+    }
     char user_name[481]={0};
     bool user_field=false;
     const char *trusted_name_field=operation == INVENTORY_CONTEXT ? "assignee_user_name" : "user_name";
@@ -527,7 +552,6 @@ static char *build_form(InventoryOperation operation, const char *input, DbInt a
                 if (valid && (!*user_name || !utf8((unsigned char *)user_name))) valid=false;
             }
         }
-        if (operation == INVENTORY_CHECKOUT && !user_field) valid=false;
     }
     char *form = valid ? calloc(1, input_limit * 3 + 1800) : NULL;
     if (form) {

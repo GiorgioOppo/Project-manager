@@ -4,7 +4,7 @@
 
 Guida al rilascio locale dello stack presente l’**11 ottobre 2026**. Distingue compilazione, aggiornamento dei processi, migrazione dei dati e ripristino. È una procedura operativa da eseguire quando si distribuisce una modifica; la scrittura del manuale non ha ricompilato né riavviato servizi.
 
-Fonti: [Makefile](../../Makefile), [Dockerfile app](../../Dockerfile), [Compose](../../compose.yaml), [migrazioni](../../src/storage.c), [schema MySQL](../../src/mysql_schema.c), [controller cluster](../../scripts/manage_cluster.py), [controller rete](../../scripts/configure_network.py), [addon email](../../addon/README.md) e [addon Calendar](../../calendar-addon/README.md).
+Fonti: [Makefile](../../Makefile), [Dockerfile app](../../Dockerfile), [Compose](../../compose.yaml), [migrazioni](../../src/storage.c), [schema MySQL](../../src/mysql_schema.c), [controller cluster](../../scripts/manage_cluster.py), [controller rete](../../scripts/configure_network.py), [addon email](../../addon/README.it.md) e [addon Calendar](../../calendar-addon/README.it.md).
 
 ## Unità che possono cambiare
 

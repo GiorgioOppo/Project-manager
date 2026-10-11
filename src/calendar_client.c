@@ -222,6 +222,8 @@ static char *decode(const char *start, size_t length) {
 typedef struct { char *name, *value; } Field;
 
 static bool allowed_field(CalendarOperation operation, const char *name) {
+    if ((operation == CALENDAR_EVENT_CREATE || operation == CALENDAR_EVENT_UPDATE || operation == CALENDAR_EVENT_DELETE) &&
+        (!strcmp(name, "expected_connection_id") || !strcmp(name, "expected_calendar_id"))) return true;
     switch (operation) {
         case CALENDAR_OAUTH_CALLBACK:
             return !strcmp(name, "state") || !strcmp(name, "code") || !strcmp(name, "error") ||
@@ -231,6 +233,8 @@ static bool allowed_field(CalendarOperation operation, const char *name) {
         case CALENDAR_EVENTS:
             return !strcmp(name, "from") || !strcmp(name, "to") ||
                    !strcmp(name, "limit") || !strcmp(name, "after_id");
+        case CALENDAR_EVENT: return !strcmp(name, "event_id");
+        case CALENDAR_CHANGE: return !strcmp(name, "idempotency_key");
         case CALENDAR_EVENT_CREATE: return !strcmp(name, "idempotency_key") || !strcmp(name, "event");
         case CALENDAR_EVENT_UPDATE:
             return !strcmp(name, "idempotency_key") || !strcmp(name, "event") ||
@@ -308,6 +312,13 @@ static bool value_valid(const char *name, const char *value) {
         return true;
     }
     if (!strcmp(name, "state")) return identifier(value, 16, 256);
+    if (!strcmp(name, "event_id")) return identifier(value, 1, 1024);
+    if (!strcmp(name, "expected_connection_id")) {
+        if (length != 64) return false;
+        for (const char *p = value; *p; p++)
+            if (!(*p >= '0' && *p <= '9') && !(*p >= 'a' && *p <= 'f')) return false;
+        return true;
+    }
     if (!strcmp(name, "event")) return length <= 24576 && event_valid(value);
     if (!strcmp(name, "page_token")) return length <= 2048;
     if (!strcmp(name, "from") || !strcmp(name, "to")) return date(value);
@@ -382,6 +393,8 @@ static char *build_form(CalendarOperation operation, const char *input, const ch
     if (operation == CALENDAR_EVENT_CREATE && present != (8 | 16)) valid = false;
     if (operation == CALENDAR_EVENT_UPDATE && present != (8 | 16 | 32 | 64)) valid = false;
     if (operation == CALENDAR_EVENT_DELETE && present != (8 | 32 | 64)) valid = false;
+    if (operation == CALENDAR_EVENT && (present != 32 || count != 1)) valid = false;
+    if (operation == CALENDAR_CHANGE && (present != 8 || count != 1)) valid = false;
     if ((operation == CALENDAR_OAUTH_START || operation == CALENDAR_OAUTH_CALLBACK) && !binding_valid(binding)) valid = false;
     char *form = valid ? calloc(1, INPUT_LIMIT * 3 + 256) : NULL;
     if (form) {
@@ -434,12 +447,13 @@ void calendar_client_call(CalendarOperation operation, DbInt user_id, const char
     if (!response) return;
     response->status = 0; response->body = NULL;
     static const char *paths[] = {"status", "oauth/start", "oauth/callback", "calendars", "selection",
-        "events", "events/create", "events/update", "events/delete", "sync", "disconnect", "changes"};
-    if (operation < CALENDAR_STATUS || operation > CALENDAR_CHANGES || user_id <= 0) {
+        "events", "events/create", "events/update", "events/delete", "sync", "disconnect", "changes", "event", "change"};
+    if (operation < CALENDAR_STATUS || operation > CALENDAR_CHANGE || user_id <= 0) {
         reply(response, 400, "{\"ok\":false,\"error\":\"invalid_calendar_request\"}"); return;
     }
     bool get = operation == CALENDAR_STATUS || operation == CALENDAR_CALENDARS ||
-        operation == CALENDAR_EVENTS || operation == CALENDAR_CHANGES;
+        operation == CALENDAR_EVENTS || operation == CALENDAR_CHANGES ||
+        operation == CALENDAR_EVENT || operation == CALENDAR_CHANGE;
     char *form = build_form(operation, input ? input : "", session_binding);
     if (!form) { reply(response, 400, "{\"ok\":false,\"error\":\"invalid_calendar_request\"}"); return; }
     if (!enabled) {

@@ -14,7 +14,7 @@ RUN apt-get update \
 WORKDIR /build
 COPY Makefile ./
 COPY src/ ./src/
-COPY auth/oidc.c auth/oidc.h ./auth/
+COPY auth/oidc.c auth/oidc.h auth/http_transport.h ./auth/
 RUN make DB_BACKEND=mysql
 
 FROM debian:bookworm-slim AS runtime

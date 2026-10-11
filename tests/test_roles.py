@@ -176,7 +176,10 @@ class RoleIntegrationTests(unittest.TestCase):
         self.assertEqual(session.get("permissions"), {
             "manage_jobs": True, "manage_users": True, "edit_time_entries": True,
             "manage_assignments": True, "view_audit": True,
-            "manage_suppliers": True, "manage_contracts": True,
+            "manage_suppliers": False, "manage_contracts": False,
+            "view_suppliers": False, "view_contracts": False,
+            "view_costs": False, "view_labor_rates": False, "manage_labor_rates": False,
+            "view_team_hours": True, "manage_access_groups": True,
             "manage_groups": True, "manage_job_roles": True})
         users = self.users()
         self.assertEqual(len(users), 1)
@@ -200,6 +203,9 @@ class RoleIntegrationTests(unittest.TestCase):
             "manage_jobs": False, "manage_users": False, "edit_time_entries": False,
             "manage_assignments": False, "view_audit": False,
             "manage_suppliers": False, "manage_contracts": False,
+            "view_suppliers": False, "view_contracts": False,
+            "view_costs": False, "view_labor_rates": False, "manage_labor_rates": False,
+            "view_team_hours": False, "manage_access_groups": False,
             "manage_groups": False, "manage_job_roles": False})
         self.assertEqual(self.session(self.manager_cookie)["role"], "manager")
 
@@ -417,7 +423,7 @@ class RoleIntegrationTests(unittest.TestCase):
     def test_user_responses_do_not_expose_passwords_hashes_or_salts(self):
         self.create_user()
         for user in self.users():
-            self.assertEqual(set(user), {"id", "name", "email", "role", "active"})
+            self.assertEqual(set(user), {"id", "name", "email", "role", "active", "access_groups"})
         worker = self.login(WORKER_EMAIL, WORKER_PASSWORD)
         for cookie in (worker, self.manager_cookie):
             session = self.session(cookie)
@@ -479,6 +485,9 @@ class RoleIntegrationTests(unittest.TestCase):
             for table in database.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
                 if table[0] not in ("jobs", "time_entries", "sqlite_sequence"):
                     database.execute('DROP TABLE "' + table[0].replace('"', '""') + '"')
+            # Retained jobs must also have the old shape before version reset.
+            for column in ("time_closed", "archived", "lifecycle_revision"):
+                database.execute("ALTER TABLE jobs DROP COLUMN " + column)
             database.execute("PRAGMA user_version=0")
             database.execute("UPDATE time_entries SET owner=? WHERE id=?",
                              ("MaNaGeR@PuNtO.LoCaL", entry_id))

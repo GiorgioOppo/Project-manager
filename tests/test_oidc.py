@@ -5,6 +5,7 @@ binding and credential is disposable; no real identity service is contacted.
 """
 
 from contextlib import contextmanager
+import base64
 import copy
 import json
 import os
@@ -58,8 +59,12 @@ class Driver:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=5)
+        diagnostics = self.process.stderr.read()
         self.process.stdout.close()
         self.process.stderr.close()
+        expected = 0 if self.initial["initialized"] else 1
+        if self.process.returncode != expected or diagnostics:
+            raise AssertionError(f"OIDC driver exited {self.process.returncode}: {diagnostics}")
 
 
 class OIDCProtocolTests(unittest.TestCase):
@@ -219,10 +224,15 @@ class OIDCProtocolTests(unittest.TestCase):
 
     def test_unknown_subject_is_denied_even_with_matching_email_or_administrator_claim(self):
         with self.driver() as driver:
-            value = self.callback(driver, claims={"sub": "unbound", "email": "existing@punto.local",
-                                                  "realm_access": {"roles": ["manager", "admin"]}})
+            location, cookie = self.start(driver)
+            query = self.provider.register(location, claims={"sub": "unbound", "email": "existing@punto.local",
+                                                            "realm_access": {"roles": ["manager", "admin"]}})
+            value = driver.command("callback", query=query, cookie=cookie)
             self.assertEqual(value["status"], 403)
             self.assertEqual((value["email"], value["lifetime"]), ("", 0))
+            requests = len(self.provider.token_requests)
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 401)
+            self.assertEqual(len(self.provider.token_requests), requests)
 
     def test_callback_requires_matching_browser_and_is_single_use(self):
         with self.driver() as driver:
@@ -237,7 +247,39 @@ class OIDCProtocolTests(unittest.TestCase):
             self.assertEqual(len(self.provider.token_requests), requests)
             self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 200)
             self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 401)
+            new_query = self.provider.register(location)
+            self.assertEqual(driver.command("callback", query=new_query, cookie=cookie)["status"], 401)
             self.assertEqual(len(self.provider.token_requests), requests + 1)
+
+    def test_encrypted_cookie_rejects_tampering_and_cross_browser_state_before_exchange(self):
+        with self.driver() as driver:
+            location, cookie = self.start(driver)
+            _, other_cookie = self.start(driver)
+            query = self.provider.register(location)
+            name, value = cookie.split("=", 1)
+            sealed = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+            params = parse_qs(urlsplit(location).query)
+            for field in ("state", "nonce"):
+                self.assertNotIn(params[field][0].encode(), sealed)
+            requests = len(self.provider.token_requests)
+            for index in (0, 11, 12, 32, len(sealed) - 17, len(sealed) - 1):
+                changed = bytearray(sealed)
+                changed[index] ^= 1
+                tampered = name + "=" + base64.urlsafe_b64encode(changed).rstrip(b"=").decode()
+                with self.subTest(index=index):
+                    self.assertEqual(driver.command("callback", query=query, cookie=tampered)["status"], 401)
+            self.assertEqual(driver.command("callback", query=query, cookie=other_cookie)["status"], 401)
+            self.assertEqual(len(self.provider.token_requests), requests)
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 200)
+
+    def test_cookie_is_invalid_after_process_restart(self):
+        with self.driver() as driver:
+            location, cookie = self.start(driver)
+        query = self.provider.register(location)
+        requests = len(self.provider.token_requests)
+        with self.driver() as driver:
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 401)
+        self.assertEqual(len(self.provider.token_requests), requests)
 
     def test_expired_state_is_denied_without_contacting_identity_service(self):
         with self.driver() as driver:
@@ -262,7 +304,7 @@ class OIDCProtocolTests(unittest.TestCase):
             self.assertEqual(len(self.provider.token_requests), requests)
             self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 200)
 
-    def test_provider_error_or_wrong_response_issuer_consumes_bound_state(self):
+    def test_provider_error_or_wrong_response_issuer_is_denied_without_exchange(self):
         with self.driver() as driver:
             for error in (False, True):
                 location, cookie = self.start(driver)
@@ -324,13 +366,49 @@ class OIDCProtocolTests(unittest.TestCase):
                 with self.subTest(extra=extra):
                     self.assertEqual(self.callback(driver, extra_token=extra)["status"], 503)
 
-    def test_pending_transactions_have_a_fixed_capacity(self):
+    def test_anonymous_start_flood_does_not_block_or_evict_existing_logins(self):
         with self.driver() as driver:
-            for _ in range(64):
+            location, cookie = self.start(driver)
+            query = self.provider.register(location)
+            for _ in range(512):
                 self.assertEqual(driver.command("start")["status"], 200)
-            self.assertEqual(driver.command("start")["status"], 429)
-            driver.command("advance", seconds=301)
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 200)
+            self.assertEqual(self.callback(driver)["status"], 200)
+
+    def test_anonymous_error_callbacks_do_not_consume_shared_replay_capacity(self):
+        with self.driver() as driver:
+            location, cookie = self.start(driver)
+            query = self.provider.register(location)
+            requests = len(self.provider.token_requests)
+            for _ in range(128):
+                abandoned, abandoned_cookie = self.start(driver)
+                state = parse_qs(urlsplit(abandoned).query)["state"][0]
+                self.assertEqual(driver.command("callback", query=urlencode(dict(state=state, error="access_denied")),
+                                                cookie=abandoned_cookie)["status"], 401)
+            self.assertEqual(len(self.provider.token_requests), requests)
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 200)
+
+    def test_authenticated_replay_quota_is_per_subject_and_records_expire(self):
+        mapping = Path(self.env["OIDC_BINDINGS_FILE"])
+        mapping.write_text(json.dumps({self.provider.subject: "existing@punto.local",
+                                       "other-subject": "other@punto.local"}))
+        with self.driver() as driver:
+            location, cookie = self.start(driver)
+            query = self.provider.register(location, claims={"sub": "other-subject"})
+            first_location, first_cookie = self.start(driver)
+            first_query = self.provider.register(first_location)
+            self.assertEqual(driver.command("callback", query=first_query, cookie=first_cookie)["status"], 200)
+            for _ in range(63):
+                self.assertEqual(self.callback(driver)["status"], 200)
+            self.assertEqual(self.callback(driver)["status"], 429)
             self.assertEqual(driver.command("start")["status"], 200)
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 200)
+            requests = len(self.provider.token_requests)
+            self.assertEqual(driver.command("callback", query=first_query, cookie=first_cookie)["status"], 401)
+            self.assertEqual(len(self.provider.token_requests), requests)
+            driver.command("advance", seconds=301)
+            self.assertEqual(self.callback(driver, claims={"iat": int(time.time()) + 301,
+                                                         "exp": int(time.time()) + 601})["status"], 200)
 
     def test_backchannel_does_not_follow_redirects_and_bounds_remote_json(self):
         base = self.provider.server.RequestHandlerClass

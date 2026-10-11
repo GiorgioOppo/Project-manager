@@ -24,18 +24,30 @@
 #define URL_SIZE 2048U
 #define RESPONSE_LIMIT (256U * 1024U)
 #define TOKEN_LIMIT 32768U
-#define TRANSACTION_LIMIT 64U
+#define REPLAY_LIMIT_PER_SUBJECT 64U
 #define RANDOM_SIZE 32U
 #define RANDOM_TEXT 43U
 #define TRANSACTION_SECONDS 300
+#define COOKIE_IV_SIZE 12U
+#define COOKIE_TAG_SIZE 16U
+#define TRANSACTION_PAYLOAD_SIZE (1U + 8U + 3U * RANDOM_TEXT)
+#define TRANSACTION_ENVELOPE_SIZE (COOKIE_IV_SIZE + TRANSACTION_PAYLOAD_SIZE + COOKIE_TAG_SIZE)
+#define TRANSACTION_COOKIE_SIZE (4U * ((TRANSACTION_ENVELOPE_SIZE + 2U) / 3U) + 1U)
 #define SESSION_SECONDS (8 * 60 * 60)
 #define CLOCK_SKEW 60
 
 typedef struct {
     char state[RANDOM_TEXT + 1], nonce[RANDOM_TEXT + 1];
-    char verifier[RANDOM_TEXT + 1], browser[RANDOM_TEXT + 1];
+    char verifier[RANDOM_TEXT + 1];
     time_t created, expires;
 } Transaction;
+
+typedef struct Replay Replay;
+struct Replay {
+    char state[RANDOM_TEXT + 1], subject[256];
+    time_t expires;
+    Replay *next;
+};
 
 static struct {
     bool initialized, enabled, local, managed, curl_ready;
@@ -45,7 +57,8 @@ static struct {
     char cookie_name[48], clear_cookie[512];
     char *secret, *ca;
     struct json_object *bindings;
-    Transaction transactions[TRANSACTION_LIMIT];
+    unsigned char cookie_key[32];
+    Replay *replays;
 } config;
 
 static void erase(void *data, size_t size) {
@@ -381,11 +394,118 @@ static bool random_text(char output[RANDOM_TEXT + 1]) {
     return okay;
 }
 
+/* Pending logins live only in an authenticated, encrypted browser cookie.
+   Anonymous starts allocate no server-side slots. A fresh process key means
+   restarts invalidate pending logins, as they did with the old memory pool. */
+static bool seal_transaction(const Transaction *transaction, char output[TRANSACTION_COOKIE_SIZE]) {
+    unsigned char plain[TRANSACTION_PAYLOAD_SIZE] = {1};
+    unsigned char envelope[TRANSACTION_ENVELOPE_SIZE] = {0};
+    uint64_t created = (uint64_t)transaction->created;
+    for (size_t i = 0; i < 8; i++) plain[1 + i] = (unsigned char)(created >> (56 - 8 * i));
+    memcpy(plain + 9, transaction->state, RANDOM_TEXT);
+    memcpy(plain + 9 + RANDOM_TEXT, transaction->nonce, RANDOM_TEXT);
+    memcpy(plain + 9 + 2 * RANDOM_TEXT, transaction->verifier, RANDOM_TEXT);
+    EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
+    int size = 0, final_size = 0;
+    bool okay = context && RAND_bytes(envelope, COOKIE_IV_SIZE) == 1 &&
+        EVP_EncryptInit_ex(context, EVP_aes_256_gcm(), NULL, config.cookie_key, envelope) == 1 &&
+        EVP_EncryptUpdate(context, NULL, &size, (const unsigned char *)config.cookie_name,
+                          (int)strlen(config.cookie_name)) == 1 &&
+        EVP_EncryptUpdate(context, envelope + COOKIE_IV_SIZE, &size, plain, sizeof(plain)) == 1 &&
+        size == (int)sizeof(plain) &&
+        EVP_EncryptFinal_ex(context, envelope + COOKIE_IV_SIZE + size, &final_size) == 1 &&
+        final_size == 0 &&
+        EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_GET_TAG, COOKIE_TAG_SIZE,
+                            envelope + COOKIE_IV_SIZE + TRANSACTION_PAYLOAD_SIZE) == 1 &&
+        base64url(envelope, sizeof(envelope), output, TRANSACTION_COOKIE_SIZE);
+    EVP_CIPHER_CTX_free(context);
+    erase(plain, sizeof(plain)); erase(envelope, sizeof(envelope));
+    return okay;
+}
+
+static bool open_transaction(const char *cookie, time_t now, Transaction *transaction) {
+    size_t size = 0;
+    unsigned char *envelope = unbase64url(cookie, strlen(cookie), &size);
+    unsigned char plain[TRANSACTION_PAYLOAD_SIZE] = {0};
+    EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
+    int plain_size = 0, final_size = 0;
+    bool okay = envelope && size == TRANSACTION_ENVELOPE_SIZE && context &&
+        EVP_DecryptInit_ex(context, EVP_aes_256_gcm(), NULL, config.cookie_key, envelope) == 1 &&
+        EVP_DecryptUpdate(context, NULL, &plain_size, (const unsigned char *)config.cookie_name,
+                          (int)strlen(config.cookie_name)) == 1 &&
+        EVP_DecryptUpdate(context, plain, &plain_size, envelope + COOKIE_IV_SIZE,
+                          TRANSACTION_PAYLOAD_SIZE) == 1 &&
+        plain_size == (int)sizeof(plain) &&
+        EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_TAG, COOKIE_TAG_SIZE,
+                            envelope + COOKIE_IV_SIZE + TRANSACTION_PAYLOAD_SIZE) == 1 &&
+        EVP_DecryptFinal_ex(context, plain + plain_size, &final_size) == 1 && final_size == 0 &&
+        plain[0] == 1;
+    uint64_t created = 0;
+    if (okay) {
+        for (size_t i = 0; i < 8; i++) created = (created << 8) | plain[1 + i];
+        okay = now >= 0 && created <= (uint64_t)now &&
+            (uint64_t)now - created < TRANSACTION_SECONDS &&
+            created <= (uint64_t)INT64_MAX - TRANSACTION_SECONDS;
+    }
+    if (okay) {
+        transaction->created = (time_t)created;
+        transaction->expires = (time_t)(created + TRANSACTION_SECONDS);
+        memcpy(transaction->state, plain + 9, RANDOM_TEXT);
+        memcpy(transaction->nonce, plain + 9 + RANDOM_TEXT, RANDOM_TEXT);
+        memcpy(transaction->verifier, plain + 9 + 2 * RANDOM_TEXT, RANDOM_TEXT);
+    }
+    EVP_CIPHER_CTX_free(context);
+    if (envelope) { erase(envelope, size); free(envelope); }
+    erase(plain, sizeof(plain));
+    return okay;
+}
+
+static void prune_replays(time_t now) {
+    Replay **link = &config.replays;
+    while (*link) {
+        Replay *entry = *link;
+        if (entry->expires <= now) {
+            *link = entry->next;
+            erase(entry, sizeof(*entry)); free(entry);
+        } else link = &entry->next;
+    }
+}
+
+/* Only a cryptographically verified IdP identity may allocate a tombstone.
+   Invalid codes, provider errors and anonymous starts cannot consume this
+   cache. Live records are never evicted; the short-lived quota affects only
+   the authenticated subject exceeding it, and cannot evict other logins. */
+static int remember_transaction(const Transaction *transaction, const char *subject) {
+    time_t now = time(NULL);
+    if (now < 0) return 503;
+    prune_replays(now);
+    if (transaction->expires <= now) return 401;
+    size_t count = 0;
+    for (Replay *entry = config.replays; entry; entry = entry->next) {
+        if (!CRYPTO_memcmp(entry->state, transaction->state, RANDOM_TEXT)) return 401;
+        if (!strcmp(entry->subject, subject)) count++;
+    }
+    if (count >= REPLAY_LIMIT_PER_SUBJECT) return 429;
+    Replay *entry = calloc(1, sizeof(*entry));
+    if (!entry) return 503;
+    memcpy(entry->state, transaction->state, sizeof(entry->state));
+    memcpy(entry->subject, subject, strlen(subject) + 1);
+    entry->expires = transaction->expires;
+    entry->next = config.replays;
+    config.replays = entry;
+    return 200;
+}
+
 void oidc_close(void) {
     if (config.secret) { erase(config.secret, strlen(config.secret)); free(config.secret); }
     free(config.ca);
     json_object_put(config.bindings);
     if (config.curl_ready) curl_global_cleanup();
+    while (config.replays) {
+        Replay *entry = config.replays;
+        config.replays = entry->next;
+        erase(entry, sizeof(*entry)); free(entry);
+    }
     erase(&config, sizeof(config));
 }
 
@@ -492,6 +612,7 @@ bool oidc_init(void) {
     (void)snprintf(config.clear_cookie, sizeof(config.clear_cookie),
         "Set-Cookie: %s=; Path=/auth/; HttpOnly; SameSite=Lax; Max-Age=0%s\r\n",
         config.cookie_name, !strncmp(config.redirect, "https://", 8) ? "; Secure" : "");
+    if (RAND_bytes(config.cookie_key, sizeof(config.cookie_key)) != 1) goto invalid;
     config.initialized = true;
     return true;
 invalid:
@@ -501,6 +622,7 @@ invalid:
 
 bool oidc_enabled(void) { return config.initialized && config.enabled; }
 bool oidc_local_enabled(void) { return config.initialized && config.local; }
+const char *oidc_redirect_uri(void) { return oidc_enabled() ? config.redirect : ""; }
 int oidc_users_managed(void) { return oidc_enabled() && config.managed; }
 int oidc_local_account_allowed(const char *email) {
     if (!oidc_local_enabled()) return 0;
@@ -537,13 +659,14 @@ int oidc_start(char location[8192], char cookie[512]) {
     if (!oidc_enabled()) return 404;
     time_t now = time(NULL);
     if (now < 0) return 503;
-    Transaction *pending = NULL;
-    for (size_t i = 0; i < TRANSACTION_LIMIT; i++)
-        if (config.transactions[i].expires <= now) { pending = &config.transactions[i]; break; }
-    if (!pending) return 429;
+    prune_replays(now);
     Transaction transaction = {0};
+    char sealed[TRANSACTION_COOKIE_SIZE] = {0};
     if (!random_text(transaction.state) || !random_text(transaction.nonce) ||
-        !random_text(transaction.verifier) || !random_text(transaction.browser)) goto failure;
+        !random_text(transaction.verifier)) goto failure;
+    transaction.created = now;
+    transaction.expires = now + TRANSACTION_SECONDS;
+    if (!seal_transaction(&transaction, sealed)) goto failure;
     unsigned char digest[32];
     unsigned digest_size = 0;
     char challenge[45];
@@ -562,14 +685,13 @@ int oidc_start(char location[8192], char cookie[512]) {
     if (length < 0 || length >= 8192) goto failure;
     length = snprintf(cookie, 512,
         "Set-Cookie: %s=%s; Path=/auth/; HttpOnly; SameSite=Lax; Max-Age=300%s\r\n",
-        config.cookie_name, transaction.browser, !strncmp(config.redirect, "https://", 8) ? "; Secure" : "");
+        config.cookie_name, sealed, !strncmp(config.redirect, "https://", 8) ? "; Secure" : "");
     if (length < 0 || length >= 512) goto failure;
-    transaction.created = now;
-    transaction.expires = now + TRANSACTION_SECONDS;
-    *pending = transaction;
+    erase(sealed, sizeof(sealed));
     erase(&transaction, sizeof(transaction));
     return 200;
 failure:
+    erase(sealed, sizeof(sealed));
     erase(&transaction, sizeof(transaction));
     location[0] = cookie[0] = '\0';
     return 503;
@@ -725,7 +847,8 @@ static int managed_claims(struct json_object *claims, OidcIdentity *identity) {
 }
 
 static int verify_token(const char *token, const Transaction *transaction,
-                        int64_t expires_in, char email[255], OidcIdentity *identity, int *lifetime) {
+                        int64_t expires_in, char email[255], OidcIdentity *identity, int *lifetime,
+                        char verified_subject[256]) {
     if (!token || strlen(token) > TOKEN_LIMIT) return 401;
     const char *first = strchr(token, '.');
     const char *second = first ? strchr(first + 1, '.') : NULL;
@@ -798,6 +921,7 @@ static int verify_token(const char *token, const Transaction *transaction,
     if (now_value < 0) { status = 503; goto done; }
     now = (int64_t)now_value;
     if (expiry <= now) goto done;
+    memcpy(verified_subject, subject, strlen(subject) + 1);
     struct json_object *bound = NULL;
     const char *local_email;
     bool has_binding = json_object_object_get_ex(config.bindings, subject, &bound);
@@ -892,7 +1016,7 @@ static bool parse_callback(const char *query, Callback *callback) {
     return callback->state && ((callback->code != NULL) != (callback->error != NULL));
 }
 
-static bool browser_cookie(const char *cookies, char browser[RANDOM_TEXT + 1]) {
+static bool browser_cookie(const char *cookies, char sealed[TRANSACTION_COOKIE_SIZE]) {
     if (!cookies || strlen(cookies) > 4096) return false;
     bool found = false;
     size_t name_size = strlen(config.cookie_name);
@@ -903,9 +1027,10 @@ static bool browser_cookie(const char *cookies, char browser[RANDOM_TEXT + 1]) {
         const char *end = strchr(p, ';');
         if (!end) end = p + strlen(p);
         if ((size_t)(end - p) > name_size && !memcmp(p, config.cookie_name, name_size) && p[name_size] == '=') {
-            if (found || (size_t)(end - p) != name_size + 1 + RANDOM_TEXT) return false;
-            memcpy(browser, p + name_size + 1, RANDOM_TEXT);
-            browser[RANDOM_TEXT] = '\0';
+            size_t length = (size_t)(end - p) - name_size - 1;
+            if (found || !length || length >= TRANSACTION_COOKIE_SIZE) return false;
+            memcpy(sealed, p + name_size + 1, length);
+            sealed[length] = '\0';
             found = true;
         }
         p = end;
@@ -919,20 +1044,16 @@ static int callback_result(const char *query, const char *cookie, char email[255
     Callback callback = {0};
     int status = 400;
     Transaction transaction = {0};
-    char browser[RANDOM_TEXT + 1] = {0};
+    char sealed[TRANSACTION_COOKIE_SIZE] = {0}, verified_subject[256] = {0};
     if (!parse_callback(query, &callback)) goto done;
-    if (!browser_cookie(cookie, browser)) { status = 401; goto done; }
+    if (!browser_cookie(cookie, sealed)) { status = 401; goto done; }
     time_t now = time(NULL);
     if (now < 0) { status = 503; goto done; }
-    Transaction *pending = NULL;
-    for (size_t i = 0; i < TRANSACTION_LIMIT; i++)
-        if (config.transactions[i].expires > now &&
-            !CRYPTO_memcmp(callback.state, config.transactions[i].state, RANDOM_TEXT)) {
-            pending = &config.transactions[i]; break;
-        }
-    if (!pending || CRYPTO_memcmp(browser, pending->browser, RANDOM_TEXT)) { status = 401; goto done; }
-    transaction = *pending;
-    erase(pending, sizeof(*pending));
+    prune_replays(now);
+    if (!open_transaction(sealed, now, &transaction) ||
+        CRYPTO_memcmp(callback.state, transaction.state, RANDOM_TEXT)) { status = 401; goto done; }
+    for (Replay *entry = config.replays; entry; entry = entry->next)
+        if (!CRYPTO_memcmp(entry->state, transaction.state, RANDOM_TEXT)) { status = 401; goto done; }
     if (callback.issuer && strcmp(callback.issuer, config.issuer)) { status = 401; goto done; }
     if (callback.error) { status = 401; goto done; }
     CURL *curl = curl_easy_init();
@@ -951,7 +1072,11 @@ static int callback_result(const char *query, const char *cookie, char email[255
     if (!member_text(response, "id_token", &id_token, TOKEN_LIMIT) ||
         !member_text(response, "token_type", &token_type, 16) ||
         strcmp(token_type, "Bearer") || !member_integer(response, "expires_in", &expires_in) || expires_in <= 0) status = 503;
-    else status = verify_token(id_token, &transaction, expires_in, email, identity, lifetime);
+    else status = verify_token(id_token, &transaction, expires_in, email, identity, lifetime, verified_subject);
+    if (verified_subject[0]) {
+        int replay_status = remember_transaction(&transaction, verified_subject);
+        if (replay_status != 200) status = replay_status;
+    }
     json_object_put(response);
 done:
     if (status != 200) {
@@ -959,7 +1084,8 @@ done:
         if (identity) memset(identity, 0, sizeof(*identity));
         *lifetime = 0;
     }
-    erase(browser, sizeof(browser)); erase(&transaction, sizeof(transaction));
+    erase(sealed, sizeof(sealed)); erase(verified_subject, sizeof(verified_subject));
+    erase(&transaction, sizeof(transaction));
     free_callback(&callback);
     return status;
 }

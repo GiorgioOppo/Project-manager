@@ -476,16 +476,21 @@ static bool init_database(void) {
                         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                         NULL) != SQLITE_OK)
         return false;
-    sqlite3_stmt *version = NULL;
-    if (sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &version, NULL) != SQLITE_OK)
+    sqlite3_busy_timeout(database, 3000);
+    if (!execute("PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;BEGIN IMMEDIATE"))
         return false;
+    sqlite3_stmt *version = NULL;
+    if (sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &version, NULL) != SQLITE_OK) {
+        execute("ROLLBACK");
+        return false;
+    }
     int current = sqlite3_step(version) == SQLITE_ROW ? sqlite3_column_int(version, 0) : -1;
     sqlite3_finalize(version);
-    if (current < 0 || current > 1)
+    if (current < 0 || current > 2) {
+        execute("ROLLBACK");
         return false;
-    sqlite3_busy_timeout(database, 3000);
-    return execute(
-        "PRAGMA journal_mode=WAL;PRAGMA synchronous=FULL;PRAGMA foreign_keys=ON;"
+    }
+    if (!execute(
         "CREATE TABLE IF NOT EXISTS accounts(user_id INTEGER PRIMARY KEY,token_blob BLOB NOT "
         "NULL,calendar_id TEXT NOT NULL DEFAULT '',sync_token TEXT NOT NULL DEFAULT '',last_sync "
         "INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',reauth_required INTEGER "
@@ -503,8 +508,31 @@ static bool init_database(void) {
         "('queued','applied','conflict','failed','unknown')),response BLOB,error TEXT NOT NULL "
         "DEFAULT '',attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT "
         "0,created INTEGER NOT NULL,UNIQUE(user_id,idempotency_key));"
-        "CREATE INDEX IF NOT EXISTS changes_ready ON changes(user_id,state,next_attempt,id);PRAGMA "
-        "user_version=1;");
+        "CREATE INDEX IF NOT EXISTS changes_ready ON changes(user_id,state,next_attempt,id);")) {
+        execute("ROLLBACK"); return false;
+    }
+    if (current < 2 && !execute(
+        "ALTER TABLE changes ADD COLUMN calendar_id TEXT NOT NULL DEFAULT '';"
+        "UPDATE changes SET calendar_id=COALESCE((SELECT calendar_id FROM accounts WHERE accounts.user_id=changes.user_id),'') "
+        "WHERE state IN ('queued','unknown');")) {
+        execute("ROLLBACK"); return false;
+    }
+    /* Schema migration must preserve legacy ciphertext. Its original calendar is
+     * unauthenticated, so reading plaintext columns cannot safely upgrade its AAD. */
+    bool has_connection_id = false;
+    sqlite3_stmt *columns = prepare("PRAGMA table_info(accounts)");
+    if (!columns) { execute("ROLLBACK"); return false; }
+    int column_result;
+    while ((column_result = sqlite3_step(columns)) == SQLITE_ROW)
+        if (!strcmp((const char *)sqlite3_column_text(columns, 1), "connection_id")) has_connection_id = true;
+    sqlite3_finalize(columns);
+    if (column_result != SQLITE_DONE || (!has_connection_id && !execute(
+        "ALTER TABLE accounts ADD COLUMN connection_id TEXT NOT NULL DEFAULT '';"
+        "UPDATE accounts SET connection_id=lower(hex(randomblob(32)));"))) {
+        execute("ROLLBACK"); return false;
+    }
+    if (!execute("PRAGMA user_version=2;COMMIT")) { execute("ROLLBACK"); return false; }
+    return true;
 }
 static json_object *load_tokens(sqlite3_int64 user) {
     sqlite3_stmt *s =
@@ -537,7 +565,7 @@ static bool save_tokens(sqlite3_int64 user, json_object *tokens) {
         worker_connection
             ? "UPDATE accounts SET token_blob=?2,reauth_required=0,last_error='' WHERE user_id=?1 "
               "AND provider_id=?3 AND generation=?4"
-            : "INSERT INTO accounts(user_id,token_blob) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE "
+            : "INSERT INTO accounts(user_id,token_blob,connection_id) VALUES(?,?,lower(hex(randomblob(32)))) ON CONFLICT(user_id) DO UPDATE "
               "SET token_blob=excluded.token_blob,reauth_required=0,last_error=''");
     bool ok = s && sqlite3_bind_int64(s, 1, user) == SQLITE_OK &&
               sqlite3_bind_blob(s, 2, blob, n, SQLITE_TRANSIENT) == SQLITE_OK;
@@ -1136,7 +1164,7 @@ static json_object *status_json(sqlite3_int64 user) {
     if (!user)
         return o;
     sqlite3_stmt *s =
-        prepare("SELECT calendar_id,last_sync,last_error,reauth_required,next_poll,sync_running "
+        prepare("SELECT calendar_id,last_sync,last_error,reauth_required,next_poll,sync_running,connection_id "
                 "FROM accounts WHERE user_id=?");
     bool connected = false;
     if (s) {
@@ -1151,11 +1179,13 @@ static json_object *status_json(sqlite3_int64 user) {
                     sqlite3_column_int64(s, 4) <= (sqlite3_int64)time(NULL) &&
                         *sqlite3_column_text(s, 0));
             addbool(o, "sync_running", sqlite3_column_int(s, 5) != 0);
+            addstr(o, "connection_id", (const char *)sqlite3_column_text(s, 6));
         }
         sqlite3_finalize(s);
     }
     addbool(o, "connected", connected);
     if (!connected) {
+        json_object_object_add(o, "connection_id", NULL);
         addstr(o, "calendar_id", "");
         addint(o, "last_sync", 0);
         addstr(o, "last_error", "");
@@ -1563,6 +1593,76 @@ static bool etag_valid(const char *s) {
             return false;
     return true;
 }
+static bool idempotency_key_valid(const char *key) {
+    size_t length = strlen(key);
+    if (length < 8 || length > 128) return false;
+    for (const unsigned char *p = (const unsigned char *)key; *p; p++)
+        if (*p >= 128 || (!isalnum(*p) && !strchr("_-:.", *p))) return false;
+    return true;
+}
+static bool change_payload_purpose(char *out, size_t capacity, const char *key,
+                                   const char *calendar) {
+    if (!key || !idempotency_key_valid(key) || !calendar || !*calendar)
+        return false;
+    char calendar_hash[65];
+    digest(calendar, calendar_hash);
+    int n = snprintf(out, capacity, "change-v2:%s:%s", key, calendar_hash);
+    return n > 0 && (size_t)n < capacity;
+}
+static bool queued_envelope_valid(json_object *envelope, const char *stored_operation,
+                                  const char *stored_id, const char *stored_etag,
+                                  json_object **event) {
+    if (!envelope || !json_object_is_type(envelope, json_type_object) ||
+        json_object_object_length(envelope) != 4)
+        return false;
+    const char *names[] = {"operation", "event_id", "etag"};
+    const char *stored[] = {stored_operation, stored_id, stored_etag};
+    for (size_t i = 0; i < 3; i++) {
+        json_object *value = NULL;
+        if (!json_object_object_get_ex(envelope, names[i], &value) ||
+            !json_object_is_type(value, json_type_string) ||
+            strcmp(json_object_get_string(value), stored[i]))
+            return false;
+    }
+    const char *operation = jstr(envelope, "operation"), *id = jstr(envelope, "event_id"),
+               *etag = jstr(envelope, "etag");
+    bool create = !strcmp(operation, "create"), del = !strcmp(operation, "delete");
+    if ((!create && !del && strcmp(operation, "update")) || !event_identifier(id) ||
+        (create ? *etag != 0 : !etag_valid(etag)) ||
+        !json_object_object_get_ex(envelope, "event", event) ||
+        !json_object_is_type(*event, json_type_object))
+        return false;
+    if (del)
+        return json_object_object_length(*event) == 0;
+    json_object *props = NULL, *priv = NULL, *marker = NULL, *identifier = NULL;
+    if (!json_object_object_get_ex(*event, "extendedProperties", &props) ||
+        !json_object_is_type(props, json_type_object) || json_object_object_length(props) != 1 ||
+        !json_object_object_get_ex(props, "private", &priv) ||
+        !json_object_is_type(priv, json_type_object) || json_object_object_length(priv) != 1 ||
+        !json_object_object_get_ex(priv, "puntoMutation", &marker) ||
+        !json_object_is_type(marker, json_type_string) ||
+        !hex_string(json_object_get_string(marker), 64))
+        return false;
+    bool has_id = json_object_object_get_ex(*event, "id", &identifier);
+    if (create ? (!has_id || !json_object_is_type(identifier, json_type_string) ||
+                  strcmp(json_object_get_string(identifier), id))
+               : has_id)
+        return false;
+    json_object *input = json_object_new_object();
+    if (!input)
+        return false;
+    json_object_object_foreach(*event, key, value) {
+        if (strcmp(key, "id") && strcmp(key, "extendedProperties"))
+            json_object_object_add(input, key, json_object_get(value));
+    }
+    json_object *validated =
+        validated_event(json_object_to_json_string_ext(input, JSON_C_TO_STRING_PLAIN));
+    json_object_put(input);
+    bool valid = validated != NULL;
+    if (validated)
+        json_object_put(validated);
+    return valid;
+}
 static json_object *change_json(sqlite3_stmt *s, bool replay) {
     json_object *o = json_object_new_object();
     addint(o, "id", sqlite3_column_int64(s, 0));
@@ -1571,14 +1671,15 @@ static json_object *change_json(sqlite3_stmt *s, bool replay) {
     addstr(o, "state", (const char *)sqlite3_column_text(s, 3));
     addstr(o, "error", (const char *)sqlite3_column_text(s, 4));
     addint(o, "attempts", sqlite3_column_int64(s, 5));
+    addstr(o, "calendar_id", (const char *)sqlite3_column_text(s, 6));
     addbool(o, "replayed", replay);
     return o;
 }
-static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *form, int *status) {
-    const char *names[] = {"idempotency_key", "event", "event_id", "etag"};
+static json_object *enqueue_transaction(sqlite3_int64 user, const char *operation, Form *form, int *status) {
+    const char *names[] = {"idempotency_key", "event", "event_id", "etag", "expected_connection_id", "expected_calendar_id"};
     const char *key = field(form, "idempotency_key"), *id = field(form, "event_id"),
                *etag = field(form, "etag"), *text = field(form, "event");
-    if (!only_fields(form, names, 4) || strlen(key) < 8 || strlen(key) > 128) {
+    if (!only_fields(form, names, 6) || !idempotency_key_valid(key)) {
         *status = 400;
         return error_json("invalid_idempotency_key");
     }
@@ -1631,7 +1732,7 @@ static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *for
     char hash[65];
     digest(payload, hash);
     sqlite3_stmt *s =
-        prepare("SELECT id,idempotency_key,event_id,state,error,attempts,payload_hash FROM changes "
+        prepare("SELECT id,idempotency_key,event_id,state,error,attempts,calendar_id,payload_hash FROM changes "
                 "WHERE user_id=? AND idempotency_key=?");
     if (!s) {
         json_object_put(envelope);
@@ -1641,7 +1742,7 @@ static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *for
     sqlite3_bind_int64(s, 1, user);
     sqlite3_bind_text(s, 2, key, -1, SQLITE_TRANSIENT);
     if (sqlite3_step(s) == SQLITE_ROW) {
-        bool match = !strcmp((const char *)sqlite3_column_text(s, 6), hash);
+        bool match = !strcmp((const char *)sqlite3_column_text(s, 7), hash);
         json_object *o = match ? change_json(s, true) : error_json("idempotency_conflict");
         sqlite3_finalize(s);
         json_object_put(envelope);
@@ -1661,14 +1762,14 @@ static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *for
         *status = 409;
         return error_json("calendar_not_selected");
     }
-    free(calendar);
     int n = 0;
-    char change_purpose[200];
-    snprintf(change_purpose, sizeof(change_purpose), "change:%s", key);
-    char *blob = seal(user, change_purpose, payload, &n);
+    char purpose[256];
+    char *blob = change_payload_purpose(purpose, sizeof(purpose), key, calendar)
+                     ? seal(user, purpose, payload, &n)
+                     : NULL;
     s = blob ? prepare("INSERT INTO "
                        "changes(user_id,idempotency_key,payload_hash,operation,event_id,etag,"
-                       "payload,state,created) VALUES(?,?,?,?,?,?,?,'queued',?)")
+                       "payload,state,created,calendar_id) VALUES(?,?,?,?,?,?,?,'queued',?,?)")
              : NULL;
     bool ok = s != NULL;
     if (s) {
@@ -1680,12 +1781,14 @@ static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *for
         sqlite3_bind_text(s, 6, etag, -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob(s, 7, blob, n, SQLITE_TRANSIENT);
         sqlite3_bind_int64(s, 8, (sqlite3_int64)time(NULL));
+        sqlite3_bind_text(s, 9, calendar, -1, SQLITE_TRANSIENT);
         ok = sqlite3_step(s) == SQLITE_DONE;
         sqlite3_finalize(s);
     }
     free(blob);
     json_object_put(envelope);
     if (!ok) {
+        free(calendar);
         *status = 500;
         return error_json("queue_storage_failed");
     }
@@ -1695,12 +1798,43 @@ static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *for
     addstr(o, "event_id", id);
     addstr(o, "state", "queued");
     addbool(o, "replayed", false);
+    addstr(o, "calendar_id", calendar);
+    free(calendar);
     *status = 202;
     return o;
 }
-static bool row_purpose(char *out, size_t capacity, const char *prefix, const char *identity) {
-    int n = snprintf(out, capacity, "%s:%s", prefix, identity);
-    return n > 0 && (size_t)n < capacity;
+static json_object *enqueue(sqlite3_int64 user, const char *operation, Form *form, int *status) {
+    const char *connection = field(form, "expected_connection_id"), *calendar = field(form, "expected_calendar_id");
+    bool has_connection = false, has_calendar = false;
+    for (int i = 0; i < form->count; i++) {
+        if (!strcmp(form->fields[i].key, "expected_connection_id")) has_connection = true;
+        if (!strcmp(form->fields[i].key, "expected_calendar_id")) has_calendar = true;
+    }
+    if ((has_connection && (strlen(connection) != 64 || strspn(connection, "0123456789abcdef") != 64)) ||
+        (has_calendar && !safe_text(calendar, 1024, false))) {
+        *status = 400; return error_json("invalid_calendar_target");
+    }
+    if (!execute("BEGIN IMMEDIATE")) { *status = 503; return error_json("queue_storage_failed"); }
+    if (has_connection || has_calendar) {
+        sqlite3_stmt *s = prepare("SELECT connection_id,calendar_id FROM accounts WHERE user_id=?");
+        if (!s) { execute("ROLLBACK"); *status = 503; return error_json("queue_storage_failed"); }
+        sqlite3_bind_int64(s, 1, user);
+        int rc = sqlite3_step(s);
+        bool matches = rc == SQLITE_ROW && (!has_connection || !strcmp(connection, (const char *)sqlite3_column_text(s, 0))) &&
+                       (!has_calendar || !strcmp(calendar, (const char *)sqlite3_column_text(s, 1)));
+        sqlite3_finalize(s);
+        if (!matches) {
+            execute("ROLLBACK"); *status = rc == SQLITE_ROW || rc == SQLITE_DONE ? 409 : 503;
+            return error_json(*status == 409 ? "calendar_target_changed" : "queue_storage_failed");
+        }
+    }
+    json_object *result = enqueue_transaction(user, operation, form, status);
+    if (*status == 200 || *status == 202) {
+        if (!execute("COMMIT")) {
+            execute("ROLLBACK"); json_object_put(result); *status = 503; return error_json("queue_storage_failed");
+        }
+    } else execute("ROLLBACK");
+    return result;
 }
 static bool save_event(sqlite3_int64 user, const char *calendar, json_object *event) {
     const char *id = jstr(event, "id"), *etag = jstr(event, "etag"), *state = jstr(event, "status");
@@ -1834,7 +1968,7 @@ static bool reconcile(sqlite3_int64 user, sqlite3_int64 change, const char *cale
 static void flush_changes(sqlite3_int64 user, const char *calendar) {
     for (int batch = 0; batch < 20 && !stopping; batch++) {
         sqlite3_stmt *s =
-            prepare("SELECT id,idempotency_key,operation,event_id,etag,payload,state,attempts FROM "
+            prepare("SELECT id,idempotency_key,operation,event_id,etag,payload,state,attempts,calendar_id FROM "
                     "changes WHERE user_id=? AND state IN ('queued','unknown') AND next_attempt<=? "
                     "ORDER BY id LIMIT 1");
         if (!s)
@@ -1847,23 +1981,32 @@ static void flush_changes(sqlite3_int64 user, const char *calendar) {
         }
         sqlite3_int64 id = sqlite3_column_int64(s, 0);
         char *key = strdup((const char *)sqlite3_column_text(s, 1)),
-             *operation = strdup((const char *)sqlite3_column_text(s, 2)),
-             *event_id = strdup((const char *)sqlite3_column_text(s, 3)),
-             *etag = strdup((const char *)sqlite3_column_text(s, 4)),
+             *stored_operation = strdup((const char *)sqlite3_column_text(s, 2)),
+             *stored_id = strdup((const char *)sqlite3_column_text(s, 3)),
+             *stored_etag = strdup((const char *)sqlite3_column_text(s, 4)),
              *state = strdup((const char *)sqlite3_column_text(s, 6));
         int attempts = sqlite3_column_int(s, 7);
-        char purpose[200];
+        bool same_calendar = !strcmp((const char *)sqlite3_column_text(s, 8), calendar);
+        char purpose[256];
         char *plain = NULL;
-        if (key && row_purpose(purpose, sizeof(purpose), "change", key))
+        /* Only calendar-bound payloads are accepted; legacy ciphertext has no authenticated target. */
+        if (same_calendar && change_payload_purpose(purpose, sizeof(purpose), key, calendar))
             plain = unseal(user, purpose, sqlite3_column_blob(s, 5), sqlite3_column_bytes(s, 5));
         sqlite3_finalize(s);
-        if (!key || !operation || !event_id || !etag || !state || !plain) {
+        if (!same_calendar) {
+            change_state(id, "failed", "calendar_target_changed", 0);
+            free(key); free(stored_operation); free(stored_id); free(stored_etag); free(state); free(plain);
+            continue;
+        }
+        if (!key || !stored_operation || !stored_id || !stored_etag || !state || !plain) {
             change_state(id, "failed", "queue_integrity_failed", 0);
             free(key);
-            free(operation);
-            free(event_id);
-            free(etag);
+            free(stored_operation);
+            free(stored_id);
+            free(stored_etag);
             free(state);
+            if (plain)
+                OPENSSL_cleanse(plain, strlen(plain));
             free(plain);
             continue;
         }
@@ -1871,10 +2014,13 @@ static void flush_changes(sqlite3_int64 user, const char *calendar) {
         OPENSSL_cleanse(plain, strlen(plain));
         free(plain);
         json_object *event = NULL;
-        if (!envelope || !json_object_object_get_ex(envelope, "event", &event)) {
+        if (!queued_envelope_valid(envelope, stored_operation, stored_id, stored_etag, &event)) {
             change_state(id, "failed", "queue_integrity_failed", 0);
             goto next;
         }
+        /* Only authenticated envelope values may select a remote operation or its target. */
+        const char *operation = jstr(envelope, "operation"), *event_id = jstr(envelope, "event_id"),
+                   *etag = jstr(envelope, "etag");
         json_object *props = NULL, *priv = NULL;
         const char *marker = "";
         if (json_object_object_get_ex(event, "extendedProperties", &props) &&
@@ -1937,9 +2083,9 @@ static void flush_changes(sqlite3_int64 user, const char *calendar) {
         if (envelope)
             json_object_put(envelope);
         free(key);
-        free(operation);
-        free(event_id);
-        free(etag);
+        free(stored_operation);
+        free(stored_id);
+        free(stored_etag);
         free(state);
     }
 }
@@ -2365,8 +2511,67 @@ static json_object *events_list(sqlite3_int64 user, const char *query, int *stat
     free(cursor);
     return o;
 }
+static json_object *event_lookup(sqlite3_int64 user, const char *query, int *status) {
+    Form form;
+    if (!form_parse(query, &form)) { *status = 400; return error_json("invalid_query"); }
+    const char *names[] = {"event_id"};
+    const char *id = field(&form, "event_id");
+    if (!only_fields(&form, names, 1) || form.count != 1 || !event_identifier(id)) {
+        form_free(&form); *status = 400; return error_json("invalid_query");
+    }
+    char *calendar = NULL;
+    if (!get_calendar(user, &calendar, NULL)) {
+        free(calendar); form_free(&form); *status = 409; return error_json("calendar_not_selected");
+    }
+    sqlite3_stmt *s = prepare("SELECT payload FROM events WHERE user_id=? AND event_id=?");
+    if (!s) { free(calendar); form_free(&form); *status = 500; return error_json("cache_read_failed"); }
+    sqlite3_bind_int64(s, 1, user);
+    sqlite3_bind_text(s, 2, id, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(s);
+    json_object *raw = NULL;
+    if (rc == SQLITE_ROW) {
+        char purpose[2300];
+        snprintf(purpose, sizeof(purpose), "event:%s:%s", calendar, id);
+        char *plain = unseal(user, purpose, sqlite3_column_blob(s, 0), sqlite3_column_bytes(s, 0));
+        raw = plain ? parse_json(plain, strlen(plain)) : NULL;
+        free(plain);
+    }
+    sqlite3_finalize(s);
+    form_free(&form);
+    if (!raw || !json_object_is_type(raw, json_type_object)) {
+        if (raw) json_object_put(raw);
+        free(calendar);
+        *status = rc == SQLITE_DONE ? 404 : 500;
+        return error_json(rc == SQLITE_DONE ? "event_not_found" : "cache_integrity_failed");
+    }
+    json_object *result = json_object_new_object();
+    json_object_object_add(result, "event", public_event(raw));
+    json_object_put(raw);
+    addstr(result, "calendar_id", calendar);
+    free(calendar);
+    return result;
+}
+static json_object *change_lookup(sqlite3_int64 user, const char *query, int *status) {
+    Form form;
+    if (!form_parse(query, &form)) { *status = 400; return error_json("invalid_query"); }
+    const char *names[] = {"idempotency_key"};
+    const char *key = field(&form, "idempotency_key");
+    if (!only_fields(&form, names, 1) || form.count != 1 || !idempotency_key_valid(key)) {
+        form_free(&form); *status = 400; return error_json("invalid_query");
+    }
+    sqlite3_stmt *s = prepare("SELECT id,idempotency_key,event_id,state,error,attempts,calendar_id FROM changes WHERE user_id=? AND idempotency_key=?");
+    if (!s) { form_free(&form); *status = 500; return error_json("queue_read_failed"); }
+    sqlite3_bind_int64(s, 1, user);
+    sqlite3_bind_text(s, 2, key, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(s);
+    json_object *result = rc == SQLITE_ROW ? change_json(s, false) : NULL;
+    sqlite3_finalize(s);
+    form_free(&form);
+    if (!result) { *status = rc == SQLITE_DONE ? 404 : 500; return error_json(rc == SQLITE_DONE ? "change_not_found" : "queue_read_failed"); }
+    return result;
+}
 static json_object *changes_list(sqlite3_int64 user, int *status) {
-    sqlite3_stmt *s = prepare("SELECT id,idempotency_key,event_id,state,error,attempts FROM "
+    sqlite3_stmt *s = prepare("SELECT id,idempotency_key,event_id,state,error,attempts,calendar_id FROM "
                               "changes WHERE user_id=? ORDER BY id DESC LIMIT 101");
     if (!s) {
         *status = 500;
@@ -2649,6 +2854,10 @@ static json_object *route(Request *request, const char *address, int *status) {
             return calendars(user, query, status);
         if (!strcmp(suffix, "events"))
             return events_list(user, query, status);
+        if (!strcmp(suffix, "event"))
+            return event_lookup(user, query, status);
+        if (!strcmp(suffix, "change"))
+            return change_lookup(user, query, status);
         if (!strcmp(suffix, "changes") && !*query)
             return changes_list(user, status);
         *status = 404;

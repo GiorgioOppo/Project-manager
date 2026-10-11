@@ -78,7 +78,7 @@ Il controller verifica questa condizione prima di `init`, `recover` e dell'avvio
    ```
 
    `recover` avvia i membri esistenti e poi i servizi applicativi. Rispetta quorum e GTID; non è un nuovo seed. Non forzare bootstrap, non cancellare i marcatori e non sostituire `recover` con un’inizializzazione di volumi vuoti. Se il controller segnala divergenze, fermare la procedura e diagnosticare lo stato.
-6. Riavviare l’eventuale servizio `tickets` con il suo overlay, come nel [manuale Ticket](../../ticket-app/README.md). Verificare tre membri `ONLINE` / `PRIMARY`, salute dei servizi, login, dati delle commesse, PDF e API addon. La configurazione provider resta quella precedente.
+6. Riavviare l’eventuale servizio `tickets` con il suo overlay, come nel [manuale Ticket](../../ticket-app/README.it.md). Verificare tre membri `ONLINE` / `PRIMARY`, salute dei servizi, login, dati delle commesse, PDF e API addon. La configurazione provider resta quella precedente.
 
 Se i vecchi file non sono disponibili, individuare i container tramite le etichette `com.docker.compose.project` e `com.docker.compose.service`. Verificare il progetto originale e l’elenco concreto degli ID prima di fermarli e rimuoverli con `docker stop` e `docker rm`, **senza `-v`**. Non selezionare globalmente tutti i container del daemon. La tabella sopra fornisce i nomi legacy da ricercare; includere anche `app`, che deve essere fermata durante il passaggio del cluster.
 

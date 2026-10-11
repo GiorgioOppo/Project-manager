@@ -674,7 +674,7 @@ class TicketApplicationTests(unittest.TestCase):
                 self.assertIsNone(detail["ticket"][key], key)
             self.stop()
             with sqlite3.connect(legacy_path) as database:
-                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 3)
                 self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
                 self.assertEqual(database.execute("SELECT id,name,email,role,active,password_salt,password_hash,created_at FROM users").fetchone(), account)

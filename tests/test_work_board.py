@@ -607,19 +607,34 @@ class WorkBoardIntegrationTests(unittest.TestCase):
         entry = self.create_time(worker, job, date=self.today(), minutes=35, note="Prima dello schema otto")
         self.stop_server()
         with closing(sqlite3.connect(self.db_path)) as db:
+            # Restore the pre-lifecycle schema, including retained tables and
+            # references to the task tables, before rewinding the version marker.
+            for table in ("time_entry_batches", "time_corrections", "user_work_schedules",
+                          "user_work_exceptions", "business_holidays", "job_templates",
+                          "work_notifications"):
+                db.execute("DROP TABLE " + table)
+            db.execute("DROP INDEX time_entries_task")
+            for table, columns in (("jobs", ("time_closed", "archived", "lifecycle_revision")),
+                                   ("time_entries", ("revision", "task_id"))):
+                for column in columns:
+                    db.execute("ALTER TABLE " + table + " DROP COLUMN " + column)
             db.execute("DROP TABLE job_blockers")
             db.execute("DROP TABLE job_tasks")
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (8,9,10)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (8,9,10,12,13)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=7")
             db.commit()
             preserved_tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
                                 if row[0] not in ("audit_events", "sqlite_sequence")]
-            preserved = {table: db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall()
-                         for table in preserved_tables}
+            preserved = {}
+            for table in preserved_tables:
+                columns = ",".join('"' + row[1].replace('"', '""') + '"'
+                                   for row in db.execute('PRAGMA table_info("' + table + '")'))
+                query = 'SELECT ' + columns + ' FROM "' + table + '" ORDER BY rowid'
+                preserved[table] = (query, db.execute(query).fetchall())
             old_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()
         self.start_server()
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
@@ -629,11 +644,11 @@ class WorkBoardIntegrationTests(unittest.TestCase):
         history = self.get("/api/time-entries?date=" + self.today(), worker)
         self.assertEqual((history["total_minutes"], history["entries"][0]["id"]), (35, entry))
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
-            for table, rows in preserved.items():
-                self.assertEqual(db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
+            for table, (query, rows) in preserved.items():
+                self.assertEqual(db.execute(query).fetchall(), rows, table)
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (8,9,10)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=8").fetchone(), (1,))
             self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])

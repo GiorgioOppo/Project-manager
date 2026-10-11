@@ -22,11 +22,15 @@ Il registro usa il catalogo delle commesse esistenti e utilizzabili dall’utent
 
 ### Una commessa “Completata” o “Annullata” impedisce altre ore?
 
-Lo stato descrive la commessa, ma da solo non blocca le registrazioni. Il controllo attuale riguarda esistenza e abilitazione. Per limitare gli operatori, il gestore deve gestire ruolo, scadenza o revoca degli accessi, considerando anche gruppi e stato di commessa comune. I gestori conservano l’accesso globale alle commesse.
+Lo stato descrive la commessa, ma da solo non blocca le registrazioni. Per impedire nuove ore a tutti, anche ai gestori, usa la chiusura o l’archiviazione motivata: conserva dati e storico. La riapertura richiede un motivo. Ruoli, date e revoche continuano a regolare gli accessi individuali; la spiegazione degli accessi mostra anche percorsi alternativi diretti, di gruppo o comuni.
 
 ### Generale, Formazione, Riunioni e Attività interne compaiono su ogni nuova installazione?
 
 Sono il catalogo comune adottato per il progetto, configurabile dai gestori. Non sono un seed automatico obbligatorio del software: un’installazione nuova deve creare le commesse desiderate e abilitarne la casella Commessa comune. Gli account attivi creati in seguito potranno utilizzare le commesse comuni esistenti.
+
+### Sono Gestore: perché non vedo Contratti o Costo delle ore?
+
+I profili sono separati. In **Utenti → Profili** un gestore assegna Commerciali per creare/modificare fornitori, contratti e caricare PDF; Finance per consultarli e leggere aggregati economici e tariffe. Finance è in sola lettura; modificare tariffe richiede anche Gestore. L’assegnazione vale anche per le identità Keycloak e non deriva dai gruppi organizzativi. Nessun gestore riceve automaticamente Commerciali o Finance.
 
 ## Attività e blocchi
 
@@ -60,7 +64,7 @@ Un’altra modifica ha aggiornato lo stesso elemento. L’app impedisce di sovra
 
 ### Posso registrare ore su una specifica attività o ricevere avvisi sulla sua scadenza?
 
-Questi collegamenti sono ancora da sviluppare. Le ore appartengono alla commessa e il campo **Attività svolta / nota** è descrittivo. Scadenze, assegnazioni e stati della bacheca non producono email o notifiche automatiche. Dipendenze, Gantt e pianificazione del carico restano nella roadmap.
+Le ore appartengono alla commessa e possono collegare facoltativamente una sua attività; il campo **Attività svolta / nota** rimane descrittivo. Assegnazioni e scadenze alimentano avvisi operativi personali con controllo degli accessi, senza invio automatico di email. Completare un’attività non genera ore. Dipendenze, Gantt e pianificazione del carico restano nella roadmap.
 
 ### Cosa accade ai blocchi se elimino un’attività?
 
@@ -74,11 +78,11 @@ Nel campo delle ore puoi usare `0:30` o `1:30`, oppure il formato decimale corri
 
 ### Posso correggere le ore già inserite?
 
-Un gestore può modificare o eliminare le proprie registrazioni. L’operatore può inserirle e consultarle; il flusso di richiesta e approvazione delle rettifiche è pianificato. Il gestore non dispone di una modifica ordinaria delle righe intestate a un altro utente. Per anomalie operative rivolgersi al gestore, senza duplicare una registrazione per tentare di correggerla.
+Un gestore può modificare o eliminare le proprie registrazioni. L’operatore può usare **Richiedi rettifica**, proponendo una modifica o cancellazione con un motivo. Le ore cambiano solo dopo l’approvazione di un gestore diverso dall’autore della richiesta; originale, proposta, decisione e conflitti rimangono consultabili. Il gestore non dispone di un editor generico delle ore altrui. Non duplicare una registrazione per tentare di correggerla.
 
 ### Il gestore può vedere le mie ore?
 
-Può consultare gli aggregati nelle analisi per periodo, commessa e utente. Il Registro ore dettagliato rimane personale e le analisi non mostrano le note delle attività. Il gestore ha inoltre accesso allo Storico delle modifiche: gli eventi di audit possono contenere i dettagli prima/dopo delle operazioni. I permessi delle analisi e quelli dell’audit sono quindi distinti.
+Soltanto se fai parte della sua squadra: il gestore stesso, membri dei suoi gruppi organizzativi e dei sottogruppi. Può leggere aggregati e dettagli giorno/settimana in sola lettura; non modifica direttamente le tue righe. Rettifiche, Storico e alert sulle ore rispettano lo stesso ambito corrente. Un gestore senza gruppi, o con gruppi aziendali indisponibili, vede soltanto sé stesso. Finance non concede accesso alle registrazioni personali dei colleghi.
 
 ### Se perdo l’accesso a una commessa, perdo lo storico personale?
 
@@ -98,17 +102,17 @@ Manca una tariffa valida per l’utente e la data della registrazione. Le ore ri
 
 ### Il collegamento a un’analisi concede accesso ai dati?
 
-L’URL conserva vista e filtri. Chi lo apre deve comunque accedere e possedere i permessi necessari. Un operatore resta limitato alle proprie registrazioni; le viste economiche sono riservate ai gestori.
+L’URL conserva vista e filtri. Chi lo apre deve comunque accedere e possedere i permessi necessari. Un operatore resta limitato alle proprie registrazioni; il gestore resta nella propria squadra e le viste economiche richiedono Finance, con aggregati e senza filtro per persona.
 
 ## Alert, documenti e integrazioni
 
-### Quando compare un alert per una giornata con meno di otto ore?
+### Quando compare un alert per una giornata con meno ore del previsto?
 
-La giornata deve essere da lunedì a venerdì e devono essere trascorse 48 ore effettive dalla sua fine nel fuso Europe/Rome. L’anomalia viene rilevata al successivo controllo giornaliero della regola, oppure con Esegui ora quando la tolleranza è già scaduta. Per esempio, il lunedì termina martedì alle 00:00 e diventa verificabile giovedì alle 00:00.
+La giornata deve avere minuti attesi maggiori di zero e un totale inferiore all’atteso; devono essere trascorse 48 ore effettive dalla sua fine nel fuso Europe/Rome. L’anomalia viene rilevata al successivo controllo giornaliero della regola, oppure con Esegui ora quando la tolleranza è già scaduta. Per esempio, il lunedì termina martedì alle 00:00 e diventa verificabile giovedì alle 00:00.
 
 ### Il controllo considera ferie, festività e part time?
 
-Il criterio corrente è fisso: otto ore per ogni giornata lun–ven. Non è ancora presente un calendario di festività, assenze o orari individuali. Le relative eccezioni sono previste nella roadmap e non vanno presunte durante la lettura degli avvisi.
+Sì. In **Orari e assenze** il gestore configura orari settimanali con decorrenza, festività ed eccezioni personali. Per una giornata vale prima l’eccezione personale, poi la festività, infine l’ultimo orario in vigore. Un’assenza completa prevede zero minuti; senza configurazione valgono otto ore lun–ven e zero sab–dom. Gli avvisi già generati conservano il contesto rilevato al controllo.
 
 ### “Commessa inesistente” significa che sono state salvate ore senza commessa?
 
@@ -124,11 +128,11 @@ Il monitoraggio parte dalla creazione della regola e dall’ingresso dell’uten
 
 ### Se disattivo una regola, si fermano anche le email già preparate?
 
-La disattivazione sospende i controlli automatici, ma non cancella la coda email esistente. Quando SMTP sarà attivo, gli invii pendenti potranno essere elaborati se il proprietario è ancora un gestore attivo e l’indirizzo rimane tra i destinatari. Una consegna già iniziata non viene annullata. Prima di attivare il provider, il referente tecnico deve quindi verificare anche la coda preesistente.
+La disattivazione sospende i controlli automatici, ma non cancella la coda email esistente. Quando SMTP sarà attivo, gli invii pendenti potranno essere elaborati se il proprietario è ancora un gestore attivo e l’indirizzo rimane tra i destinatari. Per gli alert sulle ore l’indirizzo deve anche corrispondere a un account attivo autorizzato a leggere il soggetto, ancora visibile al proprietario della regola. Una consegna già iniziata non viene annullata. Prima di attivare il provider, il referente tecnico deve quindi verificare anche la coda preesistente.
 
 ### Perché un operatore destinatario non riceve gli avvisi di altre persone?
 
-Le notifiche interne rispettano l’ambito del destinatario. Un operatore riceve soltanto anomalie riferite al proprio lavoro; un gestore destinatario può ricevere quelle degli utenti monitorati. Selezionare qualcuno come destinatario non gli attribuisce il profilo Gestore.
+Le notifiche interne rispettano l’ambito del destinatario. Un operatore riceve soltanto anomalie riferite al proprio lavoro; un gestore destinatario può ricevere quelle della propria squadra. Anche il proprietario della regola deve poter leggere le ore del soggetto; la revoca nasconde gli avvisi già prodotti e il relativo contatore. Selezionare qualcuno come destinatario non gli attribuisce il profilo Gestore.
 
 ### Il caricamento di un PDF sostituisce quello precedente?
 

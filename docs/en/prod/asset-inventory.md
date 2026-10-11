@@ -26,7 +26,7 @@ Statuses are updated by the Manager. Assignment, handover and return also update
 
 ## Create and update a record
 
-With **New asset**, the Manager enters a unique inventory tag and a name. The tag distinguishes the asset even when other assets have the same model. Category is free-form and defaults to `hardware`; manufacturer, model, serial number and notes describe the asset. Text location and assignee fields remain compatible with older records; to link an asset to a person in the app, use structured assignment from the record.
+With **New asset**, the Manager enters a unique inventory tag and a name. The tag distinguishes the asset even when other assets have the same model. Category is free-form and defaults to `hardware`; manufacturer, model, serial number and notes describe the asset. Text location and assignee fields remain compatible with older records; to entrust an asset to a registered person, including someone without a Punto account, use structured assignment from the record.
 
 The type selects the record's fields, while category remains a free-form classification:
 
@@ -56,21 +56,21 @@ A person has a unique code, name, email, organization, job title, and notes. An 
 
 From an identity record, the Manager links one or more people as owner or user. A person record shows all associated identities. Search and pagination allow browsing and selection in large directories. Removal preserves history; deactivating an entry retains existing references and prevents new links.
 
-In an asset record, **Linked people and identities** lets the Manager record people and accounts as owner, user, or administrator. Directory records show directly linked assets and offer **View assets** to filter the catalog, dashboard, and export. Linking a shared account to an asset does not automatically assign that asset to everyone using the account. Links do not change asset status, handovers, license seats, or access permissions. Existing handovers continue to use Punto users.
+In an asset record, **Linked people and identities** lets the Manager record people and accounts as owner, user, or administrator. Directory records show directly linked assets and offer **View assets** to filter the catalog, dashboard, and export. These lists and filters use direct links only: handovers, operational assignments, and licenses do not automatically add assets to them. Linking a shared account to an asset does not automatically assign that asset to everyone using the account. Links do not change asset status, handovers, license seats, or access permissions. Previous handovers to Punto users are preserved.
 
 ## People, sites and locations
 
 The Manager can manage master records for **sites**, **departments** and **locations**, then select them in IT device, network equipment or physical asset records. Each location belongs to a site; a department can be linked to a site. The record checks that selected places are consistent. To change the site of a department or location already in use, first remove it from assets' current contexts. Master records can be deactivated; previous entries retain the names saved in history.
 
-Structured assignment links the asset to an active app user and sets its status to **Assigned**. Removing it returns an assigned asset to **Available**, retaining its location. The **My assets** filter shows assets linked to the current user; the full catalog remains viewable by all authenticated users.
+Structured assignment links the asset to an active registered person or a legacy Punto user and sets its status to **Assigned**. A person can have no app access; these recipient types remain distinct. Removing the assignment returns an assigned asset to **Available**, retaining its location. The **My assets** filter and user distribution apply only to Punto users, without automatically mapping people to login accounts; the full catalog remains viewable by all authenticated users.
 
-Software and licenses continue to use their own details and relationships: personal license assignments remain text-based. The general editor and CSV import do not replace the assignment, handover and return flow for assets already managed in a structured way.
+Software and licenses use their own details and relationships: licenses can have person or identity recipients according to their model, while preserving earlier text assignments. The general editor and CSV import do not replace the assignment, handover and return flow for assets already managed in a structured way. Earlier text or user references are not converted into people, and login accounts or direct asset links are not created automatically.
 
 ## Hand over, return and check an asset
 
-From the record, the Manager can register a **handover** to an active user, specifying date, expected return, initial condition and notes. The asset must be available or already structurally assigned to the same user, with no open handover. Handover assigns it to the user; an overdue expected return appears as late in the record.
+From the record, the Manager can register a **handover** to an active registered person, including someone without a Punto account, or to a legacy Punto user, specifying date, expected return, initial condition and notes. The asset must be available or already structurally assigned to the same recipient, with no open handover. Handover assigns it to the recipient; an overdue expected return appears as late in the record. Names are resolved by the server and retained in history.
 
-A **return** records the date, final condition and notes, closes the handover and removes personal assignment. The Manager chooses whether to make the asset available or put it under maintenance. Site, department and location remain recorded. Actual dates cannot be in the future, and expected return cannot precede handover.
+A **return** records the date, final condition and notes, closes the handover and removes personal assignment. Return remains possible if the person has since been deactivated. The Manager chooses whether to make the asset available or put it under maintenance. Site, department and location remain recorded. Actual dates cannot be in the future, and expected return cannot precede handover.
 
 **Physical check** records date, condition, optional observed location and notes. The record retains the most recent check and allows previous checks to be viewed. An observed location differing from the expected one is recorded as a discrepancy: it does not automatically move the asset. Checks are manual operations; receiving periodic alerts requires configuring an **Inventory verifications** rule.
 
@@ -88,9 +88,11 @@ Relationships are manually recorded by the Manager and appear on both source and
 
 - **Software** can be installed on an IT device or network equipment. The relationship can record an installed version different from the software record's version.
 - An **IT device or network equipment** can be connected to other network equipment, specifying ports on both sides.
-- A **license** can be assigned to a device or person according to the selected model. The person is free text, not an app account.
+- A **license** can be assigned to a device, registered person, or identity according to the selected model. Text assignees remain supported for compatibility.
 
-The **per-device** model requires an IT device or network equipment record. **By user** requires a text assignee. **Concurrent** and **site** allow recording a device or assignee, one at a time. The relationship's quantity consumes seats specified in the license: counts show assigned and remaining seats based on these records.
+The **per-device** model requires an IT device or network equipment record. **By user** allows a person, an identity, or a legacy text assignee. **Concurrent** and **site** also allow a device. Each relationship has exactly one recipient; new structured assignments require active people or identities. The relationship's quantity consumes seats specified in the license: a shared identity used by three people with quantity one consumes one seat. Counts do not multiply seats by the identity's members or verify the supplier's terms.
+
+The server retains a copy of the recipient at allocation time: renaming, deactivation, or changes to the identity's members do not rewrite the relationship or its history. A license allocation does not create direct asset links, handovers, person–identity associations, or Punto login accounts.
 
 Active relationships cannot be duplicated, purchased seats cannot be exceeded, expired licenses cannot be assigned, and links cannot be made to retired or lost records. Capacity cannot fall below already assigned seats. To change a license's software or model, first remove its active assignments.
 

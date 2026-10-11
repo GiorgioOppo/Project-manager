@@ -2,6 +2,7 @@
 #include "storage.h"
 #include "mail_client.h"
 #include "inventory_client.h"
+#include "access_control.h"
 
 #include <json-c/json.h>
 
@@ -684,6 +685,18 @@ typedef struct {
     DbInt notifications,emails_queued;
 } Delivery;
 
+static int email_time_access(const char *email, DbInt subject) {
+    DbStmt *statement = NULL;
+    if (!prepare(&statement, "SELECT id,role FROM users WHERE email=? AND active=1") ||
+        !bind_text(statement, 1, email)) { db_finalize(statement); return -1; }
+    int result = db_step(statement);
+    DbInt actor = result == DB_ROW ? db_column_int64(statement, 0) : 0;
+    bool manager = result == DB_ROW && strcmp(column_text(statement, 1), "manager") == 0;
+    db_finalize(statement);
+    if (result != DB_ROW) return result == DB_DONE ? 0 : -1;
+    return access_policy_can_view_time(database, actor, subject, manager);
+}
+
 static bool load_delivery(DbInt id, Delivery *delivery) {
     memset(delivery,0,sizeof(*delivery)); DbStmt *statement=NULL;
     if (!prepare(&statement,"SELECT u.id,u.role FROM alert_rule_users r JOIN users u ON u.id=r.user_id "
@@ -709,7 +722,11 @@ static bool deliver(DbInt rule_id, Delivery *delivery, DbInt subject, const char
     DbStmt *statement=NULL;
     for (size_t i=0;i<delivery->user_count;i++) {
         RecipientUser *user=&delivery->users[i];
-        if (!inventory && !user->manager && user->user_id!=subject) continue;
+        if (!inventory) {
+            int allowed = access_policy_can_view_time(database, user->user_id, subject, user->manager);
+            if (allowed < 0) return false;
+            if (!allowed) continue;
+        }
         if (!prepare(&statement,"INSERT INTO alert_notifications(rule_id,recipient_id,subject_user_id,event_key,title,message,work_date,recorded_minutes,created_at) "
             "SELECT ?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM alert_notifications WHERE rule_id=? AND recipient_id=? AND event_key=?)") ||
             !bind_id(statement,1,rule_id) || !bind_id(statement,2,user->user_id) || !bind_id(statement,3,inventory ? user->user_id : subject) ||
@@ -721,6 +738,11 @@ static bool deliver(DbInt rule_id, Delivery *delivery, DbInt subject, const char
         delivery->notifications+=db_changes(database); db_finalize(statement); statement=NULL;
     }
     for (size_t i=0;i<delivery->email_count;i++) {
+        if (!inventory) {
+            int allowed = email_time_access(delivery->emails[i], subject);
+            if (allowed < 0) return false;
+            if (!allowed) continue;
+        }
         if (!prepare(&statement,"INSERT INTO alert_email_outbox(rule_id,email,subject_user_id,event_key,title,message,created_at,status) "
             "SELECT ?,?,?,?,?,?,?,'pending_configuration' WHERE NOT EXISTS(SELECT 1 FROM alert_email_outbox WHERE rule_id=? AND email=? AND event_key=?)") ||
             !bind_id(statement,1,rule_id) || !bind_text(statement,2,delivery->emails[i]) || !bind_id(statement,3,subject) ||
@@ -732,7 +754,7 @@ static bool deliver(DbInt rule_id, Delivery *delivery, DbInt subject, const char
     return true;
 }
 
-static bool run_invalid(DbInt rule_id, DbInt *cursor, Delivery *delivery, const char *utc) {
+static bool run_invalid(DbInt rule_id, DbInt owner, DbInt *cursor, Delivery *delivery, const char *utc) {
     DbStmt *events=NULL;
     if (!prepare(&events,"SELECT e.id,e.user_id,e.job_id,e.work_date,e.minutes,u.name,u.active "
         "FROM alert_events e JOIN users u ON u.id=e.user_id WHERE e.id>? ORDER BY e.id LIMIT 1000") ||
@@ -742,6 +764,9 @@ static bool run_invalid(DbInt rule_id, DbInt *cursor, Delivery *delivery, const 
         *cursor=db_column_int64(events,0);
         if (!db_column_int(events,6)) continue;
         DbInt subject=db_column_int64(events,1),job=db_column_int64(events,2),minutes=db_column_int64(events,4);
+        int allowed = access_policy_can_view_time(database, owner, subject, true);
+        if (allowed < 0) { db_finalize(events); return false; }
+        if (!allowed) continue;
         const char *day=column_text(events,3); char key[128],message[900];
         (void)snprintf(key,sizeof(key),"invalid:%lld:%lld:%s",(long long)subject,(long long)job,day);
         (void)snprintf(message,sizeof(message),"%s ha tentato di registrare %lld minuti il %s sulla commessa inesistente #%lld. La registrazione è stata rifiutata.",
@@ -753,7 +778,35 @@ static bool run_invalid(DbInt rule_id, DbInt *cursor, Delivery *delivery, const 
     db_finalize(events); return result==DB_DONE;
 }
 
-static bool run_missing(DbInt rule_id, Delivery *delivery, const char *today,
+/* Calendar exceptions override public holidays, then the latest effective
+   personal schedule. Missing schedules retain the original weekday target. */
+static int expected_minutes(DbInt user, const char *day) {
+    DbStmt *statement = NULL;
+    if (!prepare(&statement, "SELECT expected_minutes FROM user_work_exceptions WHERE user_id=? AND date=?") ||
+        !bind_id(statement, 1, user) || !bind_text(statement, 2, day)) { db_finalize(statement); return -1; }
+    int result = db_step(statement);
+    if (result == DB_ROW) { int minutes = db_column_int(statement, 0); db_finalize(statement); return minutes; }
+    db_finalize(statement); statement = NULL;
+    if (result != DB_DONE) return -1;
+    if (!prepare(&statement, "SELECT date FROM business_holidays WHERE date=?") || !bind_text(statement, 1, day)) {
+        db_finalize(statement); return -1;
+    }
+    result = db_step(statement); db_finalize(statement); statement = NULL;
+    if (result == DB_ROW) return 0;
+    if (result != DB_DONE) return -1;
+    struct tm local;
+    if (!date_tm(day, &local) || mktime(&local) == (time_t)-1) return -1;
+    int weekday = (local.tm_wday + 6) % 7;
+    if (!prepare(&statement, "SELECT mon,tue,wed,thu,fri,sat,sun FROM user_work_schedules "
+        "WHERE user_id=? AND starts_on<=? ORDER BY starts_on DESC LIMIT 1") ||
+        !bind_id(statement, 1, user) || !bind_text(statement, 2, day)) { db_finalize(statement); return -1; }
+    result = db_step(statement);
+    int minutes = result == DB_ROW ? db_column_int(statement, weekday) : weekday < 5 ? 480 : 0;
+    db_finalize(statement);
+    return result == DB_ROW || result == DB_DONE ? minutes : -1;
+}
+
+static bool run_missing(DbInt rule_id, DbInt owner, Delivery *delivery, const char *today,
                         const char *utc, time_t now) {
     DbStmt *statement=NULL;
     if (!prepare(&statement,"INSERT INTO alert_subjects(rule_id,user_id,starts_on) "
@@ -768,6 +821,9 @@ static bool run_missing(DbInt rule_id, Delivery *delivery, const char *today,
     int result;
     while ((result=db_step(subjects))==DB_ROW) {
         DbInt subject=db_column_int64(subjects,0); char day[11],checked[11]="";
+        int allowed = access_policy_can_view_time(database, owner, subject, true);
+        if (allowed < 0) { db_finalize(subjects); return false; }
+        if (!allowed) continue;
         const char *last=column_text(subjects,2);
         (void)snprintf(day,sizeof(day),"%s",*last ? last : column_text(subjects,1));
         if (!valid_date(day) || (*last && !next_day(day))) { db_finalize(subjects); return false; }
@@ -778,17 +834,19 @@ static bool run_missing(DbInt rule_id, Delivery *delivery, const char *today,
             boundary.tm_mday++; time_t end=mktime(&boundary);
             if (end==(time_t)-1) { db_finalize(subjects); return false; }
             if (difftime(now,end)<48.0*60.0*60.0) break;
-            if (alerts_workday_due(day,now)) {
+            int target = expected_minutes(subject, day);
+            if (target < 0) { db_finalize(subjects); return false; }
+            if (target > 0) {
                 if (!prepare(&statement,"SELECT COALESCE(SUM(minutes),0) FROM time_entries WHERE user_id=? AND date=?") ||
                     !bind_id(statement,1,subject) || !bind_text(statement,2,day) || db_step(statement)!=DB_ROW) {
                     db_finalize(statement); db_finalize(subjects); return false;
                 }
                 DbInt minutes=db_column_int64(statement,0); db_finalize(statement); statement=NULL;
-                if (minutes<480) {
+                if (minutes<target) {
                     char key[96],message[900];
                     (void)snprintf(key,sizeof(key),"missing:%lld:%s",(long long)subject,day);
-                    (void)snprintf(message,sizeof(message),"%s: il %s risultano registrati %lld minuti su 480 previsti. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa.",
-                        column_text(subjects,3),day,(long long)minutes);
+                    (void)snprintf(message,sizeof(message),"%s: il %s risultano registrati %lld minuti su %d previsti. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa.",
+                        column_text(subjects,3),day,(long long)minutes,target);
                     if (!deliver(rule_id,delivery,subject,key,"Ore giornaliere incomplete",message,day,minutes,utc,false)) { db_finalize(subjects); return false; }
                 }
             }
@@ -977,8 +1035,8 @@ static void run_rule(DbInt id, DbInt owner, time_t now, bool scheduled, Workspac
     }
     Delivery delivery;
     if (!load_delivery(id,&delivery) ||
-        (strcmp(type,"invalid_job")==0 ? !run_invalid(id,&cursor,&delivery,utc) :
-         strcmp(type,"missing_hours")==0 ? !run_missing(id,&delivery,today,utc,now) :
+        (strcmp(type,"invalid_job")==0 ? !run_invalid(id,owner,&cursor,&delivery,utc) :
+         strcmp(type,"missing_hours")==0 ? !run_missing(id,owner,&delivery,today,utc,now) :
          strcmp(type,"inventory_due")==0 ? !run_inventory(id,owner,&delivery,due_items,today,days_before,utc) :
          inventory_rule_type(type) ? !run_inventory_operational(id,owner,&delivery,due_items,today,type,verification_days,utc) : true)) goto failure;
     if (!prepare(&statement,"UPDATE alert_rules SET last_run_at=?,last_run_on=?,last_event_id=? WHERE id=? AND owner_id=?") ||
@@ -1045,7 +1103,7 @@ static void dispatch_email(time_t now) {
     DbStmt *statement=NULL;
     int result=DB_DONE;
     for (int pass=0;pass<2;pass++) {
-        if (!prepare(&statement,"SELECT e.id,e.rule_id,e.email,e.title,e.message,e.status "
+        if (!prepare(&statement,"SELECT e.id,e.rule_id,e.email,e.title,e.message,e.status,e.subject_user_id,r.type,r.owner_id "
             "FROM alert_email_outbox e JOIN alert_rules r ON r.id=e.rule_id JOIN users u ON u.id=r.owner_id "
             "JOIN alert_rule_emails recipients ON recipients.rule_id=e.rule_id AND recipients.email=e.email "
             "WHERE e.status IN ('pending_configuration','retrying') AND e.id>? AND u.active=1 "
@@ -1064,9 +1122,20 @@ static void dispatch_email(time_t now) {
     char *title=duplicate(column_text(statement,3));
     char *message=duplicate(column_text(statement,4));
     char *previous=duplicate(column_text(statement,5));
+    DbInt subject = db_column_int64(statement, 6), owner = db_column_int64(statement, 8);
+    bool personal_time = !inventory_rule_type(column_text(statement, 7));
     db_finalize(statement);
     if (!email || !title || !message || !previous) goto done;
     last_delivery_id=id;
+    if (personal_time) {
+        int owner_allowed = access_policy_can_view_time(database, owner, subject, true);
+        int recipient_allowed = email_time_access(email, subject);
+        if (owner_allowed < 0 || recipient_allowed < 0) goto done;
+        if (!owner_allowed || !recipient_allowed) {
+            update_email_status(id, rule, previous, "delivery_failed");
+            goto done;
+        }
+    }
     char key[128];
     int length=snprintf(key,sizeof(key),"%s:outbox:%lld",mail_client_namespace(),(long long)id);
     if (length<0 || (size_t)length>=sizeof(key)) goto done;
@@ -1157,15 +1226,17 @@ static void notification_event_json(Json *json, const char *key) {
 
 static void list_notifications(DbInt actor, bool manager, WorkspaceResponse *response) {
     DbStmt *statement=NULL; Json json={0};
-    if (!prepare(&statement,"SELECT COUNT(*) FROM alert_notifications WHERE recipient_id=? AND read_at IS NULL "
-        "AND (?=1 OR subject_user_id=?)") || !bind_id(statement,1,actor) || !bind_id(statement,2,manager) ||
-        !bind_id(statement,3,actor) || db_step(statement)!=DB_ROW) goto failure;
-    DbInt unread=db_column_int64(statement,0); db_finalize(statement); statement=NULL;
+    DbInt unread=0;
     if (!prepare(&statement,"SELECT id,rule_id,subject_user_id,title,message,work_date,recorded_minutes,created_at,read_at,event_key "
-        "FROM alert_notifications WHERE recipient_id=? AND (?=1 OR subject_user_id=?) ORDER BY id DESC LIMIT 100") ||
+        "FROM alert_notifications WHERE recipient_id=? AND (?=1 OR subject_user_id=?) ORDER BY id DESC") ||
         !bind_id(statement,1,actor) || !bind_id(statement,2,manager) || !bind_id(statement,3,actor)) goto failure;
     append(&json,"{\"notifications\":["); int result; size_t count=0;
     while ((result=db_step(statement))==DB_ROW) {
+        int visible = access_policy_can_view_time(database, actor, db_column_int64(statement, 2), manager);
+        if (visible < 0) goto failure;
+        if (!visible) continue;
+        if (db_column_type(statement, 8) == DB_NULL) unread++;
+        if (count >= 100) continue;
         if (count++) append(&json,",");
         append(&json,"{\"id\":"); append_integer(&json,db_column_int64(statement,0));
         append(&json,",\"rule_id\":"); append_integer(&json,db_column_int64(statement,1));
@@ -1195,11 +1266,16 @@ static void read_notification(DbInt id, DbInt actor, bool manager, const char *b
     if (!clock_text(time(NULL),day,utc)) { server_error(response); return; }
     if (!begin_transaction(response)) return;
     DbStmt *statement=NULL;
-    if (!prepare(&statement,"SELECT 1 FROM alert_notifications WHERE id=? AND recipient_id=? AND (?=1 OR subject_user_id=?)") ||
+    if (!prepare(&statement,"SELECT subject_user_id FROM alert_notifications WHERE id=? AND recipient_id=? AND (?=1 OR subject_user_id=?)") ||
         !bind_id(statement,1,id) || !bind_id(statement,2,actor) || !bind_id(statement,3,manager) || !bind_id(statement,4,actor)) goto failure;
-    int result=db_step(statement); db_finalize(statement); statement=NULL;
+    int result=db_step(statement);
+    DbInt subject = result == DB_ROW ? db_column_int64(statement, 0) : 0;
+    db_finalize(statement); statement=NULL;
     if (result==DB_DONE) { rollback(); error(response,404,"Notifica non trovata."); return; }
     if (result!=DB_ROW) goto failure;
+    int visible = access_policy_can_view_time(database, actor, subject, manager);
+    if (visible < 0) goto failure;
+    if (!visible) { rollback(); error(response,404,"Notifica non trovata."); return; }
     if (!prepare(&statement,"UPDATE alert_notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND recipient_id=?") ||
         !bind_text(statement,1,utc) || !bind_id(statement,2,id) || !bind_id(statement,3,actor) || db_step(statement)!=DB_DONE) goto failure;
     db_finalize(statement); statement=NULL;
@@ -1231,9 +1307,11 @@ bool alerts_handle(const char *method, const char *target, const char *query,
     response->status=0; response->body=NULL;
     if (!database) { server_error(response); return true; }
     if (actor_id<=0) { error(response,401,"Accedi per continuare."); return true; }
-    bool manager=role && strcmp(role,"manager")==0;
-    bool worker=role && strcmp(role,"worker")==0;
-    if ((!manager && !worker) || ((rules || rule_item) && !manager)) {
+    AccessPolicy policy = {0};
+    int resolved = access_policy_resolve(database, actor_id, role, &policy);
+    if (resolved < 0) { server_error(response); return true; }
+    bool manager = policy.manager;
+    if (!resolved || ((rules || rule_item) && !manager)) {
         error(response,403,"Solo i gestori possono configurare gli alert."); return true;
     }
     if (!query) query="";

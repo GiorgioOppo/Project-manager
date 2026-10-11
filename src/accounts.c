@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <json-c/json.h>
+#include <ctype.h>
 
 #ifdef __APPLE__
 #include <CommonCrypto/CommonCryptoError.h>
@@ -550,7 +552,10 @@ int accounts_lookup_email(const char *email, Account *out) {
 
 static void list_users(WorkspaceResponse *response) {
     DbStmt *statement = NULL;
-    if (!prepare(&statement, "SELECT id,email,name,role,active FROM users ORDER BY id LIMIT 201")) {
+    if (!prepare(&statement, "SELECT u.id,u.email,u.name,u.role,u.active,"
+        "EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code='sales'),"
+        "EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code='finance') "
+        "FROM users u ORDER BY u.id LIMIT 201")) {
         server_error(response); return;
     }
     Json json = {0};
@@ -565,6 +570,14 @@ static void list_users(WorkspaceResponse *response) {
         append(&json, ",\"role\":"); append_string(&json, column_text(statement, 3));
         append(&json, ",\"active\":");
         append(&json, db_column_int(statement, 4) == 1 ? "true" : "false");
+        append(&json, ",\"access_groups\":[");
+        if (db_column_int(statement, 4) == 1) {
+            append_string(&json, "operator");
+            if (strcmp(column_text(statement, 3), "manager") == 0) append(&json, ",\"manager\"");
+            if (db_column_int(statement, 5)) append(&json, ",\"sales\"");
+            if (db_column_int(statement, 6)) append(&json, ",\"finance\"");
+        }
+        append(&json, "]");
         append(&json, "}");
     }
     db_finalize(statement);
@@ -871,10 +884,210 @@ done:
     free_fields(fields, count);
 }
 
+int accounts_access_policy(DbInt id, AccessPolicy *out) {
+    return access_policy_resolve(database, id, NULL, out);
+}
+
+static int access_user_json(DbInt id, Json *json) {
+    DbStmt *statement = NULL;
+    if (!prepare(&statement, "SELECT role,active FROM users WHERE id=?") ||
+        db_bind_int64(statement, 1, id) != DB_OK) goto failure;
+    int step = db_step(statement);
+    if (step == DB_DONE) { db_finalize(statement); return 0; }
+    if (step != DB_ROW) goto failure;
+    bool manager = strcmp(column_text(statement, 0), "manager") == 0;
+    bool active = db_column_int(statement, 1) == 1;
+    db_finalize(statement); statement = NULL;
+    bool sales = false, finance = false;
+    if (!prepare(&statement, "SELECT group_code FROM access_group_members WHERE user_id=?") ||
+        db_bind_int64(statement, 1, id) != DB_OK) goto failure;
+    while ((step = db_step(statement)) == DB_ROW) {
+        const char *code = column_text(statement, 0);
+        if (strcmp(code, "sales") == 0) sales = true;
+        else if (strcmp(code, "finance") == 0) finance = true;
+        else goto failure;
+    }
+    if (step != DB_DONE) goto failure;
+    db_finalize(statement);
+    append(json, "{\"user_id\":"); append_integer(json, id);
+    append(json, active ? ",\"active\":true" : ",\"active\":false");
+    append(json, manager ? ",\"role\":\"manager\"" : ",\"role\":\"worker\"");
+    append(json, ",\"selected\":[");
+    if (sales) append_string(json, "sales");
+    if (finance) { if (sales) append(json, ","); append_string(json, "finance"); }
+    append(json, "],\"effective\":[");
+    if (active) {
+        append_string(json, "operator");
+        if (manager) append(json, ",\"manager\"");
+        if (sales) append(json, ",\"sales\"");
+        if (finance) append(json, ",\"finance\"");
+    }
+    append(json, "]}");
+    return json->failed ? -1 : 1;
+failure:
+    db_finalize(statement);
+    return -1;
+}
+
+static void list_access_groups(WorkspaceResponse *response) {
+    DbStmt *statement = NULL;
+    const char *sql = "SELECT g.code,g.name,g.builtin,"
+        "(SELECT COUNT(*) FROM users u WHERE g.code='operator' OR (g.code='manager' AND u.role='manager') "
+        "OR EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code=g.code)),"
+        "(SELECT COUNT(*) FROM users u WHERE u.active=1 AND (g.code='operator' OR (g.code='manager' AND u.role='manager') "
+        "OR EXISTS(SELECT 1 FROM access_group_members m WHERE m.user_id=u.id AND m.group_code=g.code))) "
+        "FROM access_groups g ORDER BY CASE g.code WHEN 'operator' THEN 0 WHEN 'manager' THEN 1 "
+        "WHEN 'sales' THEN 2 ELSE 3 END";
+    if (!prepare(&statement, sql)) { server_error(response); return; }
+    Json json = {0}; append(&json, "{\"groups\":[");
+    int step;
+    unsigned rows = 0;
+    while ((step = db_step(statement)) == DB_ROW) {
+        const char *code = column_text(statement, 0);
+        bool implicit = strcmp(code, "operator") == 0 || strcmp(code, "manager") == 0;
+        if (++rows > 4 || (!implicit && strcmp(code, "sales") != 0 && strcmp(code, "finance") != 0) ||
+            db_column_int(statement, 2) != 1) { json.failed = true; break; }
+        if (rows > 1) append(&json, ",");
+        append(&json, "{\"code\":"); append_string(&json, code);
+        append(&json, ",\"name\":"); append_string(&json, column_text(statement, 1));
+        append(&json, implicit ? ",\"builtin\":true,\"implicit\":true,\"editable\":false" :
+                                 ",\"builtin\":true,\"implicit\":false,\"editable\":true");
+        append(&json, ",\"member_count\":"); append_integer(&json, db_column_int64(statement, 3));
+        append(&json, ",\"active_member_count\":"); append_integer(&json, db_column_int64(statement, 4));
+        append(&json, "}");
+    }
+    if (step != DB_DONE || rows != 4) json.failed = true;
+    db_finalize(statement);
+    append(&json, "]}");
+    finish_json(response, 200, &json);
+}
+
+static bool parse_access_groups(const char *text, bool *sales, bool *finance) {
+    *sales = false; *finance = false;
+    size_t length = text ? strlen(text) : 0;
+    if (!length || length > FORM_LIMIT) return false;
+    struct json_tokener *tokener = json_tokener_new();
+    if (!tokener) return false;
+    json_tokener_set_flags(tokener, JSON_TOKENER_STRICT);
+    struct json_object *array = json_tokener_parse_ex(tokener, text, (int)length);
+    size_t end = json_tokener_get_parse_end(tokener);
+    bool okay = json_tokener_get_error(tokener) == json_tokener_success;
+    while (end < length && isspace((unsigned char)text[end])) end++;
+    okay = okay && end == length && array && json_object_get_type(array) == json_type_array &&
+        json_object_array_length(array) <= 2;
+    for (size_t index = 0; okay && index < json_object_array_length(array); index++) {
+        struct json_object *item = json_object_array_get_idx(array, index);
+        if (!item || json_object_get_type(item) != json_type_string) { okay = false; break; }
+        const char *code = json_object_get_string(item);
+        if (!code || strlen(code) != (size_t)json_object_get_string_len(item)) { okay = false; break; }
+        if (strcmp(code, "sales") == 0 && !*sales) *sales = true;
+        else if (strcmp(code, "finance") == 0 && !*finance) *finance = true;
+        else okay = false;
+    }
+    json_object_put(array);
+    json_tokener_free(tokener);
+    return okay;
+}
+
+static void write_access_groups(const char *body, DbInt id, DbInt actor_id,
+                                 WorkspaceResponse *response) {
+    Field fields[] = {{"groups", NULL}};
+    if (!parse_fields(body, fields, 1, response)) return;
+    bool sales, finance;
+    if (!parse_access_groups(fields[0].value, &sales, &finance)) {
+        free_fields(fields, 1);
+        error(response, 400, "Scegli soltanto Commerciali e Finance, senza duplicati.");
+        return;
+    }
+    free_fields(fields, 1);
+    if (!begin_transaction(response)) return;
+    DbStmt *statement = NULL;
+    Json before = {0}, after = {0};
+    AccessPolicy actor;
+    int resolved = accounts_access_policy(actor_id, &actor);
+    if (resolved < 0) goto failure;
+    if (!resolved || !actor.manager) {
+        rollback(); error(response, 403, "Solo i gestori possono amministrare i profili funzionali.");
+        goto done;
+    }
+    int found = access_user_json(id, &before);
+    if (found < 0) goto failure;
+    if (!found) { rollback(); error(response, 404, "Utente non trovato."); goto done; }
+    if (!prepare(&statement, "DELETE FROM access_group_members WHERE user_id=?") ||
+        db_bind_int64(statement, 1, id) != DB_OK || db_step(statement) != DB_DONE) goto failure;
+    db_finalize(statement); statement = NULL;
+    const char *codes[] = {"sales", "finance"};
+    bool selected[] = {sales, finance};
+    for (size_t index = 0; index < 2; index++) {
+        if (!selected[index]) continue;
+        if (!prepare(&statement, "INSERT INTO access_group_members(group_code,user_id) VALUES(?,?)") ||
+            !bind_text(statement, 1, codes[index]) || db_bind_int64(statement, 2, id) != DB_OK ||
+            db_step(statement) != DB_DONE) goto failure;
+        db_finalize(statement); statement = NULL;
+    }
+    if (access_user_json(id, &after) != 1 ||
+        !storage_audit(database, actor_id, "users.access_groups.update", "user", id,
+                       before.data, after.data)) goto failure;
+    if (commit_transaction(response)) {
+        Json json = {0}; append(&json, "{\"ok\":true,");
+        append_bytes(&json, after.data + 1, after.length - 1);
+        finish_json(response, 200, &json);
+    }
+    goto done;
+failure:
+    db_finalize(statement); statement = NULL;
+    rollback(); server_error(response);
+done:
+    free(before.data); free(after.data);
+}
+
+static bool access_groups_handle(const char *method, const char *target, const char *query,
+                                 const char *body, const Account *actor,
+                                 WorkspaceResponse *response) {
+    bool catalogue = strcmp(target, "/api/access-groups") == 0;
+    const char *suffix = strncmp(target, "/api/users/", 11) == 0 ? strchr(target + 11, '/') : NULL;
+    bool membership = suffix && strcmp(suffix, "/access-groups") == 0;
+    if (!catalogue && !membership) return false;
+    response->body = NULL; response->status = 0;
+    if (!actor) { error(response, 401, "Accedi per continuare."); return true; }
+    AccessPolicy policy;
+    int resolved = accounts_access_policy(actor->id, &policy);
+    if (resolved < 0) { server_error(response); return true; }
+    if (!resolved || !policy.manager) {
+        error(response, 403, "Solo i gestori possono amministrare i profili funzionali."); return true;
+    }
+    if (query && *query) { error(response, 400, "Parametri della richiesta non validi."); return true; }
+    if (catalogue) {
+        if (strcmp(method, "GET") == 0) list_access_groups(response);
+        else error(response, 405, "Metodo non consentito.");
+        return true;
+    }
+    char number[32];
+    size_t length = (size_t)(suffix - (target + 11));
+    DbInt id = 0;
+    if (length == 0 || length >= sizeof(number)) {
+        error(response, 404, "Utente non trovato."); return true;
+    }
+    memcpy(number, target + 11, length); number[length] = '\0';
+    if (!parse_id(number, &id)) { error(response, 404, "Utente non trovato."); return true; }
+    if (strcmp(method, "POST") == 0) write_access_groups(body, id, actor->id, response);
+    else if (strcmp(method, "GET") == 0) {
+        Json json = {0};
+        int found = access_user_json(id, &json);
+        if (found != 1) {
+            free(json.data);
+            if (!found) error(response, 404, "Utente non trovato.");
+            else server_error(response);
+        } else finish_json(response, 200, &json);
+    } else error(response, 405, "Metodo non consentito.");
+    return true;
+}
+
 bool accounts_handle(const char *method, const char *target, const char *query,
                      const char *body, const Account *actor,
                      WorkspaceResponse *response) {
     if (!method || !target || !response) return false;
+    if (access_groups_handle(method, target, query, body, actor, response)) return true;
     bool collection = strcmp(target, "/api/users") == 0;
     bool item = strncmp(target, "/api/users/", 11) == 0;
     if (!collection && !item) return false;

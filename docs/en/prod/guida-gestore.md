@@ -8,23 +8,38 @@ The **Manager** administers the workspace and also uses their personal Time log.
 
 1. Register people in **Users**.
 2. Organize departments and teams in **Groups and roles**, when group management reduces individual assignments.
-3. Register **Suppliers** and **Contracts** for projects with a reference agreement.
+3. With the **Sales** profile, register **Suppliers** and **Contracts** for projects with a reference agreement.
 4. Create **Projects** and define which are shared and which require specific grants.
 5. Assign users or groups with appropriate roles and dates.
 6. Organize **Tasks and blockers** for each project, with owners, due dates and next actions.
-7. Enter **Hourly rates** to estimate labor cost.
+7. With **Manager + Finance**, enter **Hourly rates** to estimate labor cost.
 8. Configure **Alerts and triggers** with time and recipients.
 9. Use **Analysis**, **Notifications** and **History** for subsequent checks.
 
 Settings do not automatically assign hours. Reporting remains an action by the person who performed the work.
 
+## Assign functional profiles
+
+Identity roles and functional profiles are separate. Every active account automatically has **Operator** access; **Manager** derives from the account role. **Sales** and **Finance** require an explicit assignment, including for managers and Keycloak-managed accounts. Existing managers do not automatically receive either profile.
+
+| Profile | What it enables |
+| --- | --- |
+| Operator | Personal work and time entry on authorized projects |
+| Manager | Operational administration; detailed hours and analysis for their team; decisions on other team members’ corrections |
+| Sales | Creating and editing suppliers and contracts, uploading and downloading PDFs |
+| Finance | Viewing suppliers, contracts and PDFs; contract values and labor costs aggregated by project; reading hourly rates |
+
+To assign the two explicit profiles, open **Users → Profiles**, select **Sales** and/or **Finance**, and save. Clearing a profile revokes it from the next request. **Finance** alone is read-only; creating or editing hourly rates requires both **Manager + Finance**. Changing a project’s contract link requires **Manager + Sales**.
+
+The hours team includes the manager themselves, members of their organizational groups and their subgroups. A manager without groups sees only their own hours; if company groups are unavailable, scope narrows to the individual. Organizational groups do not assign Sales or Finance, and these profiles do not extend access to personal hours. Finance receives financial aggregates by project, without colleagues’ personal entries or a person filter.
+
 ## Create and manage users
 
 Open **Users** and press **New user**. Enter Name, Email, Initial password and Role, then press **Create user**. The initial password must have at least 8 characters; it is not shown in the list or history. Deliver credentials through your organization's chosen channel.
 
-Choose **Operator** for people who must view authorized projects and log personal work. Choose **Manager** for people who must administer the workspace: this profile has global powers in the current workspace, not limited to a department.
+Choose **Operator** for people who must view authorized projects and log personal work. Choose **Manager** for people who must administer the workspace: the role enables operational administration of the workspace; other people’s personal hours and financial features follow the scopes described above.
 
-With **Edit**, change name, role and **Active / Deactivated** status. Email identifies the account and cannot be edited. This form has no password reset.
+With **Identity**, change name, role and **Active / Deactivated** status for local accounts. For Keycloak-managed identities, administer these fields in the provider; **Profiles** remains locally manageable. Email identifies the account and cannot be edited. This form has no password reset.
 
 | Operation | Effect |
 | --- | --- |
@@ -34,7 +49,7 @@ With **Edit**, change name, role and **Active / Deactivated** status. Email iden
 | Reactivate | Allows a new login; does not restore revoked sessions |
 | Deactivate or demote the last active Manager | Rejected to retain someone responsible for the workspace |
 
-Current management allows up to 200 users. Deactivated accounts can still appear in managers' historical analyses.
+Current management allows up to 200 users. Deactivated accounts can still appear in their team managers’ historical analyses.
 
 ## Build the group tree
 
@@ -68,6 +83,8 @@ Predefined roles cannot be edited. Custom-role changes apply to every grant usin
 
 ## Register a supplier
 
+Creating or editing requires **Sales**. Finance views the catalog read-only; the Manager role alone does not open this section.
+
 1. Open **Suppliers** and press **New supplier**.
 2. Enter a unique **Code** and **Company name / name**.
 3. Complete VAT number, Email, Phone, Address and Notes when available.
@@ -77,6 +94,8 @@ Predefined roles cannot be edited. Custom-role changes apply to every grant usin
 Search works by name, code or VAT number; the filter distinguishes Active and Deactivated. Editing data and deactivating do not delete linked contracts. A new contract can select only an active supplier; an existing link can be retained. This section has no supplier qualification process or documentary certification check.
 
 ## Register a contract and its PDFs
+
+Creating or editing contracts and uploading PDFs requires **Sales**. Finance can view and download; the Manager role alone does not grant access.
 
 1. Open **Contracts** and press **New contract**.
 2. Enter a unique **Code** and **Title**.
@@ -93,7 +112,7 @@ Search works by name, code or VAT number; the filter distinguishes Active and De
 | Closed | Concluded agreement |
 | Cancelled | Agreement no longer used |
 
-The manager selects these labels: passing the end date does not automatically change status. End cannot precede start. Value is optional and uses EUR; an empty field means **undefined value**, while `0` is an explicit amount. Write amounts without thousands separators and with at most two decimals, for example `12500,00`.
+A user with the Sales profile selects these labels: passing the end date does not automatically change status. End cannot precede start. Value is optional and uses EUR; an empty field means **undefined value**, while `0` is an explicit amount. Write amounts without thousands separators and with at most two decimals, for example `12500,00`.
 
 For documents:
 
@@ -104,7 +123,7 @@ For documents:
 
 PDFs up to 10 MiB each are accepted. Each upload adds a document: it does not replace one with the same name. Deleting, editing and inline document preview are unavailable. Metadata includes a content fingerprint, and downloading checks byte integrity. Uploading does not perform OCR, automatic classification or antivirus scanning.
 
-The archive is restricted to managers. Granting an operator access to a linked project does not grant access to contracts or PDFs.
+The archive is viewable with Sales or Finance; only Sales uploads documents. Granting an operator access to a linked project does not grant access to contracts or PDFs.
 
 ## Create, update and close a project
 
@@ -112,11 +131,11 @@ The archive is restricted to managers. Granting an operator access to a linked p
 2. Enter a unique **Project code** and **Project name**.
 3. Set **Status**.
 4. Optionally fill Client and Description.
-5. If needed, select a registered **Contract**.
+5. If you also have Sales, optionally select a registered **Contract**.
 6. Decide whether to enable **Shared project**.
 7. Press **Create project**.
 
-Available statuses are **Not started**, **In progress**, **Paused**, **Completed** and **Cancelled**. There is no mandatory transition order: the manager can update status according to work. **Status does not block time entry.** To prevent new hours, manage project permissions and, where relevant, disable the shared option.
+Available statuses are **Not started**, **In progress**, **Paused**, **Completed** and **Cancelled**. There is no mandatory transition order: the manager can update status according to work. Status labels alone do not block time entry. Use closure or archiving with a reason to prevent new hours for everyone, including managers, while retaining data; reopening also requires a reason. The summary shows open tasks and blockers before the decision.
 
 A project can refer to only one contract, while the same contract can be used by multiple projects. A new link cannot use a Closed or Cancelled contract. If an already-linked contract changes status, the reference can remain. Selecting **No contract** removes the link.
 
@@ -135,7 +154,7 @@ Endpoints are inclusive; an empty date field leaves that side unlimited. One dir
 
 Operator viewing requires a grant valid today. Logging requires **the same grant** to allow writing and cover both today and the work date. Two separate grants, each valid on only one of the dates, do not combine for this check.
 
-A person can receive permissions through multiple paths. Viewer does not cancel Contributor; if at least one valid path permits logging, the action remains allowed. **Confirm revocation** removes the selected link. To remove access entirely, also check other groups, parent groups, direct assignments and any Shared project checkbox. The Manager profile retains global powers independently of these grants.
+A person can receive permissions through multiple paths. Viewer does not cancel Contributor; if at least one valid path permits logging, the action remains allowed. **Confirm revocation** removes the selected link. To remove access entirely, also check other groups, parent groups, direct assignments and any Shared project checkbox. The Manager role retains project administration independently of these grants; this does not extend access to other people’s hours or financial profiles.
 
 Changes also apply to open sessions. Previous personal entries remain viewable after a simple revocation.
 
@@ -158,7 +177,7 @@ Deleting a task first requires moving or deleting children. Any blockers remain 
 
 Changes use a revision: a save based on an earlier version is rejected. On conflict, note your edits before closing the draft, reload data and compare it. History records tasks, blockers and blocker detachment when a task is deleted.
 
-Hours remain associated with the project. Task deadlines and assignments do not automatically generate alerts or email. Details and permission matrix: [Tasks, Kanban and blockers](attivita-kanban-e-blocchi.md).
+Hours remain associated with the project and can optionally link a task. Assignments and deadlines generate personal operational notices subject to access checks; they do not automatically send email. Details and permission matrix: [Tasks, Kanban and blockers](attivita-kanban-e-blocchi.md).
 
 ## Permanently delete a project
 
@@ -172,11 +191,11 @@ Deletion has no recycle bin or undo in the app. To retain historical work, keep 
 
 The manager can log time against projects without an individual assignment. Their personal **Time log** also provides **Edit** and deletion with **Delete entry** confirmation. These commands affect personal rows.
 
-Access to overall analyses does not permit editing others' hours. An operator correction-request and approval workflow is planned. Do not delete a project to correct one error: doing so deletes every linked entry, task and blocker.
+In the Time log, the person selector lets managers view team members’ days and weeks read-only. Direct editing and deletion remain personal. The correction queue shows only team requests; a manager other than the author can approve or reject a reasoned proposal. Approval rechecks revision, access and limits; a changed or deleted entry produces a conflict. Do not delete a project to correct one error: doing so deletes every linked entry, task and blocker.
 
 ## View the five Analysis views
 
-**From**, **To**, **Project** and **User** filters combine. Dates are inclusive; the maximum interval is 366 days. Use **Apply**, **Reset** and quick periods. The selection appears in the URL, but the link does not extend the opener's permissions.
+In work views, **From**, **To**, **Project** and **User** filters combine within the visible team. Finance views use dates and project, without a person filter. Dates are inclusive; the maximum interval is 366 days. Use **Apply**, **Reset** and quick periods. The selection appears in the URL, but the link does not extend the opener's permissions.
 
 | View | Question answered | Correct interpretation |
 | --- | --- | --- |
@@ -184,13 +203,15 @@ Access to overall analyses does not permit editing others' hours. An operator co
 | **By project** | Which projects take the time? | Hours, entries and people involved, with current project status |
 | **By user** | How is work distributed among people? | Also includes deactivated accounts with hours in the period |
 | **Contract value** | Which agreements are linked to logged work? | Counts each distinct contract's full value once; does not allocate it by hours |
-| **Cost of hours** | What is the work worth at entered rates? | Estimate by person and project, with coverage and hours without a rate |
+| **Cost of hours** | What is the work worth at entered rates? | Estimate aggregated by project, with coverage and hours without a rate |
 
-The first three views show all users' aggregates to the manager. They are not lists of individual notes. The last two are restricted to managers.
+The first three views show managers aggregates for their own team and operators only their personal data. Reports do not include individual notes. The last two require Finance and return financial aggregates without colleagues’ personal rows; Sales alone does not grant cost access.
 
 In Contract value, a 10,000 EUR contract linked to two projects is counted as 10,000 EUR overall, not 20,000. Even if the period contains only one hour, the displayed value is the whole agreement value. Changing the project's link also changes analysis results for historical hours.
 
 ## Enter hourly rates
+
+Finance can read rates. Creating or editing them through the following steps requires both **Manager + Finance**.
 
 1. Open **Analysis → Labor cost**.
 2. In **Hourly rates**, press **New rate**.
@@ -221,7 +242,7 @@ At least one recipient across the two channels is required. Each rule allows up 
 
 **Project does not exist** reports rejected attempts on deleted or nonexistent projects. It does not report an already-accepted invalid entry: saving is blocked. A normal authorization error on an existing project is not equivalent to this check.
 
-**Missing daily hours** checks fewer than 480 minutes per person, Monday–Friday, after 48 actual hours from the day's end. Monitoring begins with the rule; later users are monitored from the first check including them. Active users are considered, not just selected recipients. A manager recipient can therefore receive everyone's alerts; an operator recipient receives only personal ones. Email addresses are explicit channel recipients, not accounts subject to the personal filter applied to in-app notifications.
+**Missing daily hours** compares the total with each person’s expected minutes after 48 actual hours from the day’s end. Personal exceptions take precedence over holidays, followed by the latest effective schedule; without configuration it uses 480 minutes Monday–Friday. Monitoring begins with the rule; later users are monitored from the first check including them. Active users in the rule owner’s team are considered, not just selected recipients. Recipients receive time details only while they can still view them: operators see themselves, managers their own team. Time-alert emails also require an address associated with an authorized active account; external addresses do not receive these details. Permissions are rechecked before delivery and when opening the list; revocation also hides historical notices that are no longer accessible.
 
 An automatic rule runs once per local day; last and next run appear on its card. If created after today's time has passed, its first scheduled run is the next day. The service must be active: the time is a processing deadline, not a guarantee of delivery to the second.
 
@@ -229,7 +250,7 @@ Press **Run now** for a manual check, including on a suspended rule. Results rep
 
 A manual check also consumes the same day's automatic run. Disabling the rule does not delete queued emails: with SMTP active, these can still be sent to recipients remaining configured. The UI provides no command to cancel the whole queue.
 
-The 8 hours are not a mandatory entry limit: they are an alert threshold. Public holidays, leave and part-time work cannot yet be configured. Changing check type restarts its monitoring; changing name, time or recipients must not be interpreted as a complete historical rerun.
+Eight hours is the default alert threshold, not a mandatory entry limit. In **Schedules and absences**, configure weekly schedules with effective dates, personal exceptions and holidays; a full absence has zero expected minutes. Changing check type restarts its monitoring; changing name, time or recipients must not be interpreted as a complete historical rerun.
 
 The email channel is implemented, but **SMTP still needs configuration**. Alerts intended for email remain pending and are not sent. In-app notifications are available without SMTP. Any future SMTP acceptance will attest that the server accepted the message, not that it was read or finally delivered.
 
@@ -240,6 +261,8 @@ If the owner is deactivated or loses Manager profile, their rules no longer run 
 Open **History** to see changes from newest to oldest. Use **Show**, expand before/after details and press **Load earlier** to continue. **Refresh** reloads events.
 
 History includes projects, tasks, blockers, hours, grants, accounts, groups, roles, suppliers, contracts, document uploads, rates and rules. Passwords are not included. A change and its event are saved together: if the app cannot record history, it rolls back the change too.
+
+Time-entry and correction events are limited to the visible team. Commercial details and rates also follow current functional profiles; knowing an event ID does not bypass these checks.
 
 History explains what changed but is not a restore command. After deletion, historical information does not automatically recreate removed records.
 

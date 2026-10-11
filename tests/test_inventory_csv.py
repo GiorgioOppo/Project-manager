@@ -311,6 +311,17 @@ class InventoryCsvTests(unittest.TestCase):
         self.stop()
         with closing(sqlite3.connect(self.db)) as database:
             # Remove all later additions, preserving the actual previous v2 schema.
+            database.executescript("""
+                DROP INDEX active_relation_person;
+                DROP INDEX active_relation_identity;
+                DROP INDEX active_relation_assignee;
+                DROP INDEX relation_person_id;
+                DROP INDEX relation_identity_id;
+                ALTER TABLE asset_relations DROP COLUMN person_id;
+                ALTER TABLE asset_relations DROP COLUMN identity_id;
+                ALTER TABLE asset_relations DROP COLUMN subject_snapshot;
+                CREATE UNIQUE INDEX active_relation_assignee ON asset_relations(source_id,relation_type,assignee COLLATE NOCASE) WHERE active=1 AND target_id IS NULL;
+            """)
             for table in ("inventory_asset_subjects", "inventory_entity_history", "inventory_identity_people", "inventory_identities", "inventory_people",
                           "asset_verifications", "asset_custody", "asset_context", "inventory_places"):
                 database.execute("DROP TABLE " + table)
@@ -321,7 +332,7 @@ class InventoryCsvTests(unittest.TestCase):
         self.assertEqual(self.rows(), [asset])
         self.assertEqual(self.history_count(), 1)
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
         status, preview = self.preview("asset_tag,name\nAFTER,Nuovo\n")
         self.assertEqual(status, 200, preview)

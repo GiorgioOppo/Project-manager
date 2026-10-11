@@ -4,9 +4,11 @@
 
 Questo documento raccoglie il comportamento corrente che incide sull’organizzazione del lavoro e sull’interpretazione dei dati. Le procedure con i comandi dell’interfaccia sono nelle guide [utente](guida-utente.md) e [gestore](guida-gestore.md).
 
-## 1. Due livelli di autorizzazione
+## 1. Profili funzionali, squadra e ruoli sulle commesse
 
-Il profilo dell’account stabilisce i poteri nello spazio; il ruolo sulla commessa regola la consultazione e la registrazione dell’operatore su quella risorsa.
+Ogni account attivo ha Operatore implicito; Gestore deriva dal ruolo dell’identità. Commerciali e Finance sono profili espliciti assegnati localmente in **Utenti → Profili**, anche agli account Keycloak. Nessun gestore li riceve automaticamente. Il ruolo sulla commessa resta distinto e regola consultazione e registrazione dell’operatore su quella risorsa.
+
+La squadra del gestore comprende sé stesso, i membri dei suoi gruppi organizzativi e dei sottogruppi. Senza gruppi, o con gruppi aziendali indisponibili, vede soltanto le proprie ore. Il controllo vale per registro dettagliato giorno/settimana, report del lavoro, riepiloghi delle ore, rettifiche, audit e notifiche. Finance non amplia questa squadra.
 
 | Azione | Gestore | Operatore |
 | --- | --- | --- |
@@ -18,22 +20,28 @@ Il profilo dell’account stabilisce i poteri nello spazio; il ruolo sulla comme
 | Segnalare un blocco | Sì | Con accesso Collaboratore valido oggi |
 | Modificare un blocco | Tutti, compreso il responsabile | Solo se autore o responsabile e ancora Collaboratore; non cambia il responsabile |
 | Eliminare un blocco | Sì | No |
-| Registrare le proprie ore | Su tutte le commesse esistenti | Su commesse comuni o con abilitazione alla registrazione valida oggi e nella giornata lavorata |
+| Registrare le proprie ore | Su tutte le commesse esistenti non chiuse o archiviate | Su commesse non chiuse o archiviate, comuni o con abilitazione alla registrazione valida oggi e nella giornata lavorata |
 | Leggere il proprio registro | Sì | Sì, anche dopo revoca dell’abilitazione |
 | Modificare o eliminare le proprie ore | Sì | No |
-| Modificare le singole ore altrui | No nel flusso corrente | No |
-| Consultare Analisi del lavoro | Aggregati di tutti gli utenti | Solo le proprie registrazioni |
-| Consultare valori contrattuali e tariffe | Sì | No |
-| Amministrare fornitori, contratti e PDF | Sì | No |
+| Modificare le singole ore altrui | Solo approvando una rettifica richiesta da un’altra persona della squadra; nessun editor generico | No |
+| Leggere ore dettagliate e Analisi del lavoro | Propria squadra, anche in sola lettura giorno/settimana | Solo le proprie registrazioni |
 | Amministrare utenti, gruppi, ruoli e abilitazioni | Sì | No |
 | Creare e modificare regole di alert | Solo le proprie regole | No |
-| Leggere notifiche | Destinate al proprio account, anche relative ad altri utenti | Destinate al proprio account e relative a sé |
-| Consultare Storico | Sì | No |
+| Leggere notifiche | Destinate al proprio account; dettagli sulle ore limitati alla propria squadra | Destinate al proprio account e relative a sé |
+| Consultare Storico | Sì, ore della squadra e dettagli economici secondo i profili | No |
 | Usare le API Calendar | Solo il proprio collegamento | Solo il proprio collegamento |
 
 La verifica viene ripetuta dal server. Nascondere un pulsante è una conseguenza dei permessi, non la protezione principale. Modifiche a ruolo, abilitazioni, gruppi e ruoli operativi si applicano anche alle sessioni aperte. La disattivazione dell’account revoca le sessioni; la riattivazione richiede un nuovo login.
 
-Il gestore dispone dello storico amministrativo, che può contenere informazioni sulle modifiche alle ore di altri utenti, e degli alert configurati. La limitazione del Registro ore personale non equivale quindi a una promessa che qualsiasi dettaglio del lavoro sia invisibile ai gestori.
+| Dati economici | Profilo necessario |
+| --- | --- |
+| Consultare fornitori, contratti, metadati PDF e scaricare originali | Commerciali oppure Finance |
+| Creare/modificare fornitori e contratti, caricare PDF | Commerciali |
+| Cambiare il contratto collegato a una commessa | Gestore + Commerciali |
+| Leggere Valore contratti, Costo delle ore e tariffe | Finance |
+| Creare/modificare tariffe | Gestore + Finance |
+
+Finance è in sola lettura e riceve report economici aggregati per commessa, senza registrazioni personali di terzi né filtri per persona. Il solo ruolo Gestore non apre contratti, PDF o costi. Le assegnazioni organizzative e quelle funzionali sono separate; la revoca viene verificata anche sulle risorse già note e sulle sessioni aperte.
 
 ## 2. Come si determina l’accesso alla commessa
 
@@ -53,13 +61,14 @@ La revoca di un solo collegamento può lasciare attivi altri percorsi. Rendere u
 
 ## 3. Stati, chiusura e cancellazione
 
-Gli stati della commessa sono Da avviare, In corso, In pausa, Completata e Annullata. Sono classificazioni gestite manualmente; non esistono passaggi obbligatori o approvazioni. **Nessuno stato, da solo, impedisce nuove ore.** Per limitare la registrazione si interviene su accessi e proprietà di commessa comune.
+Gli stati della commessa sono Da avviare, In corso, In pausa, Completata e Annullata. Sono classificazioni gestite manualmente; non esistono passaggi obbligatori o approvazioni. Le etichette di stato non impediscono da sole nuove ore. La chiusura o l’archiviazione motivata blocca invece nuove registrazioni per tutti, compresi i gestori, senza cancellare dati. La riapertura richiede un motivo; riepilogo e revisione proteggono la decisione.
 
-Gli stati dei contratti sono Bozza, Attivo, Scaduto, Chiuso e Annullato. Anche questi vengono modificati dal gestore; la data finale non genera una transizione automatica. Contratti Chiusi o Annullati non possono essere scelti per un nuovo collegamento a una commessa, mentre i collegamenti precedenti possono rimanere.
+Gli stati dei contratti sono Bozza, Attivo, Scaduto, Chiuso e Annullato. Anche questi vengono modificati da chi ha Commerciali; la data finale non genera una transizione automatica. Contratti Chiusi o Annullati non possono essere scelti per un nuovo collegamento a una commessa, mentre i collegamenti precedenti possono rimanere.
 
 | Operazione | Ore esistenti | Accessi | Altri dati |
 | --- | --- | --- | --- |
 | Cambiare stato della commessa | Conservate | Invariati | Aggiornamento nello Storico |
+| Chiudere o archiviare la commessa | Conservate | Consultazione conservata; nuove ore bloccate per tutti | Dati conservati, motivo e revisione nello Storico |
 | Revocare un grant | Conservate e consultabili dall’autore | Rimosso quel percorso; altri possono rimanere | La commessa rimane |
 | Disattivare un utente | Conservate negli aggregati e nello storico | Login bloccato | Account conservato |
 | Eliminare una propria registrazione, da Gestore | Rimossa quella riga | Invariati | Evento nello Storico |
@@ -83,7 +92,7 @@ L’eliminazione dell’attività è rifiutata se ha figli; i blocchi collegati 
 
 ## 4. Regole del registro ore
 
-Ogni registrazione contiene persona, commessa, giornata, minuti e nota facoltativa. La nota non è un collegamento a una delle attività del Kanban. La persona è ricavata dalla sessione e identificata in modo stabile; non è un campo liberamente modificabile dal browser.
+Ogni registrazione contiene persona, commessa, giornata, minuti, nota facoltativa ed eventuale collegamento a una singola attività della stessa commessa. La nota rimane descrittiva. La persona è ricavata dalla sessione e identificata in modo stabile; non è un campo liberamente modificabile dal browser.
 
 - Durata per riga: da 1 a 1440 minuti.
 - Totale per persona e giornata: massimo 1440 minuti, sommando tutte le commesse.
@@ -95,9 +104,9 @@ Ogni registrazione contiene persona, commessa, giornata, minuti e nota facoltati
 
 Le durate sono minuti interi. Il formato decimale viene convertito esattamente: `1,5` = 90 minuti; `1:30` = 90 minuti; `1,30` = 78 minuti. Un valore che richiederebbe frazioni di minuto viene rifiutato.
 
-Il limite di 24 ore è un vincolo di integrità. La soglia di 8 ore degli alert è un controllo informativo separato: si possono salvare meno o più di 8 ore, entro il limite di 24, senza un’approvazione automatica del foglio ore.
+Il limite di 24 ore è un vincolo di integrità. La soglia degli alert, predefinita a 8 ore nei feriali e configurabile tramite orari ed eccezioni, è un controllo informativo separato: si possono salvare meno o più di 8 ore, entro il limite di 24, senza un’approvazione automatica del foglio ore.
 
-Il prodotto non contiene ancora griglia settimanale, copia giornata, approvazione delle ore, rettifiche richieste dall’operatore o salvataggio offline. Le normali registrazioni non dispongono ancora della ricevuta generale di idempotenza progettata nella roadmap: se un esito è incerto, verificare il registro prima di ripetere l’inserimento.
+Sono disponibili griglia settimanale, copia della settimana precedente con anteprima, inserimenti multipli atomici e rettifiche richieste dall’operatore. Le rettifiche conservano originale e proposta e richiedono la decisione di un gestore della squadra diverso dall’autore. Il salvataggio multiplo usa una ricevuta di idempotenza; per un inserimento singolo dall’esito incerto verificare il registro prima di ripeterlo. Copia della sola giornata, approvazione generale dei consuntivi e salvataggio offline restano da sviluppare.
 
 ## 5. Relazione tra fornitori, contratti, documenti e commesse
 
@@ -113,7 +122,9 @@ Il limite per file è 10 MiB e sono ammessi fino a 1000 documenti per contratto.
 
 I filtri data includono il primo e l’ultimo giorno e ammettono al massimo 366 giorni. Una data singola usa lo stesso valore in Dal e Al. I conteggi derivano da tutte le registrazioni filtrate; i gruppi di risultato sono limitati a 1000 e un superamento produce un errore esplicito.
 
-Il gestore può aggregare più persone, anche disattivate. L’operatore vede soltanto se stesso, compreso il proprio storico su commesse revocate. Le note delle registrazioni non sono incluse nei report; le attività del Kanban non sono aggregate nelle analisi delle ore. Conservare o condividere un URL con filtri non concede permessi aggiuntivi.
+Il gestore può aggregare le persone della propria squadra, anche disattivate. L’operatore vede soltanto se stesso, compreso il proprio storico su commesse revocate. Le note delle registrazioni non sono incluse nei report; le attività del Kanban non sono aggregate nelle analisi delle ore. Conservare o condividere un URL con filtri non concede permessi aggiuntivi.
+
+Le viste economiche richiedono Finance, non ammettono il filtro Utente e non restituiscono le registrazioni personali altrui. Costo delle ore raggruppa per commessa. Le tariffe sono consultabili con Finance e modificabili soltanto con Gestore + Finance.
 
 ### Valore contratti
 
@@ -148,11 +159,11 @@ Gli eventi già precedenti alla creazione della regola non vengono notificati co
 
 ### Ore giornaliere mancanti
 
-Sono esaminate le giornate dal lunedì al venerdì degli utenti attivi monitorati. Il totale inferiore a 480 minuti genera un avviso dopo almeno **48 ore effettive dalla fine della giornata**, interpretata in Europe/Rome.
+Sono esaminate le giornate degli utenti attivi monitorati con minuti attesi maggiori di zero. Un totale inferiore ai minuti attesi genera un avviso dopo almeno **48 ore effettive dalla fine della giornata**, interpretata in Europe/Rome. Si applicano nell’ordine eccezione personale, festività e ultimo orario in vigore; senza configurazione valgono 480 minuti lun–ven e zero sab–dom.
 
-Esempio senza cambio d’ora: la giornata di lunedì termina martedì alle 00:00. La tolleranza scade giovedì alle 00:00; una regola delle 09:00 la valuta giovedì alle 09:00. Il fine settimana è escluso come giornata da completare, ma le sue ore cronologiche contano nella tolleranza. Una regola può essere eseguita anche sabato o domenica per rilevare una giornata feriale diventata verificabile.
+Esempio senza cambio d’ora: la giornata di lunedì termina martedì alle 00:00. La tolleranza scade giovedì alle 00:00; una regola delle 09:00 la valuta giovedì alle 09:00. Nel calendario predefinito il fine settimana non richiede ore, ma un orario individuale può prevederle. Le ore cronologiche del fine settimana contano nella tolleranza. Una regola può essere eseguita anche sabato o domenica per rilevare una giornata feriale diventata verificabile.
 
-Il cambio tra ora solare e legale non trasforma la tolleranza in «due date di calendario»: restano 48 ore effettive. Non sono configurabili festività, ferie, part time o soglie individuali. Sono monitorati tutti gli utenti attivi, anche i gestori; i destinatari scelti determinano chi riceve l’esito.
+Il cambio tra ora solare e legale non trasforma la tolleranza in «due date di calendario»: restano 48 ore effettive. Il gestore configura festività, ferie e orari individuali in **Orari e assenze**. Le decorrenze degli orari conservano le aspettative delle giornate precedenti; le eccezioni personali definiscono i minuti attesi per una data. Sono monitorati gli utenti attivi della squadra del proprietario, anche i gestori; i destinatari scelti ricevono soltanto dettagli sulle ore che sono autorizzati a leggere.
 
 Il monitoraggio comincia dalla creazione della regola. Un utente aggiunto successivamente è incluso dal primo controllo che lo registra come soggetto, senza recupero di periodi anteriori al proprio monitoraggio. Una giornata già esaminata non è continuamente ricontrollata: la notifica conserva il totale rilevato, anche se le ore vengono poi integrate o cancellate. Non rappresenta uno stato sempre aggiornato di approvazione della giornata.
 
@@ -162,13 +173,15 @@ Il fuso dell’orario scelto è Europe/Rome. L’automatismo salva l’ultima gi
 
 Un’esecuzione manuale aggiorna il giorno già elaborato e impedisce un secondo turno automatico nella stessa giornata. Sospendere la regola non elimina le email pendenti; la consegna controlla proprietario e destinatario ancora ammessi, separatamente dall’attivazione del turno giornaliero. Il [motore alert](../tehnical/motore-alert.md) descrive cursori e casi di ripartenza.
 
-Sono ammessi fino a 50 utenti destinatari e 50 indirizzi email per regola, con almeno un destinatario complessivo. Le notifiche in app rispettano il profilo del destinatario: un Operatore riceve soltanto i propri eventi, un Gestore può ricevere quelli di tutti i soggetti monitorati. Un indirizzo email è invece una destinazione configurata esplicitamente dal gestore, non un utente sottoposto al filtro personale della UI.
+Sono ammessi fino a 50 utenti destinatari e 50 indirizzi email per regola, con almeno un destinatario complessivo. Gli alert sulle ore rispettano l’ambito sia del proprietario sia del destinatario: un Operatore riceve soltanto i propri eventi, un Gestore quelli della propria squadra. Anche gli indirizzi email devono corrispondere ad account attivi autorizzati; gli indirizzi esterni non ricevono dettagli sulle ore. La consegna ricontrolla i permessi correnti. Le regole inventory conservano il proprio ambito del catalogo condiviso.
 
 Il canale email conserva gli invii in coda mentre SMTP è assente. Gli esiti possono distinguere attesa di configurazione, nuovo tentativo, accettazione SMTP, consegna incerta ed errore. Una consegna incerta richiede verifica e non è automaticamente reinviata. Gli stati tecnici non sono ancora una pagina di amministrazione dell’outbox nell’interfaccia.
 
 ## 8. Notifiche e storico
 
 La notifica appartiene a un destinatario. **Segna come letta** aggiorna la presa visione, non risolve la causa dell’avviso. L’elenco mostra le ultime 100 notifiche accessibili, mentre il contatore può includere notifiche non lette più vecchie.
+
+Gli avvisi sulle ore non più autorizzati sono esclusi dall’elenco, dal contatore delle non lette e dalle azioni di lettura anche se prodotti prima della revoca. Lo stesso ambito personale o di squadra protegge originale e proposta delle rettifiche e i dettagli delle ore nello Storico.
 
 Lo Storico è un registro delle modifiche autorizzate. Salvataggio applicativo ed evento sono atomici; un errore nello storico impedisce anche la modifica. Gli eventi conservano autore, data e dettagli prima/dopo. Non sono memorizzate password, derivazioni o sali delle password nel payload di audit. Gli errori rifiutati non diventano eventi di modifica riuscita; i tentativi su commesse inesistenti hanno invece il canale eventi specifico degli alert.
 

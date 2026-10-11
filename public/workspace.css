@@ -3277,3 +3277,37 @@
   .organization-member { gap:12px; }
   .job-role-card { padding:15px; }
 }
+
+/* Personal Google calendar and links to the Ticket intervention agenda. */
+.calendar-ticket-context { display: flex; align-items: center; flex-wrap: wrap; gap: 20px; padding: 20px 24px; background: #f3f5ed; border-block: 1px solid #e4e8da; }
+.calendar-ticket-context > div:first-child { flex: 1 1 240px; }
+.calendar-ticket-context h3, .calendar-connection h3 { margin: 0 0 6px; font-size: 16px; }
+.calendar-ticket-context p, .calendar-connection p { margin: 0; line-height: 1.6; }
+.calendar-ticket-context .work-field { margin: 0; flex: 1 1 250px; max-width: 380px; }
+.calendar-connection { display: flex; gap: 20px; align-items: center; justify-content: space-between; padding: 24px; }
+.calendar-connection > div:first-child { min-width: 0; }
+.calendar-connection p { overflow-wrap: anywhere; }
+.calendar-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.calendar-selection { display: flex; align-items: end; gap: 14px; padding: 0 24px 24px; flex-wrap: wrap; }
+.calendar-selection .work-field { flex: 1 1 280px; margin: 0; }
+#calendar-agenda > .field-help { padding: 0 24px; line-height: 1.6; }
+#calendar-error { margin: 18px 24px; }
+.calendar-events { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 22px 24px; border: 1px solid #e6e7df; border-radius: 12px; overflow: hidden; }
+.calendar-day { min-width: 0; background: #fff; border-right: 1px solid #e6e7df; }
+.calendar-day:last-child { border-right: 0; }
+.calendar-day h3 { font-size: 12px; margin: 0; padding: 13px 10px; background: #f6f6f1; border-bottom: 1px solid #e6e7df; }
+.calendar-day.is-today h3 { background: #fbebe3; color: #a6402d; }
+.calendar-day-events { list-style: none; margin: 0; padding: 7px; min-height: 180px; }
+.calendar-event { padding: 10px 8px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px; background: #f4f6ed; border-left: 3px solid #8f9e7e; border-radius: 5px; overflow-wrap: anywhere; font-size: 12px; }
+.calendar-event a { color: #333e2d; font-weight: 600; }
+.calendar-event-time { font-size: 11px; color: #66725b; }
+.calendar-day-empty { color: #92958b; font-size: 11px; padding: 14px 4px; }
+.calendar-series, .calendar-queue { margin: 24px; line-height: 1.6; }
+.calendar-series h3 { font-size: 15px; }
+.calendar-queue summary { cursor: pointer; font-weight: 600; }
+.calendar-queue ul { list-style: none; padding: 0; }
+.calendar-change { padding: 9px 12px; margin-block: 5px; background: #f6f6f1; font-size: 12px; overflow-wrap: anywhere; border-radius: 5px; }
+.calendar-change-conflict, .calendar-change-failed { background: #fff0e9; color: #9b3a27; }
+#calendar-events-more { margin: 0 24px 18px; }
+@media (max-width: 1100px) { .calendar-events { grid-template-columns: repeat(2, minmax(0, 1fr)); } .calendar-day { border-bottom: 1px solid #e6e7df; } .calendar-day-events { min-height: 90px; } }
+@media (max-width: 600px) { .calendar-connection { flex-direction: column; align-items: stretch; } .calendar-ticket-context, .calendar-connection { padding: 18px; } .calendar-selection { padding: 0 18px 18px; } .calendar-events { margin: 18px; grid-template-columns: minmax(0, 1fr); } .calendar-day { border-right: 0; } .calendar-day-events { min-height: 50px; } .calendar-day h3 { font-size: 13px; } .calendar-event { font-size: 14px; } }

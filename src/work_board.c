@@ -499,6 +499,128 @@ static void success(WorkspaceResponse *response, int status, DbInt id, DbInt rev
     finish(response, status, out);
 }
 
+/* Called inside the same guarded write as assignment or due-date refresh. */
+static bool work_notification_insert(DbInt user, DbInt job, DbInt task, DbInt blocker,
+                                      const char *key, const char *type, const char *title,
+                                      const char *message, const char *day, const char *stamp) {
+    DbStmt *statement = NULL;
+    bool okay = prepare(&statement, "INSERT INTO work_notifications(user_id,job_id,task_id,blocker_id,event_key,type,title,message,work_date,created_at) "
+        "SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM work_notifications WHERE user_id=? AND event_key=?)") &&
+        bind_id(statement, 1, user) && bind_id(statement, 2, job) && nullable_id(statement, 3, task) &&
+        nullable_id(statement, 4, blocker) && bind_text(statement, 5, key) && bind_text(statement, 6, type) &&
+        bind_text(statement, 7, title) && bind_text(statement, 8, message) && nullable_text(statement, 9, day) &&
+        bind_text(statement, 10, stamp) && bind_id(statement, 11, user) && bind_text(statement, 12, key) && db_step(statement) == DB_DONE;
+    db_finalize(statement); return okay;
+}
+
+static bool work_notification_due(DbInt actor, bool manager, const char *today, const char *stamp) {
+    DbStmt *statement = NULL;
+    char until[11];
+    time_t now = time(NULL); struct tm local;
+    if (!localtime_r(&now, &local)) return false;
+    local.tm_mday += 3; local.tm_hour = 12; local.tm_isdst = -1;
+    if (mktime(&local) == (time_t)-1 || strftime(until, sizeof(until), "%Y-%m-%d", &local) != 10) return false;
+    for (int kind = 0; kind < 2; kind++) {
+        bool okay = prepare(&statement, kind == 0 ?
+            "SELECT id,job_id,title,due_date FROM job_tasks WHERE assigned_user_id=? AND status<>'done' AND due_date IS NOT NULL AND due_date<=?" :
+            "SELECT id,job_id,title,due_date FROM job_blockers WHERE owner_id=? AND status<>'resolved' AND due_date IS NOT NULL AND due_date<=?") &&
+            bind_id(statement, 1, actor) && bind_text(statement, 2, until);
+        if (!okay) { db_finalize(statement); return false; }
+        int result;
+        while ((result = db_step(statement)) == DB_ROW) {
+            DbInt item = db_column_int64(statement, 0), job = db_column_int64(statement, 1);
+            int permission = manager ? 3 : organization_job_access(database, job, actor, today, NULL);
+            if (permission < 0) { db_finalize(statement); return false; }
+            if (!permission) continue;
+            const char *due = column_text(statement, 3);
+            char key[128], message[1000];
+            (void)snprintf(key, sizeof(key), "%s:%lld:%s", kind == 0 ? "task_due" : "blocker_due", (long long)item, due);
+            (void)snprintf(message, sizeof(message), "%s · scadenza %s. %s", column_text(statement, 2), due,
+                strcmp(due, today) < 0 ? "La scadenza è trascorsa." : "Controlla il prossimo passo.");
+            if (!work_notification_insert(actor, job, kind == 0 ? item : 0, kind == 1 ? item : 0, key,
+                kind == 0 ? "task_due" : "blocker_due", kind == 0 ? "Scadenza attività" : "Scadenza blocco", message, due, stamp)) {
+                db_finalize(statement); return false;
+            }
+        }
+        db_finalize(statement); statement = NULL;
+        if (result != DB_DONE) return false;
+    }
+    return true;
+}
+
+static bool work_notification_visible(DbStmt *statement, DbInt actor, bool manager, const char *today) {
+    const char *type = column_text(statement, 4);
+    if (strcmp(type, "task_due") == 0 && (strcmp(column_text(statement, 10), "done") == 0 || db_column_int64(statement, 11) != actor ||
+        strcmp(column_text(statement, 7), column_text(statement, 14)) != 0)) return false;
+    if (strcmp(type, "blocker_due") == 0 && (strcmp(column_text(statement, 12), "resolved") == 0 || db_column_int64(statement, 13) != actor ||
+        strcmp(column_text(statement, 7), column_text(statement, 15)) != 0)) return false;
+    int permission = manager ? 3 : organization_job_access(database, db_column_int64(statement, 1), actor, today, NULL);
+    return permission > 0;
+}
+
+static void work_notifications_list(DbInt actor, WorkspaceResponse *response) {
+    if (!begin(response)) return;
+    bool manager = false; char today[11], stamp[21];
+    DbStmt *statement = NULL; struct json_object *out = NULL, *items = NULL;
+    if (!active_actor(actor, &manager, response)) { rollback(); return; }
+    if (!today_date(today) || !timestamp(stamp) || !work_notification_due(actor, manager, today, stamp)) goto failure;
+    if (!prepare(&statement, "SELECT n.id,n.job_id,n.task_id,n.blocker_id,n.type,n.title,n.message,n.work_date,n.read_at,n.created_at,"
+        "t.status,t.assigned_user_id,b.status,b.owner_id,t.due_date,b.due_date,t.title,b.title FROM work_notifications n "
+        "JOIN jobs j ON j.id=n.job_id LEFT JOIN job_tasks t ON t.id=n.task_id LEFT JOIN job_blockers b ON b.id=n.blocker_id "
+        "WHERE n.user_id=? ORDER BY n.id DESC") || !bind_id(statement, 1, actor)) goto failure;
+    out = json_object_new_object(); items = json_object_new_array();
+    if (!out || !items) goto failure;
+    int result, unread = 0, count = 0;
+    while ((result = db_step(statement)) == DB_ROW) {
+        if (!work_notification_visible(statement, actor, manager, today)) continue;
+        if (db_column_type(statement, 8) == DB_NULL) unread++;
+        if (count++ >= 100) continue;
+        struct json_object *item = json_object_new_object();
+        if (!item) goto failure;
+        static const char *keys[] = {"id", "job_id", "task_id", "blocker_id", "type", "title", "message", "work_date", "read_at", "created_at"};
+        for (int i = 0; i < 10; i++) {
+            struct json_object *value = db_column_type(statement, i) == DB_NULL ? NULL : i < 4 ?
+                json_object_new_int64(db_column_int64(statement, i)) : json_object_new_string(column_text(statement, i));
+            json_object_object_add(item, keys[i], value);
+        }
+        json_object_object_add(item, "entity_title", json_object_new_string(column_text(statement, db_column_type(statement, 2) == DB_NULL ? 17 : 16)));
+        json_object_array_add(items, item);
+    }
+    if (result != DB_DONE) goto failure;
+    db_finalize(statement); statement = NULL;
+    json_object_object_add(out, "ok", json_object_new_boolean(true));
+    json_object_object_add(out, "notifications", items); items = NULL;
+    json_object_object_add(out, "unread_count", json_object_new_int(unread));
+    if (!commit(response)) { json_object_put(out); return; }
+    finish(response, 200, out); return;
+failure:
+    db_finalize(statement); json_object_put(items); json_object_put(out); rollback(); server_error(response);
+}
+
+static void work_notification_read(DbInt actor, DbInt id, const char *body, WorkspaceResponse *response) {
+    if (*body) { error(response, 400, "La lettura non richiede campi."); return; }
+    if (!begin(response)) return;
+    bool manager = false; char today[11], stamp[21]; DbStmt *statement = NULL;
+    if (!active_actor(actor, &manager, response)) { rollback(); return; }
+    if (!today_date(today) || !timestamp(stamp)) goto failure;
+    if (!prepare(&statement, "SELECT n.id,n.job_id,n.task_id,n.blocker_id,n.type,n.title,n.message,n.work_date,n.read_at,n.created_at,"
+        "t.status,t.assigned_user_id,b.status,b.owner_id,t.due_date,b.due_date,t.title,b.title FROM work_notifications n JOIN jobs j ON j.id=n.job_id "
+        "LEFT JOIN job_tasks t ON t.id=n.task_id LEFT JOIN job_blockers b ON b.id=n.blocker_id WHERE n.id=? AND n.user_id=?") ||
+        !bind_id(statement, 1, id) || !bind_id(statement, 2, actor)) goto failure;
+    int result = db_step(statement);
+    bool visible = result == DB_ROW && work_notification_visible(statement, actor, manager, today);
+    db_finalize(statement); statement = NULL;
+    if (result != DB_ROW && result != DB_DONE) goto failure;
+    if (!visible) { rollback(); error(response, 404, "Notifica non trovata."); return; }
+    if (!prepare(&statement, "UPDATE work_notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND user_id=?") ||
+        !bind_text(statement, 1, stamp) || !bind_id(statement, 2, id) || !bind_id(statement, 3, actor) || db_step(statement) != DB_DONE) goto failure;
+    db_finalize(statement);
+    if (commit(response)) success(response, 200, id, 0);
+    return;
+failure:
+    db_finalize(statement); rollback(); server_error(response);
+}
+
 static void write_record(bool task, const char *body, DbInt id, DbInt actor_id,
                           WorkspaceResponse *response) {
     Field task_fields[] = {{"job_id",NULL},{"parent_id",NULL},{"assigned_user_id",NULL},{"title",NULL},
@@ -606,6 +728,14 @@ static void write_record(bool task, const char *body, DbInt id, DbInt actor_id,
     if (!after) goto cleanup;
     if (!audit_record(task, task ? (id ? "tasks.update" : "tasks.create") : (id ? "blockers.update" : "blockers.create"),
         actor_id, saved, before, after)) { server_error(response); goto cleanup; }
+    if (task && assignee && (!id || assignee != object_id(before, "assigned_user_id"))) {
+        char key[128], message[1000];
+        (void)snprintf(key, sizeof(key), "assigned:%lld:%lld", (long long)saved, (long long)object_id(after, "revision"));
+        (void)snprintf(message, sizeof(message), "%s · apri la commessa per consultare attività e prossimo passo.", title);
+        if (!work_notification_insert(assignee, job_id, saved, 0, key, "assigned", "Nuova attività assegnata", message, due_date, stamp)) {
+            server_error(response); goto cleanup;
+        }
+    }
     if (!commit(response)) { transaction = false; goto cleanup; }
     transaction = false; success(response, id ? 200 : 201, saved, revision + 1);
 cleanup:
@@ -722,13 +852,24 @@ bool work_board_handle(const char *method, const char *target, const char *query
     bool blockers = strcmp(target, "/api/blockers") == 0;
     bool task_item = strncmp(target, "/api/tasks/", 11) == 0;
     bool blocker_item = strncmp(target, "/api/blockers/", 14) == 0;
-    if (!board && !tasks && !blockers && !task_item && !blocker_item) return false;
+    bool notifications = strcmp(target, "/api/work-notifications") == 0;
+    bool notification_item = strncmp(target, "/api/work-notifications/", 24) == 0;
+    if (!board && !tasks && !blockers && !task_item && !blocker_item && !notifications && !notification_item) return false;
     response->status = 0; response->body = NULL;
     if (actor_id <= 0) { error(response, 401, "Accedi per continuare."); return true; }
     if (!database) { server_error(response); return true; }
     if (!query) query = "";
     if (!body) body = "";
     bool get = strcmp(method, "GET") == 0, post = strcmp(method, "POST") == 0;
+    if (notifications || notification_item) {
+        DbInt id = 0; const char *suffix = "";
+        if (*query || *body) error(response, 400, "Parametri della richiesta non validi.");
+        else if (notifications && get) work_notifications_list(actor_id, response);
+        else if (notification_item && parse_item(target + 24, &id, &suffix) && strcmp(suffix, "/read") == 0 && post)
+            work_notification_read(actor_id, id, body, response);
+        else error(response, 405, "Metodo non consentito.");
+        return true;
+    }
     if (board) {
         if (!get) error(response, 405, "Metodo non consentito.");
         else if (*body) error(response, 400, "Corpo della richiesta non valido.");

@@ -49,6 +49,6 @@ Queste guide descrivono il sistema implementato all’**11 ottobre 2026**: serve
 
 Per una nuova installazione partire dall’architettura e dalla configurazione. Per modificare il software leggere il modello dati e le API prima delle istruzioni di sviluppo. Per intervenire su un’installazione esistente usare le procedure operative e verificare il perimetro dell’azione: **primo seed, aggiornamento, recupero del quorum e ripristino da backup sono operazioni differenti**.
 
-Le pagine indicano i file sorgente da consultare per confermare i dettagli. I manuali specifici di [email](../../addon/README.md) e [Calendar](../../calendar-addon/README.md) e [Asset Inventory](../../inventory-addon/README.md) restano accanto ai rispettivi servizi.
+Le pagine indicano i file sorgente da consultare per confermare i dettagli. I manuali specifici di [email](../../addon/README.it.md) e [Calendar](../../calendar-addon/README.it.md) e [Asset Inventory](../../inventory-addon/README.it.md) restano accanto ai rispettivi servizi.
 
 La [roadmap di prodotto](../prod/roadmap.md) raccoglie i requisiti futuri. In particolare, il progetto di finanza completa, l’isolamento fra società e la cifratura dei campi business non descrivono componenti già implementati.

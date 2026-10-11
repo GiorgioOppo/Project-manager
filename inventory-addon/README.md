@@ -1,161 +1,167 @@
-# Addon Asset Inventory
+# Asset Inventory addon
 
-Il servizio Compose si chiama `inventory` e la sua immagine locale è `punto/inventory:${PUNTO_IMAGE_TAG:-local}`. Per aggiornare un’installazione con i nomi precedenti seguire la [guida nomenclatura Docker](../docs/tehnical/nomi-servizi-e-immagini.md); directory, volumi e identità TLS conservano i nomi già previsti.
+**English** | [Italiano](README.it.md)
 
-`punto-inventory` è un'applicazione C indipendente che conserva il catalogo dei beni, i dettagli per tipologia, le relazioni e lo storico delle modifiche in SQLite. Gestisce dispositivi IT, apparati di rete, beni fisici, software e licenze. L'app principale autentica gli utenti, consente la lettura a tutti gli utenti autenticati e riserva creazioni e modifiche ai Gestori. Censimento, installazioni, collegamenti e assegnazioni delle licenze sono manuali: il servizio non esegue scansioni né rilevamento automatico.
+The Compose service is named `inventory`, and its local image is `punto/inventory:${PUNTO_IMAGE_TAG:-local}`. To update an installation using the previous names, follow the [Docker naming guide](../docs/en/tehnical/nomi-servizi-e-immagini.md); directories, volumes, and TLS identities retain their established names.
 
-## API privata
+`punto-inventory` is an independent C application that stores the asset catalog, type-specific details, relationships, and change history in SQLite. It manages IT devices, network equipment, physical assets, software, and licenses. The main app authenticates users, allows all authenticated users to read, and reserves creation and updates for Managers. Registration, installations, links, and license assignments are manual: the service does not perform scans or automatic discovery.
 
-Il listener HTTPS è `https://inventory-api:8092`, sulla sola rete interna `inventory_api`. La sorgente ammessa è l'app `172.30.80.10`; l'addon ascolta su `172.30.80.2`. Le richieste `/v1/*` richiedono `Authorization: Bearer <token dedicato>`. `GET /healthz` verifica il servizio senza token, restando limitato alle sorgenti ammesse o al container stesso. Il browser usa il bridge `/api/inventory/*` dell'app.
+## Private API
 
-| Metodo e percorso privato | Uso |
+The HTTPS listener is `https://inventory-api:8092`, on the internal `inventory_api` network only. The allowed source is the app at `172.30.80.10`; the addon listens on `172.30.80.2`. Requests to `/v1/*` require `Authorization: Bearer <dedicated token>`. `GET /healthz` checks the service without a token, while remaining restricted to allowed sources or the container itself. The browser uses the app's `/api/inventory/*` bridge.
+
+| Private method and path | Purpose |
 | --- | --- |
-| `GET /healthz` | Controllo di salute HTTPS. |
-| `GET /v1/status` | Stato del servizio (`ok`, `configured`) e `summary` del catalogo. |
-| `GET /v1/dashboard` | Conteggi e distribuzioni del catalogo filtrato. |
-| `GET /v1/operational-due` | Eventi paginati su restituzioni scadute e verifiche da ripetere. |
-| `GET /v1/assets` | Catalogo con ricerca, stato, tipologia e paginazione. |
-| `GET /v1/assets/<id>` | Dettaglio di un bene. |
-| `GET /v1/assets/<id>/history` | Storico del bene con snapshot. |
-| `POST /v1/assets` | Crea un bene. |
-| `POST /v1/assets/<id>` | Aggiorna un bene alla versione indicata. |
-| `GET /v1/assets/<id>/relations` | Relazioni in ingresso e in uscita, paginate. |
-| `POST /v1/assets/<id>/relations` | Aggiunge una relazione dalla scheda indicata. |
-| `POST /v1/assets/<id>/relations/<relation_id>/remove` | Disattiva una relazione in uscita senza cancellarne lo storico. |
-| `GET /v1/places` | Elenca sedi, reparti e ubicazioni. |
-| `POST /v1/places` | Crea un'anagrafica di luogo. |
-| `POST /v1/places/<id>` | Aggiorna o disattiva un'anagrafica alla versione indicata. |
-| `POST /v1/assets/<id>/context` | Sostituisce assegnazione strutturata e collocazione. |
-| `POST /v1/assets/<id>/checkout` | Registra una consegna a un utente. |
-| `POST /v1/assets/<id>/checkin` | Registra la restituzione della consegna aperta. |
-| `POST /v1/assets/<id>/verify` | Registra una verifica fisica. |
-| `GET /v1/assets/<id>/custody` | Elenca lo storico delle consegne, paginato. |
-| `GET /v1/assets/<id>/verifications` | Elenca lo storico delle verifiche, paginato. |
+| `GET /healthz` | HTTPS health check. |
+| `GET /v1/status` | Service status (`ok`, `configured`) and catalog `summary`. |
+| `GET /v1/dashboard` | Counts and distributions for the filtered catalog. |
+| `GET /v1/operational-due` | Paginated events for overdue returns and checks due for repetition. |
+| `GET /v1/assets` | Catalog with search, status, type, and pagination. |
+| `GET /v1/assets/<id>` | Asset details. |
+| `GET /v1/assets/<id>/history` | Asset history with snapshots. |
+| `POST /v1/assets` | Creates an asset. |
+| `POST /v1/assets/<id>` | Updates an asset at the specified version. |
+| `GET /v1/assets/<id>/relations` | Paginated incoming and outgoing relationships. |
+| `POST /v1/assets/<id>/relations` | Adds a relationship from the specified record. |
+| `POST /v1/assets/<id>/relations/<relation_id>/remove` | Deactivates an outgoing relationship without deleting its history. |
+| `GET /v1/places` | Lists sites, departments, and locations. |
+| `POST /v1/places` | Creates a place record. |
+| `POST /v1/places/<id>` | Updates or deactivates a record at the specified version. |
+| `POST /v1/assets/<id>/context` | Replaces the structured assignment and placement. |
+| `POST /v1/assets/<id>/checkout` | Records a handover to a person or a legacy Punto user. |
+| `POST /v1/assets/<id>/checkin` | Records the return for the open handover. |
+| `POST /v1/assets/<id>/verify` | Records a physical check. |
+| `GET /v1/assets/<id>/custody` | Lists paginated handover history. |
+| `GET /v1/assets/<id>/verifications` | Lists paginated check history. |
 
-I POST usano `application/x-www-form-urlencoded`. Parametri sconosciuti, ripetuti o non validi sono rifiutati. L'app aggiunge `actor_id` ricavandolo dalla sessione: il browser non può scegliere l'autore. Questa identità è una dichiarazione fidata dell'app, non un account autenticato separatamente dall'addon.
+POST requests use `application/x-www-form-urlencoded`. Unknown, repeated, or invalid parameters are rejected. The app adds `actor_id`, deriving it from the session: the browser cannot choose the actor. This identity is a trusted assertion by the app, not an account authenticated separately by the addon.
 
-| Campo | Regola |
+| Field | Rule |
 | --- | --- |
-| `asset_tag` | Obbligatorio, massimo 64 byte UTF-8, unico con confronto SQLite `NOCASE`. |
-| `name` | Obbligatorio, massimo 160 byte. |
-| `category` | Massimo 80 byte, predefinito `hardware`. |
-| `serial_number`, `manufacturer`, `model` | Facoltativi, massimo 120 byte ciascuno. |
-| `status` | `available`, `assigned`, `maintenance`, `retired` o `lost`; predefinito `available`. |
-| `location` | Testo libero, massimo 160 byte. |
-| `assignee` | Testo libero, massimo 160 byte; obbligatorio con stato `assigned`. |
-| `purchase_date`, `warranty_until` | Facoltativi, date valide `YYYY-MM-DD`; la garanzia non può precedere l'acquisto. |
-| `notes` | Facoltative, massimo 4000 byte. |
-| `asset_type` | `it_device`, `network_device`, `physical`, `software` o `license`; in creazione predefinito `it_device`. |
-| `details` | Oggetto JSON serializzato nel form, massimo 4096 byte, con soli campi della tipologia scelta; non accetta chiavi sconosciute o ripetute. |
-| `version` | Richiesta in modifica, intero positivo restituito dal dettaglio corrente. |
-| `actor_id` | ID positivo dell'utente, aggiunto dal bridge nelle scritture. |
+| `asset_tag` | Required, maximum 64 UTF-8 bytes, unique using SQLite `NOCASE` comparison. |
+| `name` | Required, maximum 160 bytes. |
+| `category` | Maximum 80 bytes, defaults to `hardware`. |
+| `serial_number`, `manufacturer`, `model` | Optional, maximum 120 bytes each. |
+| `status` | `available`, `assigned`, `maintenance`, `retired`, or `lost`; defaults to `available`. |
+| `location` | Free text, maximum 160 bytes. |
+| `assignee` | Free text, maximum 160 bytes; required with `assigned` status. |
+| `purchase_date`, `warranty_until` | Optional, valid `YYYY-MM-DD` dates; warranty cannot precede purchase. |
+| `notes` | Optional, maximum 4000 bytes. |
+| `asset_type` | `it_device`, `network_device`, `physical`, `software`, or `license`; defaults to `it_device` on creation. |
+| `details` | JSON object serialized in the form, maximum 4096 bytes, containing only fields for the chosen type; unknown or repeated keys are not accepted. |
+| `version` | Required for updates, a positive integer returned by the current details. |
+| `actor_id` | Positive user ID, added by the bridge for writes. |
 
-Una modifica invia i campi comuni della scheda completa, inclusi quelli da svuotare; non è una PATCH. Per compatibilità con i client precedenti, `asset_type` e `details` omessi in modifica conservano i valori correnti. Se `details` viene inviato, sostituisce i dettagli della tipologia. Un `asset_tag` già presente o una versione superata restituiscono `409`. I messaggi di errore sono in italiano. Per dismettere un bene si usa `status=retired`: non è prevista la cancellazione.
+An update sends the common fields of the complete record, including those to clear; it is not a PATCH. For compatibility with older clients, `asset_type` and `details` omitted from an update retain their current values. If `details` is sent, it replaces the type-specific details. An existing `asset_tag` or an outdated version returns `409`. Error messages are in Italian. To retire an asset, use `status=retired`: deletion is not available.
 
-### Dettagli per tipologia
+### Type-specific details
 
-I limiti testuali sono in byte UTF-8. I campi sono facoltativi salvo quelli indicati per le licenze; le date usano `YYYY-MM-DD`. VLAN, numero di porte, riferimenti e quantità sono numeri JSON interi, non stringhe o booleani.
+Text limits are in UTF-8 bytes. Fields are optional except those indicated for licenses; dates use `YYYY-MM-DD`. VLAN, port count, references, and quantities are JSON integers, not strings or booleans.
 
-| Tipologia | Campi di `details` |
+| Type | `details` fields |
 | --- | --- |
-| `it_device` | `hostname` (253), `ip_address` (IPv4 o IPv6 valido), `mac_address` (sei coppie esadecimali separate da `:`), `operating_system` (120). |
-| `network_device` | Gli stessi campi dei dispositivi IT, più `network_role` (80), `vlan` (1–4094), `port_count` (0–65535). |
-| `physical` | `asset_kind` (80), `department` (120), `maintenance_due` (data). |
+| `it_device` | `hostname` (253), `ip_address` (valid IPv4 or IPv6), `mac_address` (six hexadecimal pairs separated by `:`), `operating_system` (120). |
+| `network_device` | The same fields as IT devices, plus `network_role` (80), `vlan` (1–4094), `port_count` (0–65535). |
+| `physical` | `asset_kind` (80), `department` (120), `maintenance_due` (date). |
 | `software` | `publisher` (120), `software_version` (80), `edition` (80), `software_kind` (80). |
-| `license` | `software_id` obbligatorio (ID di una scheda software), `seats_total` obbligatorio (1–1000000), `license_model` (`per_device`, `per_user`, `concurrent`, `site`; predefinito `per_device`), `expires_on` e `renewal_on` (date), `renewal_mode` (`manual`, `automatic`, `none`; predefinito `manual`), `license_reference` (120). |
+| `license` | Required `software_id` (ID of a software record), required `seats_total` (1–1000000), `license_model` (`per_device`, `per_user`, `concurrent`, `site`; defaults to `per_device`), `expires_on` and `renewal_on` (dates), `renewal_mode` (`manual`, `automatic`, `none`; defaults to `manual`), `license_reference` (120). |
 
-`license_reference` è un riferimento amministrativo, per esempio un ordine o un contratto; non è un campo per memorizzare chiavi di attivazione. Il modello e il rinnovo sono informazioni dichiarate: il servizio non rinnova abbonamenti e non consulta sistemi di licenza. Le schede licenza espongono `license_usage` con `allocated`, `available` ed `expired`; la disponibilità è calcolata sulle assegnazioni attive registrate, non sull'utilizzo rilevato dei programmi.
+`license_reference` is an administrative reference, for example an order or contract; it is not a field for storing activation keys. The model and renewal are declared information: the service does not renew subscriptions or query licensing systems. License records expose `license_usage` with `allocated`, `available`, and `expired`; availability is calculated from recorded active assignments, not from detected program usage.
 
-La licenza rimane valida per tutto il giorno indicato in `expires_on`: `expired` diventa vero quando tale data precede il giorno corrente nel fuso `INVENTORY_BUSINESS_TIMEZONE`, predefinito `Europe/Rome`. Senza scadenza, `expired` è falso. Gli eventi e le date di creazione/modifica continuano a usare timestamp UTC. `renewal_on` e `renewal_mode` descrivono il rinnovo, senza eseguirlo.
+A license remains valid throughout the day specified in `expires_on`: `expired` becomes true when that date precedes the current day in the `INVENTORY_BUSINESS_TIMEZONE` time zone, which defaults to `Europe/Rome`. Without an expiration date, `expired` is false. Events and creation/update dates continue to use UTC timestamps. `renewal_on` and `renewal_mode` describe renewal without performing it.
 
-`GET /v1/assets` accetta `q` (massimo 200 byte UTF-8, cerca anche nei dettagli), `status`, `asset_type`, `limit` da 1 a 100 (predefinito 30) e `after_id`. L'elenco è ordinato per ID decrescente; `after_id` continua con ID inferiori al cursore. La risposta contiene `items`, `next_after_id` e `summary`, con totale e conteggi per stato dell'intero catalogo, indipendenti dai filtri. Le pagine possono contenere meno elementi del limite richiesto per rispettare il budget di risposta di 128 KiB; il cursore permette comunque di proseguire. Il dettaglio restituisce `asset`. Lo storico accetta `limit` (predefinito 30, massimo 100) e `after_id`, usa lo stesso ordine decrescente e restituisce `items` e `next_after_id`: ogni evento contiene `id`, `action` (`created` o `updated`), `actor_id`, `version`, `created_at` e `snapshot` della scheda dopo la scrittura.
+`GET /v1/assets` accepts `q` (maximum 200 UTF-8 bytes, also searches details), `status`, `asset_type`, `limit` from 1 to 100 (default 30), and `after_id`. The list is sorted by descending ID; `after_id` continues with IDs below the cursor. The response contains `items`, `next_after_id`, and `summary`, with the total and counts by status for the entire catalog, independently of filters. Pages may contain fewer items than the requested limit to respect the 128 KiB response budget; the cursor still allows continuation. The details response returns `asset`. History accepts `limit` (default 30, maximum 100) and `after_id`, uses the same descending order, and returns `items` and `next_after_id`: each event contains `id`, `action` (`created` or `updated`), `actor_id`, `version`, `created_at`, and a `snapshot` of the record after the write.
 
-### Filtri e cruscotto operativo
+### Filters and operational dashboard
 
-Catalogo ed esportazione accettano anche `assignee_user_id`, `site_id`, `department_id` come ID positivi, `attention=open_custody|overdue_returns|never_verified|verification_due|location_mismatch`, `verification_days` da 1 a 365 (predefinito 90) e `today=YYYY-MM-DD` facoltativo. Il bridge pubblico ammette soltanto `mine=1` per l'assegnatario e ricava l'ID dell'utente dalla sessione. I riferimenti di sede e reparto filtrano i contesti strutturati; la ricerca testuale comprende anche i loro nomi e il nome dell'assegnatario.
+The catalog and export also accept `assignee_user_id`, `site_id`, and `department_id` as positive IDs, `attention=open_custody|overdue_returns|never_verified|verification_due|location_mismatch`, `verification_days` from 1 to 365 (default 90), and optional `today=YYYY-MM-DD`. The public bridge allows only `mine=1` for the assignee and derives the user ID from the session. Site and department references filter structured contexts; text search also includes their names and the assignee's name.
 
-`GET /v1/dashboard` usa gli stessi filtri, senza `limit` e `after_id`, e restituisce `{ok,today,verification_days,counts,by_status,by_type,by_site,by_department,by_user,groups_truncated}`. `counts` contiene `total`, `open_custody`, `overdue_returns`, `never_verified`, `verification_due`, `location_mismatch`. I totali riguardano tutta la popolazione filtrata. Le tre distribuzioni contengono `{id,name,count}`, ordinate per numero decrescente, al massimo 20 gruppi ciascuna; il gruppo senza riferimento mantiene `id=null` ed è incluso quando presente, anche sostituendo l'ultimo gruppo. `groups_truncated` segnala distribuzioni limitate. Il precedente `summary` del catalogo conserva i conteggi globali indipendenti dai filtri.
+`GET /v1/dashboard` uses the same filters, without `limit` and `after_id`, and returns `{ok,today,verification_days,counts,by_status,by_type,by_site,by_department,by_user,groups_truncated}`. `counts` contains `total`, `open_custody`, `overdue_returns`, `never_verified`, `verification_due`, and `location_mismatch`. Totals cover the entire filtered population. The three distributions contain `{id,name,count}`, sorted by descending count, with at most 20 groups each; the group without a reference retains `id=null` and is included when present, even if it replaces the last group. `groups_truncated` indicates limited distributions. The catalog's existing `summary` retains global counts independently of filters.
 
-I conteggi operativi considerano soltanto `it_device`, `network_device`, `physical` e scartano `retired`/`lost`. Una consegna aperta è in ritardo quando `due_on < today`; una verifica è da ripetere quando la sua data più l'intervallo è `<= today`. I beni privi di verifiche hanno un conteggio separato. L'ultima verifica è quella con `verified_on` maggiore, poi ID maggiore a parità di data; una sua differenza di ubicazione alimenta `location_mismatch`. Queste letture non aggiornano stato, versione o storico dei beni.
+Operational counts consider only `it_device`, `network_device`, and `physical`, and exclude `retired`/`lost`. An open handover is overdue when `due_on < today`; a check is due for repetition when its date plus the interval is `<= today`. Assets without checks have a separate count. The latest check is the one with the greatest `verified_on`, then the greatest ID for the same date; a location discrepancy in that check contributes to `location_mismatch`. These reads do not update asset status, version, or history.
 
-### Relazioni e assegnazioni delle licenze
+### Relationships and license assignments
 
-La creazione di una relazione richiede `relation_type`, `version` corrente della scheda sorgente e `actor_id`. Accetta inoltre `target_id`, `assignee` (160 byte), `quantity` (intero 1–1000000, predefinito 1), `installed_version` (80), `source_port` e `target_port` (80 ciascuno), `notes` (2000), secondo le regole della relazione.
+Creating a relationship requires `relation_type`, the source record's current `version`, and `actor_id`. It also accepts `target_id`, `person_id`, `identity_id` (positive IDs), `assignee` (160 bytes), `quantity` (integer 1–1000000, default 1), `installed_version` (80), `source_port` and `target_port` (80 each), and `notes` (2000), according to the relationship's rules. `person_id` and `identity_id` are allowed only for `licensed_to`.
 
-| Relazione | Sorgente e destinazione |
+| Relationship | Source and destination |
 | --- | --- |
-| `installed_on` | Software → dispositivo IT o apparato di rete. Quantità 1, nessun assegnatario o porta; può indicare la versione installata. |
-| `connected_to` | Dispositivo IT o apparato di rete → apparato di rete diverso dalla sorgente. Quantità 1; ammette le due porte. |
-| `licensed_to` | Licenza → dispositivo IT o apparato di rete per `per_device`; solo assegnatario testuale per `per_user`; esattamente un dispositivo oppure un assegnatario per `concurrent` e `site`. La quantità consuma i posti disponibili. |
+| `installed_on` | Software → IT device or network equipment. Quantity 1, no assignee or port; the installed version can be specified. |
+| `connected_to` | IT device or network equipment → network equipment other than the source. Quantity 1; allows both ports. |
+| `licensed_to` | `per_device`: IT device or network equipment (`target_id`). `per_user`: person (`person_id`), identity (`identity_id`), or legacy text assignee (`assignee`). `concurrent` and `site`: also allow a device. Exactly one recipient is required. |
 
-Le relazioni duplicate attive sono rifiutate. Non si possono creare collegamenti con schede dismesse o smarrite, né nuove assegnazioni su una licenza scaduta. Il totale assegnato non può superare `seats_total`, e la capacità non può essere ridotta sotto il già assegnato. Una tipologia non può cambiare finché la scheda ha relazioni attive, e un software referenziato da licenze deve restare software. Modello e software di una licenza non possono cambiare mentre sono presenti assegnazioni attive.
+New structured recipients must exist and be active. The relationship retains `person_id` or `identity_id`, `subject_kind`, `subject_id`, and `subject_snapshot`, a complete and immutable copy of the directory record resolved by the service. `assignee` retains the person's name or the identity's display name, falling back to the login; it is not accepted from the caller together with a structured recipient. For legacy relationships, these new fields are null and the previous text remains unchanged. Renaming, deactivating, or changing an identity's members does not rewrite existing assignments. Structured duplicates are checked by recipient ID, allowing distinct people or identities with the same name.
 
-La rimozione richiede `version` corrente della sorgente e `actor_id`, disattiva la relazione e libera i posti della licenza. Aggiunta e rimozione restituiscono `asset` aggiornato e `relation`, incrementando la versione della sola sorgente. Lo storico mantiene `action=updated` e aggiunge `change` con `operation=relation_added` o `relation_removed` e una copia immutabile della relazione. I vecchi eventi non vengono riscritti.
+Each active relationship consumes only `quantity` seats: an identity shared by three people with `quantity=1` consumes one seat, without multiplying by the number of members. This administrative count does not verify the supplier's terms. Assignment does not create login users, person-identity associations, custody contexts, or implicit `inventory_asset_subjects` links.
 
-L'elenco contiene le relazioni attive e accetta `limit` e `after_id`, con ordine ID decrescente e budget 128 KiB come gli altri elenchi. Ogni elemento indica `direction` (`incoming` o `outgoing`) e le schede sintetiche `source` e `target`; una destinazione utente usa il testo `assignee`. Le relazioni rimosse restano consultabili tramite lo storico.
+Duplicate active relationships are rejected. Links cannot be created with retired or lost records, nor can new assignments be made against an expired license. The assigned total cannot exceed `seats_total`, and capacity cannot be reduced below the amount already assigned. A type cannot change while the record has active relationships, and software referenced by licenses must remain software. A license's model and software cannot change while active assignments exist.
 
-Il salvataggio del bene, dell'eventuale relazione e del suo evento storico avviene nella stessa transazione SQLite. Una scrittura non viene confermata senza il relativo snapshot. Le versioni evitano di sovrascrivere un aggiornamento concorrente; dopo un conflitto il chiamante deve rileggere i dati.
+Removal requires the source's current `version` and `actor_id`, deactivates the relationship, and releases license seats. Addition and removal return the updated `asset` and `relation`, incrementing only the source's version. History retains `action=updated` and adds `change` with `operation=relation_added` or `relation_removed` and an immutable copy of the relationship. Old events are not rewritten.
 
-## Persone e identità
+The list contains active relationships and accepts `limit` and `after_id`, with descending ID order and a 128 KiB budget like the other lists. Each item indicates `direction` (`incoming` or `outgoing`) and the `source` and `target` record summaries; a person/identity recipient uses the references and snapshot described above, with `target=null`. Removed relationships remain viewable through history, even after the recipient is deactivated.
 
-Schema inventory 5 distingue `inventory_people` (persone reali), `inventory_identities` (utenze censite) e gli utenti autenticati di Punto. Non crea account applicativi e non conserva password, token o chiavi. `inventory_identity_people` rappresenta una relazione molti a molti: una persona può usare più identità e un'identità può essere condivisa da più persone, anche se classificata `personal`. Il tipo è descrittivo.
+The asset, any relationship, and its history event are saved in the same SQLite transaction. A write is not committed without its snapshot. Versions prevent overwriting a concurrent update; after a conflict, the caller must reread the data.
 
-| Percorsi `/v1` | Operazioni |
+## People and identities
+
+Inventory schema 5 distinguishes `inventory_people` (real people), `inventory_identities` (registered accounts), and authenticated Punto users. It does not create application accounts or store passwords, tokens, or keys. `inventory_identity_people` represents a many-to-many relationship: a person can use several identities, and an identity can be shared by several people, even if classified as `personal`. The type is descriptive.
+
+| `/v1` paths | Operations |
 | --- | --- |
-| `/people`, `/identities` | GET elenco, POST creazione. |
-| `/people/<id>`, `/identities/<id>` | GET dettaglio, POST aggiornamento completo con `version`. |
-| `/people/<id>/history`, `/identities/<id>/history` | GET storico immutabile con snapshot. |
-| `/people/<id>/identities`, `/identities/<id>/people` | GET collegamenti attivi; POST sul secondo collega una persona. |
-| `/identities/<id>/people/<link_id>/remove` | POST rimuove logicamente un collegamento. |
-| `/assets/<id>/subjects` | GET collegamenti diretti, POST collega persona o identità al bene. |
-| `/assets/<id>/subjects/<link_id>/remove` | POST rimuove logicamente il collegamento diretto. |
-| `/people/<id>/assets`, `/identities/<id>/assets` | GET beni collegati direttamente, paginati per ID del collegamento. |
+| `/people`, `/identities` | GET list, POST creation. |
+| `/people/<id>`, `/identities/<id>` | GET details, POST complete update with `version`. |
+| `/people/<id>/history`, `/identities/<id>/history` | GET immutable history with snapshots. |
+| `/people/<id>/identities`, `/identities/<id>/people` | GET active links; POST to the second path links a person. |
+| `/identities/<id>/people/<link_id>/remove` | POST logically removes a link. |
+| `/assets/<id>/subjects` | GET direct links, POST links a person or identity to the asset. |
+| `/assets/<id>/subjects/<link_id>/remove` | POST logically removes the direct link. |
+| `/people/<id>/assets`, `/identities/<id>/assets` | GET directly linked assets, paginated by link ID. |
 
-Una persona richiede `person_code` (64 byte UTF-8, unico NOCASE) e `display_name` (160); accetta `email` (254), `organization` (160), `job_title` (120), `notes` (2000), `active=0|1`. Un'identità richiede `realm` e `login` (160 ciascuno, coppia unica NOCASE); accetta `display_name` (160), `kind=personal|shared|service`, `notes` (2000), `active=0|1`. Gli aggiornamenti sostituiscono i campi, richiedono `version` e non eliminano la storia. Tutte le scritture richiedono autore fidato.
+A person requires `person_code` (64 UTF-8 bytes, unique NOCASE) and `display_name` (160); accepts `email` (254), `organization` (160), `job_title` (120), `notes` (2000), and `active=0|1`. An identity requires `realm` and `login` (160 each, unique NOCASE pair); accepts `display_name` (160), `kind=personal|shared|service`, `notes` (2000), and `active=0|1`. Updates replace fields, require `version`, and do not delete history. All writes require a trusted actor.
 
-Il collegamento persona-identità accetta `person_id`, `role=owner|user`, `notes` (2000) e la `version` corrente dell'identità; la rimozione richiede la stessa versione. Entrambe le operazioni incrementano versione e storico di persona e identità nella stessa transazione. Duplicati attivi e versioni superate producono `409`. Disattivare conserva i collegamenti; nuovi collegamenti richiedono entrambi i soggetti attivi, mentre le rimozioni sono consentite anche dopo la disattivazione.
+The person-identity link accepts `person_id`, `role=owner|user`, `notes` (2000), and the identity's current `version`; removal requires the same version. Both operations increment the version and history of the person and identity in the same transaction. Active duplicates and outdated versions produce `409`. Deactivation preserves links; new links require both subjects to be active, while removal is allowed even after deactivation.
 
-Il collegamento al bene accetta `subject_kind=person|identity`, `subject_id`, `role=owner|user|administrator`, `notes` (2000) e la `version` del bene. Aggiunta e rimozione restituiscono `{ok,asset,link}`, aggiornano soltanto versione e storico del bene, con `change.operation=subject_added|subject_removed` e copia del collegamento. `subject_snapshot` conserva il soggetto al momento del collegamento; `subject` mostra l'anagrafica corrente. Non modifica stato, consegne, posti licenza o diritti di accesso. Non propaga i beni di un'identità alle persone associate. Nuovi collegamenti richiedono soggetto attivo e bene non dismesso/smarrito; la rimozione resta possibile.
+The asset link accepts `subject_kind=person|identity`, `subject_id`, `role=owner|user|administrator`, `notes` (2000), and the asset's `version`. Addition and removal return `{ok,asset,link}`, update only the asset's version and history, with `change.operation=subject_added|subject_removed` and a copy of the link. `subject_snapshot` preserves the subject at the time of linking; `subject` shows the current record. It does not change status, handovers, license seats, or access rights. It does not propagate an identity's assets to associated people. New links require an active subject and an asset that is not retired/lost; removal remains possible.
 
-Gli elenchi restituiscono `{ok,items,next_after_id}`, con `limit=1..100` (30 predefinito), `after_id`, ordine decrescente e budget 128 KiB. Le directory accettano `q` (200 byte) e `active=0|1`; le identità anche `kind` e `person_id`. Persone espongono `identity_count`, identità `people_count`. Catalogo, CSV e cruscotto accettano `person_id` e `identity_id` positivi, combinabili in AND sui soli collegamenti diretti attivi. Il CSV mantiene il formato delle schede e non importa/esporta le anagrafiche o i collegamenti.
+Lists return `{ok,items,next_after_id}`, with `limit=1..100` (default 30), `after_id`, descending order, and a 128 KiB budget. Directories accept `q` (200 bytes) and `active=0|1`; identities also accept `kind` and `person_id`. People expose `identity_count`, and identities expose `people_count`. The catalog, CSV, and dashboard accept positive `person_id` and `identity_id` values, combinable with AND across active direct `inventory_asset_subjects` links only: these filters and **View assets** do not automatically include operational assignments, handovers, or licenses. CSV retains the asset record format and does not import/export directory records or links.
 
-## Assegnazioni strutturate, consegne e verifiche
+## Structured assignments, handovers, and checks
 
-Lo schema 4 aggiunge anagrafiche `places`, contesto delle schede, consegne e verifiche. Le anagrafiche usano `kind=site|department|location`, `name`, `parent_id`, `active`, `version` e autore fidato. Una sede non ha padre; un reparto può indicare una sede, mentre un'ubicazione deve indicarla. Il tipo non è modificabile. Un cambio di padre su un luogo usato nei contesti correnti restituisce `409`; i riferimenti conservati soltanto nello storico non lo impediscono. Non è prevista eliminazione: disattivare un luogo conserva i riferimenti e i nomi memorizzati nello storico.
+Schema 4 adds `places` directory records, record contexts, handovers, and checks. Directory records use `kind=site|department|location`, `name`, `parent_id`, `active`, `version`, and a trusted actor. A site has no parent; a department can specify a site, while a location must specify one. The type cannot be changed. Changing the parent of a place used in current contexts returns `409`; references retained only in history do not prevent it. Deletion is not available: deactivating a place preserves references and the names stored in history.
 
-Le schede restituiscono `context` con `assignee_user_id`, `assignee_user_name`, `site_id`, `site_name`, `department_id`, `department_name`, `location_id`, `location_name`, oltre alla consegna attiva in `custody` e a `last_verification`; questi campi sono nulli se non ancora registrati. Il contesto è previsto per `it_device`, `network_device` e `physical`; software e licenze conservano i propri dettagli e relazioni. `POST /assets/<id>/context` richiede `version` e sostituisce l'insieme dei riferimenti utente/luoghi. Reparto e ubicazione devono appartenere alla sede indicata. Impostare l'utente porta a `assigned`; rimuoverlo riporta ad `available` un bene prima assegnato. La collocazione rimane indipendente dall'utente.
+Records return `context` with `assignee_person_id`, `assignee_person_name`, `assignee_user_id`, `assignee_user_name`, `site_id`, `site_name`, `department_id`, `department_name`, `location_id`, and `location_name`, along with the active handover in `custody` and `last_verification`; these fields are null if not yet recorded. Context is supported for `it_device`, `network_device`, and `physical`; software and licenses retain their own details and relationships. `POST /assets/<id>/context` requires `version` and replaces assignment and place references: it can specify `assignee_person_id` or `assignee_user_id`, never both, or neither to remove the assignment. The department and location must belong to the specified site. Setting an assignee changes the status to `assigned`; removing the assignee returns a previously assigned asset to `available`. Placement remains independent of the assignee.
 
-La consegna usa `version`, `user_id`, `checkout_on`, `due_on`, `condition_out=good|fair|damaged`, note facoltative e autore. Richiede un bene disponibile oppure già assegnato strutturalmente allo stesso utente, sempre senza consegna aperta; assegna il bene all'utente. La restituzione usa `version`, `returned_on`, `condition_in`, note facoltative e `status=available|maintenance`: chiude la consegna, rimuove l'utente e conserva i luoghi. Una scadenza precedente al giorno corrente rende in ritardo una consegna ancora aperta. Le date effettive non possono essere future e `due_on` non può precedere `checkout_on`.
+Handover uses `version`, exactly one of `person_id` or legacy `user_id`, `checkout_on`, `due_on`, `condition_out=good|fair|damaged`, optional notes, and an actor. The recipient must be active; a person does not need a Punto account. It requires an asset that is available or already structurally assigned to the same recipient, always without an open handover; it assigns the asset to the recipient. Return uses `version`, `returned_on`, `condition_in`, optional notes, and `status=available|maintenance`: it closes the handover, removes the assignee, and preserves places. A return is possible even after the person is deactivated. A due date before the current day makes a still-open handover overdue. Actual dates cannot be in the future, and `due_on` cannot precede `checkout_on`.
 
-La verifica usa `version`, `verified_on`, `condition=good|fair|damaged`, `observed_location_id` facoltativo, note facoltative e autore. Conserva contesto atteso e osservato; una differenza non sposta automaticamente il bene e `location_matches` è nullo se manca una delle due ubicazioni. Gli elenchi di consegne e verifiche usano ID decrescenti, `limit` da 1 a 100 e `after_id`. Una consegna mantiene note iniziali in `notes`, note finali in `return_notes` e gli autori in `actor_id`/`returned_actor_id`, oltre alle date e al flag `active`. Lo storico delle schede registra `change.operation=context_updated|checked_out|checked_in|verified`. Ogni operazione controlla la revisione e salva scheda, evento e storico nella stessa transazione.
+A check uses `version`, `verified_on`, `condition=good|fair|damaged`, optional `observed_location_id`, optional notes, and an actor. It preserves expected and observed context; a discrepancy does not automatically move the asset, and `location_matches` is null if either location is missing. Handover and check lists use descending IDs, `limit` from 1 to 100, and `after_id`. A handover retains `person_id`/`person_name` or `user_id`/`user_name`, with the other ID null, initial notes in `notes`, final notes in `return_notes`, and actors in `actor_id`/`returned_actor_id`, along with dates and the `active` flag. The name is a snapshot resolved by the server. Asset record history records `change.operation=context_updated|checked_out|checked_in|verified`. Each operation checks the revision and saves the record, event, and history in the same transaction.
 
-Il servizio non interroga il database principale: l'app convalida gli utenti attivi, risolve i nomi e trasmette questa identità fidata, come già avviene per l'autore. Il browser non può fornire nomi utente o autore arbitrari. Una successiva disattivazione dell'utente non riscrive gli snapshot. Il bridge espone ai soli Gestori `GET /api/inventory/users` con `id`, `name`, `email`. Il filtro pubblico `mine=1` per catalogo ed esportazione diventa il riferimento dell'utente autenticato; il catalogo rimane globale. Le vecchie stringhe `assignee` e `location` non vengono convertite automaticamente e CSV/editor generale non possono aggirare il contesto o una consegna aperta.
+The service resolves and validates people in its own store. It does not query the main database: for legacy Punto users, the app validates active users, resolves names, and transmits this trusted identity, as it already does for the actor. The browser cannot supply arbitrary person/user or actor names. Later deactivation does not rewrite snapshots. The bridge exposes `GET /api/inventory/users` with `id`, `name`, and `email` to Managers only. The public `mine=1` filter and `by_user` distribution concern only Punto users, without implicit associations with people. Old `assignee` and `location` strings and handovers to users remain unchanged; they are not converted automatically. Operational assignments and handovers do not create `inventory_asset_subjects` links or person-identity relationships. CSV/the general editor cannot bypass context or an open handover.
 
-### Etichette QR
+### QR labels
 
-L'app genera un SVG 90 × 50 mm con codice, nome e URL assoluto `/app#inventory?asset_id=ID`. La scansione richiede l'autenticazione prima di aprire la scheda. L'URL incorpora dominio e porta correnti: generare le etichette dall'indirizzo definitivo raggiungibile dai dispositivi e ristamparle se l'origine cambia.
+The app generates a 90 × 50 mm SVG with the code, name, and absolute URL `/app#inventory?asset_id=ID`. Scanning requires authentication before opening the record. The URL incorporates the current domain and port: generate labels from the final address reachable by devices, and reprint them if the origin changes.
 
-Il generatore [Project Nayuki](https://www.nayuki.io/page/qr-code-generator-library) è vendorizzato in `public/qrcodegen.js` con licenza MIT e provenienza in `public/qrcodegen.LICENSE.txt`. `public/inventory-qr.js` costruisce SVG tramite DOM senza HTML derivato da dati, usa correzione d'errore almeno media e mantiene quattro moduli bianchi di bordo. Download e stampa operano localmente senza CDN o servizio esterno; la stampa isola l'etichetta con CSS senza modificare la CSP. Conservare contrasto e bordo bianco durante stampa o ridimensionamento.
+The [Project Nayuki](https://www.nayuki.io/page/qr-code-generator-library) generator is vendored in `public/qrcodegen.js` under the MIT license, with provenance in `public/qrcodegen.LICENSE.txt`. `public/inventory-qr.js` builds SVG through the DOM without HTML derived from data, uses at least medium error correction, and keeps a four-module white border. Download and printing operate locally without a CDN or external service; printing isolates the label with CSS without changing the CSP. Preserve contrast and the white border when printing or resizing.
 
 ## CSV
 
-`GET /v1/assets/export` usa gli stessi filtri e cursori del catalogo e restituisce `{ok,csv,exported,next_after_id}`. Ogni pagina include l’intestazione; concatenando le pagine mantenerla soltanto dalla prima. Le 16 colonne sono `id`, `asset_tag`, `name`, `category`, `serial_number`, `manufacturer`, `model`, `status`, `location`, `assignee`, `purchase_date`, `warranty_until`, `notes`, `asset_type`, `details`, `version`. Tutti i campi sono quotati; `details` è JSON. Non esporta né importa relazioni.
+`GET /v1/assets/export` uses the same filters and cursors as the catalog and returns `{ok,csv,exported,next_after_id}`. Each page includes the header; when concatenating pages, keep it only from the first. The 16 columns are `id`, `asset_tag`, `name`, `category`, `serial_number`, `manufacturer`, `model`, `status`, `location`, `assignee`, `purchase_date`, `warranty_until`, `notes`, `asset_type`, `details`, and `version`. All fields are quoted; `details` is JSON. It neither exports nor imports relationships.
 
-`POST /v1/import/preview` accetta `csv`, `mode=create_only|upsert` (predefinito create_only) e autore fidato. CSV UTF-8, BOM facoltativo, separatore virgola, LF/CRLF, campi multilinea quotati e virgolette raddoppiate secondo RFC4180; massimo 256 KiB e 200 righe. Sono obbligatorie le colonne `asset_tag` e `name`. Intestazioni sconosciute/duplicate, tag ripetuti, campi invalidi e conflitti vengono segnalati per riga. `upsert` risolve per tag e richiede la versione corrente per aggiornare; un `id` appartenente a un altro tag è rifiutato. Le colonne omesse conservano i valori esistenti; celle vuote esplicite svuotano i campi facoltativi. `details` richiede un oggetto JSON (`{}` per svuotare i dettagli facoltativi), mentre tipologia, stato e versione di aggiornamento devono restare validi. I riferimenti `software_id` delle licenze devono appartenere a schede software già persistenti all’inizio dell’anteprima: non possono usare ID temporanei di software creati nello stesso lotto. Gli ID fanno riferimento all’archivio locale, quindi verificare le licenze importate da un inventario diverso.
+`POST /v1/import/preview` accepts `csv`, `mode=create_only|upsert` (default create_only), and a trusted actor. CSV uses UTF-8, an optional BOM, comma separators, LF/CRLF, quoted multiline fields, and doubled quotation marks according to RFC4180; maximum 256 KiB and 200 rows. The `asset_tag` and `name` columns are required. Unknown/duplicate headers, repeated tags, invalid fields, and conflicts are reported per row. `upsert` resolves by tag and requires the current version to update; an `id` belonging to another tag is rejected. Omitted columns preserve existing values; explicit empty cells clear optional fields. `details` requires a JSON object (`{}` to clear optional details), while type, status, and update version must remain valid. License `software_id` references must belong to software records already persisted at the start of the preview: they cannot use temporary IDs of software created in the same batch. IDs refer to the local archive, so check licenses imported from a different inventory.
 
-L’anteprima esegue la stessa validazione del salvataggio senza persistere schede o storico. Restituisce `summary`, `items`, `can_commit` e `preview_id` di 32 cifre esadecimali, legato all’autore, monouso, valido 15 minuti (massimo 64 piani aperti per autore). `POST /v1/import/commit` accetta l’ID e l’autore fidato: rivalida le versioni e salva tutto il lotto insieme con uno snapshot per riga. Anche un conflitto consuma l’anteprima e non lascia aggiornamenti parziali.
+The preview performs the same validation as saving without persisting records or history. It returns `summary`, `items`, `can_commit`, and a 32-hexadecimal-digit `preview_id`, tied to the actor, single-use, and valid for 15 minutes (maximum 64 open plans per actor). `POST /v1/import/commit` accepts the ID and trusted actor: it revalidates versions and saves the entire batch together with one snapshot per row. Even a conflict consumes the preview and leaves no partial updates.
 
-Per proteggere l’apertura nei fogli di calcolo, l’esportazione antepone un apostrofo ai valori che iniziano con un apostrofo o il cui primo carattere non spazio ASCII/tab/CR/LF è `=`, `+`, `-`, `@`. L’importazione elimina esattamente un apostrofo se il resto soddisfa questa condizione. La convenzione consente il roundtrip delle esportazioni; in file manuali raddoppiare l’apostrofo letterale davanti a tali prefissi.
+To protect opening files in spreadsheets, export prepends an apostrophe to values that begin with an apostrophe or whose first character other than ASCII space/tab/CR/LF is `=`, `+`, `-`, or `@`. Import removes exactly one apostrophe if the remainder meets this condition. The convention allows exported files to round-trip; in manually prepared files, double the literal apostrophe before such prefixes.
 
-## Scadenze
+## Due dates
 
-`GET /v1/due?today=YYYY-MM-DD&days_before=30&limit=100&after_id=...` restituisce `{ok,items,next_after_id}`. Oggi è facoltativo e segue il fuso aziendale; l’anticipo va da 1 a 365 giorni. Include garanzia, manutenzione, scadenza e rinnovo fino alla soglia, comprese date già superate; esclude schede dismesse o smarrite. I campi sono `asset_id`, `asset_tag`, `name`, `asset_type`, `due_kind` (nome del campo), `due_on`, `days_remaining`. Il limite conta asset e tutte le scadenze di un asset restano nella stessa pagina. Il servizio espone i dati; il pianificatore e la deduplicazione degli avvisi sono nell’app principale.
+`GET /v1/due?today=YYYY-MM-DD&days_before=30&limit=100&after_id=...` returns `{ok,items,next_after_id}`. Today is optional and follows the business time zone; the lead time ranges from 1 to 365 days. It includes warranty, maintenance, expiration, and renewal up to the threshold, including dates already past; it excludes retired or lost records. Fields are `asset_id`, `asset_tag`, `name`, `asset_type`, `due_kind` (field name), `due_on`, and `days_remaining`. The limit counts assets, and all due dates for an asset stay on the same page. The service exposes the data; scheduling and notification deduplication are in the main app.
 
-`GET /v1/operational-due?kind=return|verification&verification_days=90&today=YYYY-MM-DD&limit=100&after_id=...` restituisce lo stesso involucro paginato. `kind` è obbligatorio; data, intervallo e paginazione sono facoltativi, con gli stessi limiti del catalogo. Gli elementi includono i campi delle scadenze e `source_id`. Per `return`, `due_kind=return_due`, `source_id` identifica la consegna aperta e `due_on` è la restituzione prevista, strettamente precedente al giorno richiesto. Per `verification`, `due_kind=verification_due`, `source_id` identifica l'ultima verifica e `due_on` è la sua data più l'intervallo; per beni mai verificati `source_id=0` e `due_on` è la data di creazione. Quest'ultimo controllo include entrambi i casi. Beni non materiali, dismessi e smarriti sono esclusi. Il servizio non crea regole: l'app principale configura `inventory_return` e `inventory_verification`, acquisisce tutte le pagine e deduplica gli avvisi includendo la consegna o verifica di origine.
+`GET /v1/operational-due?kind=return|verification&verification_days=90&today=YYYY-MM-DD&limit=100&after_id=...` returns the same paginated envelope. `kind` is required; date, interval, and pagination are optional, with the same limits as the catalog. Items include the due-date fields and `source_id`. For `return`, `due_kind=return_due`, `source_id` identifies the open handover, and `due_on` is the expected return date, strictly before the requested day. For `verification`, `due_kind=verification_due`, `source_id` identifies the latest check, and `due_on` is its date plus the interval; for assets never checked, `source_id=0` and `due_on` is the creation date. This latter check includes both cases. Nonphysical, retired, and lost assets are excluded. The service does not create rules: the main app configures `inventory_return` and `inventory_verification`, retrieves all pages, and deduplicates alerts by including the originating handover or check.
 
-## Avvio e configurazione
+## Startup and configuration
 
-Dalla radice del progetto, per aggiungere il servizio a un'installazione Docker già configurata:
+From the project root, to add the service to an already configured Docker installation:
 
 ```sh
 python3 scripts/configure_network.py --env-file .env.docker prepare
@@ -163,9 +169,9 @@ docker compose --env-file .env.docker build inventory app
 docker compose --env-file .env.docker up -d inventory app
 ```
 
-Per una nuova installazione seguire prima l'avvio del cluster nel [README principale](../README.md). `prepare` estende la CA esistente con il certificato inventory mancante e crea `data/addon-secrets/inventory-api-token` una sola volta. Non sostituisce CA, certificati o token preesistenti; un materiale incompleto o non valido richiede il ripristino dell'originale.
+For a new installation, first follow cluster startup in the [main README](../README.md). `prepare` extends the existing CA with the missing inventory certificate and creates `data/addon-secrets/inventory-api-token` only once. It does not replace preexisting CAs, certificates, or tokens; incomplete or invalid material requires restoring the original.
 
-| Variabile addon | Valore Compose |
+| Addon variable | Compose value |
 | --- | --- |
 | `INVENTORY_BIND` | `172.30.80.2` |
 | `INVENTORY_PORT` | `8092` |
@@ -174,26 +180,26 @@ Per una nuova installazione seguire prima l'avvio del cluster nel [README princi
 | `INVENTORY_TLS_CERT_FILE` | `/etc/punto/tls/inventory-addon.crt` |
 | `INVENTORY_TLS_KEY_FILE` | `/etc/punto/tls/inventory-addon.key` |
 | `INVENTORY_DB_PATH` | `/var/lib/punto-inventory/inventory.sqlite3` |
-| `INVENTORY_BUSINESS_TIMEZONE` | `Europe/Rome` (predefinito del servizio; fuso per il giorno di scadenza delle licenze). |
-| `INVENTORY_BACKUP_DIR` | `/var/backups/punto-inventory`; abilita le copie automatiche. Assente/vuota in modalità nativa: backup disabilitato. |
-| `INVENTORY_BACKUP_INTERVAL_HOURS` | `24`, configurabile da 1 a 168 ore. |
-| `INVENTORY_BACKUP_KEEP` | `14`, configurabile da 1 a 365 copie verificate. |
+| `INVENTORY_BUSINESS_TIMEZONE` | `Europe/Rome` (service default; time zone for the license expiration day). |
+| `INVENTORY_BACKUP_DIR` | `/var/backups/punto-inventory`; enables automatic copies. Missing/empty in native mode: backups disabled. |
+| `INVENTORY_BACKUP_INTERVAL_HOURS` | `24`, configurable from 1 to 168 hours. |
+| `INVENTORY_BACKUP_KEEP` | `14`, configurable from 1 to 365 verified copies. |
 
-L'app usa `INVENTORY_API_URL=https://inventory-api:8092`, lo stesso token e `INVENTORY_API_CA_FILE=/etc/punto/tls/ca.crt`. In modalità nativa il modulo è facoltativo: lasciare tutte e tre le variabili dell'app vuote per disabilitarlo. Per abilitarlo configurarle insieme, con HTTPS e CA verificata; sono ammessi i nomi interni sulla porta 8092 oppure `localhost`/`127.0.0.1` con porta esplicita. Per avviare l'addon nativamente impostare bind e client ammesso sul loopback, percorsi TLS/token esistenti e un percorso SQLite scrivibile. Non è prevista una modalità HTTP senza TLS.
+The app uses `INVENTORY_API_URL=https://inventory-api:8092`, the same token, and `INVENTORY_API_CA_FILE=/etc/punto/tls/ca.crt`. In native mode, the module is optional: leave all three app variables empty to disable it. To enable it, configure them together, with HTTPS and a verified CA; internal names on port 8092 or `localhost`/`127.0.0.1` with an explicit port are allowed. To start the addon natively, set the bind and allowed client to loopback, existing TLS/token paths, and a writable SQLite path. HTTP mode without TLS is not available.
 
-## Persistenza e isolamento
+## Persistence and isolation
 
-Il volume dedicato `inventory_addon_data` contiene `inventory.sqlite3` e gli eventuali file SQLite WAL/SHM. L'addon usa UID/GID `10005:10005`, filesystem radice in sola lettura, capacità Linux rimosse e nessuna porta pubblicata sull'host. È collegato soltanto a `inventory_api` (`172.30.80.0/24`, rete `internal` con gateway `isolated`), senza `app_egress`, accesso a Squid o reti e credenziali MySQL/MongoDB. Solo app e addon ricevono il token inventory.
+The dedicated `inventory_addon_data` volume contains `inventory.sqlite3` and any SQLite WAL/SHM files. The addon uses UID/GID `10005:10005`, a read-only root filesystem, removed Linux capabilities, and no ports published on the host. It is connected only to `inventory_api` (`172.30.80.0/24`, an `internal` network with an `isolated` gateway), without `app_egress`, access to Squid, or MySQL/MongoDB networks and credentials. Only the app and addon receive the inventory token.
 
-I dati e gli snapshot sono memorizzati in chiaro nel volume; TLS protegge il trasporto. Il backup MySQL e il backup documentale non includono l'inventario. L'addon è una singola istanza e non eredita l'HA del cluster MySQL. Non cancellare il volume per aggiornare l'immagine.
+Data and snapshots are stored in plaintext in the volume; TLS protects transport. The MySQL backup and document backup do not include inventory. The addon is a single instance and does not inherit the MySQL cluster's HA. Do not delete the volume to update the image.
 
-### Backup automatici e ripristino verificato
+### Automatic backups and verified recovery
 
-Compose abilita una copia SQLite coerente all'avvio iniziale, poi ogni 24 ore, nel volume separato `inventory_addon_backups`, conservando le ultime 14 copie verificate. Un riavvio recupera l'ultima copia integra e la sua scadenza, senza produrre un duplicato a ogni avvio. La directory appartiene a UID/GID `10005:10005`; i file sono creati con permessi `0600`. La copia usa l'API SQLite Backup, comprende le scritture confermate nel WAL, supera `PRAGMA integrity_check` ed è pubblicata con rinomina atomica. La rotazione interessa soltanto file regolari verificati con il nome del servizio; non segue collegamenti simbolici e non rimuove file estranei o copie corrotte.
+Compose enables a consistent SQLite copy at initial startup, then every 24 hours, in the separate `inventory_addon_backups` volume, retaining the last 14 verified copies. A restart recovers the last intact copy and its due time without producing a duplicate on every startup. The directory belongs to UID/GID `10005:10005`; files are created with `0600` permissions. The copy uses the SQLite Backup API, includes committed WAL writes, passes `PRAGMA integrity_check`, and is published with an atomic rename. Rotation affects only verified regular files with the service's name; it does not follow symbolic links or remove unrelated files or corrupt copies.
 
-`GET /v1/status` include `backup` con abilitazione, intervallo, conservazione, ultimo tentativo, ultima riuscita, nome della copia, prossima scadenza ed eventuale errore. Gli orari sono UTC e il percorso host non viene esposto. Un errore di backup mantiene disponibile l'inventario, viene registrato nei log e rinvia il tentativo per almeno cinque minuti. Le copie locali devono essere trasferite anche su un supporto esterno per proteggersi dalla perdita dell'host; conservare token e materiali TLS separatamente.
+`GET /v1/status` includes `backup` with whether backups are enabled, interval, retention, last attempt, last success, copy name, next due time, and any error. Times are UTC, and the host path is not exposed. A backup error keeps inventory available, is recorded in logs, and delays the next attempt by at least five minutes. Local copies must also be transferred to external storage to protect against loss of the host; keep tokens and TLS materials separately.
 
-Il programma di supporto richiede Python con SQLite e opera su file accessibili all'amministratore:
+The helper program requires Python with SQLite and operates on files accessible to the administrator:
 
 ```sh
 python3 scripts/inventory_backup.py create /percorso/inventory.sqlite3 /percorso/backup-manuale.sqlite3
@@ -201,11 +207,11 @@ python3 scripts/inventory_backup.py verify /percorso/backup-manuale.sqlite3
 python3 scripts/inventory_backup.py restore /percorso/backup-manuale.sqlite3 /percorso/inventory-ripristinato.sqlite3
 ```
 
-`create` è una copia online coerente; `restore` produce un nuovo database verificato e non sovrascrive mai un file esistente. Per attivare un ripristino, arrestare l'addon, conservare l'archivio precedente e gli eventuali WAL/SHM, collocare il nuovo file come `inventory.sqlite3` in un archivio senza i vecchi WAL/SHM, quindi ripristinare proprietà UID/GID `10005:10005` prima del riavvio. Verificare catalogo e storico. Non copiare soltanto il database principale mentre il servizio scrive.
+`create` is a consistent online copy; `restore` produces a new verified database and never overwrites an existing file. To activate a restore, stop the addon, retain the previous store and any WAL/SHM files, place the new file as `inventory.sqlite3` in a store without the old WAL/SHM files, then restore UID/GID `10005:10005` ownership before restarting. Check the catalog and history. Do not copy only the main database while the service is writing.
 
-Lo schema inventory è alla versione 5. All'avvio l'addon migra automaticamente un archivio versione 1, conservando ID, schede, autore e storico: le schede esistenti diventano `it_device` con dettagli vuoti. Gli snapshot precedenti restano nel formato originale; i nuovi contengono tipologia e dettagli. Eseguire un backup coerente prima dell'aggiornamento. La migrazione è transazionale; un database con versione futura viene rifiutato. La migrazione 2 → 3 aggiunge le anteprime CSV persistenti e la migrazione 3 → 4 aggiunge anagrafiche, contesti, consegne e verifiche senza reinterpretare i testi precedenti. La migrazione 4 → 5 aggiunge persone, identità, legami molti a molti, storico delle anagrafiche e collegamenti diretti ai beni. Per tornare a un’immagine precedente occorre ripristinare un backup compatibile: non basta cambiare `PRAGMA user_version`.
+Inventory schema is at version 6. On startup, the addon automatically migrates a version 1 store, preserving IDs, records, actors, and history: existing records become `it_device` with empty details. Previous snapshots remain in their original format; new ones contain type and details. Make a consistent backup before updating. Migration is transactional; a database with a future version is rejected. Migration 2 → 3 adds persistent CSV previews, and migration 3 → 4 adds directory records, contexts, handovers, and checks without reinterpreting previous text. Migration 4 → 5 adds people, identities, many-to-many links, directory record history, and direct asset links. Migration 5 → 6 adds people to operational assignments and handovers and person/identity recipients to licenses, preserving existing IDs, legacy users, text, references, and snapshots without implicit conversions. Images supporting at most schema 5 cannot open schema 6. Returning to an earlier image requires restoring a backup compatible with it; data added after migration requires an up-to-date schema 6 copy: changing `PRAGMA user_version` is not enough.
 
-## Compilazione e verifiche
+## Build and checks
 
 ```sh
 make -C inventory-addon
@@ -213,10 +219,10 @@ python3 -m unittest discover -s tests -p 'test_inventory*.py' -v
 python3 -m unittest discover -s tests -p 'test_cluster_manager.py' -v
 ```
 
-Dipendenze native: compilatore C11, pkg-config, OpenSSL, SQLite, json-c e un database dei fusi orari aggiornato. L'immagine Docker usa Debian, include `tzdata` per i fusi IANA e avvia il servizio con un utente non privilegiato. I test funzionali usano archivi e certificati temporanei. La suite di rete è separata e facoltativa, contro uno stack già avviato:
+Native dependencies: C11 compiler, pkg-config, OpenSSL, SQLite, json-c, and an up-to-date time zone database. The Docker image uses Debian, includes `tzdata` for IANA time zones, and starts the service with an unprivileged user. Functional tests use temporary stores and certificates. The network suite is separate and optional, against an already running stack:
 
 ```sh
 PUNTO_NETWORK_TEST=1 python3 tests/test_network_security.py -v
 ```
 
-Ulteriori riferimenti: [guida operativa](../docs/prod/asset-inventory.md), [architettura e contratto pubblico](../docs/tehnical/asset-inventory.md).
+Further references: [operational guide](../docs/en/prod/asset-inventory.md), [architecture and public contract](../docs/en/tehnical/asset-inventory.md).

@@ -7,7 +7,7 @@
   const states = { planned: t("Da avviare"), active: t("In corso"), paused: t("In pausa"), completed: t("Completata"), cancelled: t("Annullata") };
   const roles = { manager: t("Gestore"), worker: t("Operatore") };
   const contractStates = { draft: t("Bozza"), active: t("Attivo"), expired: t("Scaduto"), closed: t("Chiuso"), cancelled: t("Annullato") };
-  const tabs = ["jobs", "work-board", "inventory", "hours", "reports", "notifications", "alerts", "suppliers", "contracts", "users", "organization", "audit"];
+  const tabs = ["my-work", "jobs", "work-board", "inventory", "calendar", "hours", "work-schedules", "reports", "notifications", "alerts", "suppliers", "contracts", "users", "organization", "audit"];
   const reportViews = { periodo: { api: "date", label: t("Per periodo"), title: t("Il lavoro nel periodo") }, commesse: { api: "job", label: t("Per commessa"), title: t("Il lavoro per commessa") }, utenti: { api: "user", label: t("Per utente"), title: t("Il lavoro per utente") }, costi: { api: "cost", label: t("Valore contratti"), title: t("Valori contrattuali e lavoro registrato") }, "costo-ore": { api: "labor_cost", label: t("Costo delle ore"), title: t("Il costo stimato delle ore") } };
   const state = { session: null, sessionRequest: 0, jobs: [], entries: [], users: [], todayMinutes: null, todayCount: null, jobsReady: false, entriesReady: false, usersReady: false, selectedDate: localDate(new Date()), entriesRequest: 0, usersRequest: 0, refreshRequest: 0, deleteEntry: null, openEntryAfterJob: false, activeTab: "jobs", assignmentJob: null, assignments: [], assignmentUsers: [], assignmentsReady: false, assignmentRequest: 0, editingAssignment: null, revokeAssignment: null, auditEvents: [], auditReady: false, auditRequest: 0, auditLoading: false, auditCursor: null, auditRetryMore: false };
   Object.assign(state, { suppliers: [], contracts: [], suppliersReady: false, contractsReady: false, suppliersRequest: 0, contractsRequest: 0, suppliersLoading: false, contractsLoading: false, editingJob: null, deleteJob: null, editingContract: null, documentsContract: null, documents: [], documentsReady: false, documentsRequest: 0 });
@@ -22,6 +22,12 @@
     inventory_return: { label: t("Restituzioni inventario scadute"), description: t("Controlla le consegne ancora aperte dal giorno successivo alla restituzione prevista. Esclude beni dismessi o smarriti; ogni nuova consegna può generare un nuovo avviso.") },
     inventory_verification: { label: t("Verifiche inventario"), description: t("Controlla i beni materiali mai verificati e quelli la cui ultima verifica ha raggiunto l’intervallo impostato. Esclude beni dismessi o smarriti; una nuova verifica avvia un nuovo intervallo.") }
   };
+  const calendar = { request: 0, loading: false, busy: false, ready: false, status: null, date: localDate(new Date()), events: [], cursor: null, calendars: [], calendarCursor: null, catalogReady: false, consentState: null };
+  const timeWorkflow = { view: "day", week: null, copyBusy: false, batchRows: [], batchKey: null, batchPayload: null, batchSequence: 0, entry: null, detailEntry: null, requests: [], requestsReady: false, requestsLoading: false, requestsRequest: 0, decision: null, lifecycleJob: null, lifecycle: null, lifecycleRequest: 0 };
+  const workspaceFlows = { epoch: 0, myWork: null, myRequest: 0, myLoading: false, overviewJob: null, overviewRequest: 0, accessJob: null, accessRequest: 0, users: [], schedules: [], exceptions: [], holidays: [], scheduleRequest: 0, scheduleLoading: false, scheduleKind: null, scheduleDelete: null, workNotifications: [], workUnread: 0, notificationRequest: 0, notificationLoading: false, reading: new Set(), wizard: { step: 0, ready: false, request: 0, users: [], groups: [], roles: [], contracts: [], templates: [], team: [], tasks: [], sequence: 0, key: null, payload: null } };
+  Object.assign(timeWorkflow, { userId: "", team: [], teamReady: false, teamRequest: 0 });
+  const accessProfiles = { request: 0, user: null, catalog: [], data: null };
+  const accessProfileLabels = { operator: t("Operatori"), manager: t("Gestori"), sales: t("Commerciali"), finance: t("Finance") };
   const busyDialogs = new Set();
   let noticeTimer;
 
@@ -78,7 +84,7 @@
 
   function redirectToLogin() {
     const hash = window.location.hash;
-    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash)) ? hash : "";
+    const retained = hash.length <= 2048 && (/^#analisi\/(?:periodo|commesse|utenti|costi|costo-ore)(?:\?|$)/.test(hash) || /^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(hash) || hash === "#calendar") ? hash : "";
     window.location.replace(window.PuntoI18n ? window.PuntoI18n.url("/" + retained) : "/" + retained);
   }
 
@@ -126,31 +132,35 @@
     return api(path, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }, body: new URLSearchParams(fields) });
   }
 
-  function ticketAppURL(kind = "", id = null, create = false) {
+  function ticketAppURL(kind = "", id = null, create = false, agenda = false) {
     if (!state.session?.tickets?.configured) return null;
     const url = new URL(state.session.tickets.origin);
     if (kind && id) url.searchParams.set(kind + "_id", String(id));
     if (create) url.searchParams.set("new", "1");
+    if (agenda) url.searchParams.set("view", "agenda");
     return window.PuntoI18n ? window.PuntoI18n.url(url.href) : url.href;
   }
 
-  function ticketAppLink(label, kind, id, create = false) {
+  function ticketAppLink(label, kind, id, create = false, agenda = false) {
     const link = node("a", "row-button", label);
-    link.href = ticketAppURL(kind, id, create);
+    link.href = ticketAppURL(kind, id, create, agenda);
     return link;
   }
 
-  async function connectTicketSession(connectionState) {
+  async function connectTicketSession(connectionState, calendarAccess = false) {
     if (state.ticketConnecting) return;
     if (!state.session?.tickets?.configured) { showNotice(t("Il collegamento a Ticket non è configurato su Punto."), true); return; }
     state.ticketConnecting = true;
     showNotice(t("Collegamento della sessione Punto a Ticket…"));
     try {
-      const data = await post("/api/integrations/tickets/grant", { state: connectionState });
+      const data = await post("/api/integrations/tickets/grant", { state: connectionState, ...(calendarAccess ? { calendar: "1" } : {}) });
       const target = new URL(data.url);
       if (target.origin !== new URL(state.session.tickets.origin).origin || target.pathname !== "/" || !/^#punto_grant=[a-f0-9]{64}&state=[a-f0-9]{64}$/.test(target.hash)) throw new Error(t("Il collegamento restituito non è valido."));
       window.location.assign(window.PuntoI18n ? window.PuntoI18n.url(target.href) : target.href);
-    } catch (error) { showNotice(error.message + t(" Torna a Ticket e ripeti Collega Punto."), true); }
+    } catch (error) {
+      if (calendarAccess && $("ticket-calendar-consent").open) { $("ticket-calendar-consent-error").textContent = error.message; $("ticket-calendar-consent-error").hidden = false; }
+      else showNotice(error.message + t(" Torna a Ticket e ripeti Collega Punto."), true);
+    }
     finally { state.ticketConnecting = false; }
   }
 
@@ -168,6 +178,11 @@
     $("load-error").hidden = false;
   }
 
+  function viewingOwnHours() { return !timeWorkflow.userId || String(timeWorkflow.userId) === String(state.session?.user_id || state.session?.id || ""); }
+  function canReadUsers() { return can("manage_users") || can("manage_access_groups"); }
+  function financialReport(view = state.reportView) { return ["costi", "costo-ore"].includes(view); }
+  function reportCanFilterUsers(view = state.reportView) { return can("view_team_hours") && !financialReport(view); }
+
   function can(permission) {
     return state.session?.permissions?.[permission] === true;
   }
@@ -177,17 +192,47 @@
     link.hidden = state.session?.role !== "manager" || !state.usersAdminURL;
     if (state.usersAdminURL) link.href = state.usersAdminURL;
     else link.removeAttribute("href");
+    const groupsLink = $("keycloak-groups-link");
+    groupsLink.hidden = !can("manage_groups") || !state.groupsManaged || !state.groupsAdminURL;
+    if (state.groupsAdminURL) groupsLink.href = state.groupsAdminURL;
+    else groupsLink.removeAttribute("href");
+    $("keycloak-groups-note").hidden = !can("manage_groups") || !state.groupsManaged;
+    $("new-group").hidden = !canEditGroups();
+    $("group-member-form").hidden = !canEditGroups();
+    if (!canEditGroups()) {
+      $("group-detail-actions").hidden = true;
+      $("organization-confirm").hidden = true;
+      state.organizationConfirm = null;
+      if ($("group-dialog").open) $("group-dialog").close();
+    }
   }
 
   async function loadIdentityManagement() {
     const configuration = await api("/api/auth/config");
     state.usersAdminURL = null;
+    state.groupsAdminURL = null;
+    state.groupsManaged = configuration.managed_groups === true;
     if (configuration.managed_users && typeof configuration.users_admin_url === "string" && configuration.users_admin_url) {
       const target = new URL(configuration.users_admin_url);
       if (target.protocol !== "https:" || target.username || target.password) throw new Error(t("Configurazione accesso non disponibile. Riprova."));
       state.usersAdminURL = target.href;
     }
+    if (state.groupsManaged && typeof configuration.groups_admin_url === "string" && configuration.groups_admin_url) {
+      const target = new URL(configuration.groups_admin_url);
+      if (target.protocol !== "https:" || target.username || target.password) throw new Error(t("Configurazione accesso non disponibile. Riprova."));
+      state.groupsAdminURL = target.href;
+    }
     renderIdentityManagement();
+  }
+
+  function canEditGroups() {
+    return !state.groupsManaged && can("manage_groups") && state.session?.permissions?.edit_groups !== false;
+  }
+
+  function requireGroupEditing() {
+    if (canEditGroups()) return true;
+    showNotice(state.groupsManaged ? t("Gestisci gruppi e appartenenze in Keycloak.") : t("Il tuo account non è abilitato a questa operazione."), true);
+    return false;
   }
 
   function requirePermission(permission) {
@@ -196,21 +241,226 @@
     return false;
   }
 
+  function resetCalendar() {
+    calendar.request++; calendar.loading = calendar.busy = calendar.ready = false;
+    calendar.status = null; calendar.events = []; calendar.cursor = null;
+    calendar.calendars = []; calendar.calendarCursor = null; calendar.catalogReady = false;
+    calendar.consentState = null;
+    ["calendar-events", "calendar-series-list", "calendar-changes", "calendar-choice"].forEach((id) => $(id).replaceChildren());
+    ["calendar-agenda", "calendar-selection", "calendar-queue", "calendar-error"].forEach((id) => { $(id).hidden = true; });
+    if ($("ticket-calendar-consent").open) $("ticket-calendar-consent").close();
+  }
+
+  function renderCalendarTickets() {
+    $("calendar-ticket-context").hidden = !state.session?.tickets?.configured;
+    const selected = $("calendar-ticket-job").value;
+    const options = [new Option(t("Tutte le commesse abilitate"), ""), ...state.jobs.map((job) => new Option(`${job.code} · ${job.name}`, String(job.id)))];
+    $("calendar-ticket-job").replaceChildren(...options);
+    $("calendar-ticket-job").value = options.some((option) => option.value === selected) ? selected : "";
+    if (state.session?.tickets?.configured) $("calendar-ticket-link").href = ticketAppURL("job", $("calendar-ticket-job").value, false, true);
+  }
+
+  function calendarWeek() {
+    const date = new Date(calendar.date + "T12:00:00");
+    date.setDate(date.getDate() - (date.getDay() + 6) % 7); date.setHours(0, 0, 0, 0);
+    const end = new Date(date); end.setDate(end.getDate() + 7);
+    return { start: date, end };
+  }
+
+  function calendarError(error) {
+    const messages = {
+      oauth_not_configured: t("Google Calendar richiede la configurazione dell’amministratore."),
+      calendar_not_configured: t("Il servizio calendario non è configurato."),
+      pending_changes: t("Ci sono operazioni in attesa. Attendi il loro completamento prima di cambiare calendario."),
+      calendar_not_connected: t("Collega Google Calendar per proseguire."),
+      calendar_not_selected: t("Seleziona un calendario per proseguire."),
+      google_account_mismatch: t("È già collegato un altro account Google. Scollegalo prima di cambiare account."),
+      calendar_not_writable: t("Scegli un calendario sul quale hai il permesso di modifica.")
+    };
+    return messages[error.sourceMessage] || error.message;
+  }
+
+  function renderCalendarStatus() {
+    const status = calendar.status;
+    if (!status) return;
+    $("calendar-status").textContent = !status.oauth_configured ? t("Google Calendar richiede la configurazione dell’amministratore. L’agenda Ticket è già disponibile.") : status.reauth_required ? t("Il consenso Google è scaduto. Collega nuovamente il tuo account.") : !status.connected ? t("Collega il tuo account Google per sincronizzare gli interventi.") : status.calendar_id ? t("Calendario collegato: {0}", [calendar.calendars.find((item) => item.id === status.calendar_id)?.summary || status.calendar_id]) : t("Account Google collegato. Scegli un calendario da sincronizzare.");
+    $("calendar-connect").hidden = !status.oauth_configured || status.connected && !status.reauth_required;
+    $("calendar-sync").hidden = !status.connected || !status.calendar_id || status.reauth_required;
+    $("calendar-disconnect").hidden = !status.connected;
+    $("calendar-disconnect").disabled = calendar.busy;
+    $("calendar-selection").hidden = !status.connected || status.reauth_required;
+    $("calendar-agenda").hidden = !status.connected || !status.calendar_id || status.reauth_required;
+    $("calendar-queue").hidden = !status.connected;
+    const pending = (status.queued_changes || 0) + (status.unknown_changes || 0);
+    const parts = [];
+    if (status.sync_running || status.sync_requested) parts.push(t("Sincronizzazione in corso…"));
+    if (status.last_sync) parts.push(t("Ultima sincronizzazione: {0}", [new Date(status.last_sync * 1000).toLocaleString(locale)]));
+    if (pending) parts.push(t("{0} operazioni in attesa", [pending]));
+    if (status.conflicts) parts.push(t("{0} conflitti da risolvere nel ticket", [status.conflicts]));
+    if (status.last_error) parts.push(t("L’ultima sincronizzazione non è riuscita. Riprova o rinnova il collegamento Google."));
+    $("calendar-sync-status").textContent = parts.join(" · ");
+    ["calendar-connect", "calendar-sync", "calendar-select", "calendar-calendars-more"].forEach((id) => { $(id).disabled = calendar.busy; });
+    $("calendar-select").disabled = calendar.busy || !calendar.catalogReady || !$("calendar-choice").value;
+    $("calendar-calendars-more").hidden = !calendar.calendarCursor;
+    $("calendar-events-more").hidden = !calendar.cursor;
+  }
+
+  function googleEventLink(event) {
+    try {
+      const url = new URL(event.htmlLink);
+      return url.origin === "https://calendar.google.com" && !url.username && !url.password ? url.href : null;
+    } catch { return null; }
+  }
+
+  function renderCalendarEvents() {
+    const week = calendarWeek();
+    $("calendar-date").value = calendar.date;
+    const last = new Date(week.end); last.setDate(last.getDate() - 1);
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    $("calendar-period").textContent = `${week.start.toLocaleDateString(locale, { day: "numeric", month: "short" })} – ${last.toLocaleDateString(locale, { day: "numeric", month: "short", year: "numeric" })} · ${timezone}`;
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(week.start); date.setDate(date.getDate() + i);
+      const end = new Date(date); end.setDate(end.getDate() + 1);
+      const section = node("section", "calendar-day");
+      if (localDate(date) === localDate(new Date())) section.classList.add("is-today");
+      section.append(node("h3", "", date.toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short" })));
+      const list = node("ul", "calendar-day-events"); section.append(list);
+      days.push({ date, end, list, section });
+    }
+    const series = [];
+    const ordered = [...calendar.events].filter((event) => event.status !== "cancelled").sort((a, b) => String(a.start?.dateTime || a.start?.date || "").localeCompare(String(b.start?.dateTime || b.start?.date || "")));
+    for (const event of ordered) {
+      if (event.recurrence?.length) { series.push(event); continue; }
+      const allDay = Boolean(event.start?.date);
+      const start = allDay ? new Date(event.start.date + "T00:00:00") : new Date(event.start?.dateTime);
+      const end = allDay ? new Date((event.end?.date || event.start.date) + "T00:00:00") : new Date(event.end?.dateTime);
+      if (!Number.isFinite(+start) || !Number.isFinite(+end)) continue;
+      for (const day of days) {
+        if (start >= day.end || end <= day.date) continue;
+        const item = node("li", "calendar-event");
+        const time = allDay ? t("Tutto il giorno") : `${start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })} – ${end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}`;
+        item.append(node("span", "calendar-event-time", time));
+        const link = googleEventLink(event);
+        const title = node(link ? "a" : "strong", "", event.summary || t("Senza titolo"));
+        if (link) { title.href = link; title.target = "_blank"; title.rel = "noopener noreferrer"; }
+        item.append(title);
+        if (event.location) item.append(node("span", "field-help", event.location));
+        day.list.append(item);
+      }
+    }
+    days.forEach((day) => { if (!day.list.children.length) day.list.append(node("li", "calendar-day-empty", calendar.cursor ? t("Altri eventi da caricare") : t("Nessun evento"))); });
+    $("calendar-events").replaceChildren(...days.map((day) => day.section));
+    $("calendar-series").hidden = !series.length;
+    $("calendar-series-list").replaceChildren(...series.map((event) => node("li", "", event.summary || t("Senza titolo"))));
+    $("calendar-events-more").hidden = !calendar.cursor;
+  }
+
+  async function loadCalendarCatalog(request, more = false) {
+    const query = new URLSearchParams({ limit: "30" });
+    if (more && calendar.calendarCursor) query.set("page_token", calendar.calendarCursor);
+    const data = await api("/api/calendar/calendars?" + query, { timeoutMs: 30000 });
+    if (request !== calendar.request) return;
+    calendar.calendars = more ? [...calendar.calendars, ...data.items] : data.items;
+    calendar.calendars = [...new Map(calendar.calendars.map((item) => [item.id, item])).values()];
+    calendar.calendarCursor = data.next_page_token;
+    calendar.catalogReady = true;
+    const selected = calendar.status?.calendar_id;
+    const choices = calendar.calendars.filter((item) => ["owner", "writer"].includes(item.accessRole));
+    $("calendar-choice").replaceChildren(new Option(t("Seleziona un calendario modificabile"), ""), ...choices.map((item) => new Option(item.summary || item.id, item.id)));
+    $("calendar-choice").value = choices.some((item) => item.id === selected) ? selected : "";
+    renderCalendarStatus();
+  }
+
+  async function loadCalendarEvents(request, more = false) {
+    const week = calendarWeek();
+    // The API filters inclusive UTC days. Widen both edges, then filter by local
+    // instants when rendering so midnight events survive timezone/DST changes.
+    const query = new URLSearchParams({ limit: "100", from: new Date(+week.start - 86400000).toISOString().slice(0, 10), to: new Date(+week.end + 86400000).toISOString().slice(0, 10) });
+    if (more && calendar.cursor) query.set("after_id", calendar.cursor);
+    const data = await api("/api/calendar/events?" + query);
+    if (request !== calendar.request) return;
+    calendar.events = more ? [...calendar.events, ...data.items] : data.items;
+    calendar.events = [...new Map(calendar.events.map((event) => [event.id, event])).values()];
+    calendar.cursor = data.next_after_id;
+    renderCalendarEvents();
+  }
+
+  async function refreshCalendar(catalog = false) {
+    if (calendar.loading) return;
+    const request = ++calendar.request;
+    calendar.loading = true; $("calendar-loading").hidden = false; $("calendar-error").hidden = true;
+    try {
+      const status = await api("/api/calendar/status");
+      if (request !== calendar.request) return;
+      if (calendar.status?.calendar_id !== status.calendar_id || calendar.status?.connected !== status.connected) {
+        calendar.events = []; calendar.cursor = null; calendar.catalogReady = false;
+        calendar.calendars = []; calendar.calendarCursor = null;
+        $("calendar-choice").replaceChildren(); renderCalendarEvents();
+      }
+      calendar.status = status; calendar.ready = true; renderCalendarStatus();
+      if (status.connected && !status.reauth_required) {
+        const tasks = [];
+        if (catalog || !calendar.catalogReady) tasks.push(loadCalendarCatalog(request));
+        if (status.calendar_id) tasks.push(loadCalendarEvents(request));
+        tasks.push(api("/api/calendar/changes").then((data) => {
+          if (request !== calendar.request) return;
+          const labels = { queued: t("In attesa"), unknown: t("Esito da verificare"), applied: t("Applicata"), conflict: t("Conflitto"), failed: t("Non riuscita") };
+          $("calendar-changes").replaceChildren(...data.items.map((item) => node("li", "calendar-change calendar-change-" + item.state, `${labels[item.state] || t("Da verificare")} · ${item.event_id || item.id}`)));
+          $("calendar-changes-limit").hidden = !data.truncated;
+        }));
+        const results = await Promise.allSettled(tasks);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed) throw failed.reason;
+      }
+    } catch (error) {
+      if (request === calendar.request) { $("calendar-error").textContent = calendarError(error); $("calendar-error").hidden = false; }
+    } finally {
+      if (request === calendar.request) { calendar.loading = false; $("calendar-loading").hidden = true; renderCalendarStatus(); }
+    }
+  }
+
+  async function calendarAction(action, fields = {}) {
+    if (calendar.busy) return;
+    calendar.busy = true; renderCalendarStatus(); $("calendar-error").hidden = true;
+    try {
+      const data = await post("/api/calendar/" + action, fields);
+      if (action === "oauth/start") {
+        const target = new URL(data.authorization_url);
+        if (target.origin !== "https://accounts.google.com" || target.username || target.password) throw new Error(t("Il collegamento Google restituito non è valido."));
+        location.assign(target.href); return;
+      }
+      if (action === "disconnect") {
+        $("calendar-disconnect-dialog").close();
+        showNotice(data.remote_revoked === false ? t("Google scollegato da Punto. La revoca remota non è stata confermata.") : t("Google scollegato da Punto."));
+        resetCalendar();
+      } else if (action === "sync") showNotice(t("Sincronizzazione richiesta. Lo stato si aggiornerà al completamento."));
+      else if (action === "selection") showNotice(t("Calendario selezionato. Sincronizzazione in attesa."));
+      await refreshCalendar(action === "selection");
+    } catch (error) { $("calendar-error").textContent = calendarError(error); $("calendar-error").hidden = false; }
+    finally { calendar.busy = false; renderCalendarStatus(); }
+  }
+
   function availableTabs() {
-    const permissions = { users: "manage_users", audit: "view_audit", suppliers: "manage_suppliers", contracts: "manage_contracts", organization: "manage_groups" };
-    return tabs.filter((tab) => (tab !== "alerts" || isAlertManager()) && (!permissions[tab] || can(permissions[tab])));
+    const permissions = { audit: "view_audit", suppliers: "view_suppliers", contracts: "view_contracts", organization: "manage_groups" };
+    return tabs.filter((tab) => (tab !== "users" || canReadUsers()) && (tab !== "alerts" || isAlertManager()) && (!permissions[tab] || can(permissions[tab])));
   }
 
   function applySession(session) {
     if (!session.authenticated) { redirectToLogin(); return false; }
     const authorizationChanged = state.session && (state.session.email !== session.email || state.session.role !== session.role || JSON.stringify(state.session.permissions) !== JSON.stringify(session.permissions));
     if (authorizationChanged) {
+      resetTimeWorkflows();
+      accessProfiles.request++; accessProfiles.user = null; accessProfiles.data = null; accessProfiles.catalog = [];
+      $("access-groups-options").replaceChildren();
+      resetWorkspaceFlows();
       // Responses started with the previous permissions must not restore its data.
       state.refreshRequest++;
       state.entriesRequest++;
       resetAlertsAndNotifications();
       resetWorkBoard(true);
       resetInventory();
+      resetCalendar();
       state.jobs = [];
       state.entries = [];
       state.jobsReady = false;
@@ -247,7 +497,7 @@
     }
     state.session = session;
     renderIdentityManagement();
-    if (!isReportManager()) state.reportFilters.userId = "";
+    if (!reportCanFilterUsers()) state.reportFilters.userId = "";
     if (!availableReportViews().includes(state.reportView)) state.reportView = "periodo";
     renderReportControls();
     $("session-name").textContent = session.name || session.email;
@@ -256,13 +506,13 @@
     $("session-email").title = session.email;
     $("tickets-app-link").hidden = !session.tickets?.configured;
     if (session.tickets?.configured) $("tickets-app-link").href = ticketAppURL();
-    $("session-role").textContent = roles[session.role] || t("Operatore");
+    $("session-role").textContent = (Array.isArray(session.access_groups) ? session.access_groups : ["operator", ...(session.role === "manager" ? ["manager"] : []), ...(can("manage_contracts") ? ["sales"] : []), ...(can("view_costs") ? ["finance"] : [])]).map((code) => accessProfileLabels[code] || code).join(" · ");
     $("session-role").hidden = false;
     $("user-avatar").textContent = (session.name || session.email || "P").charAt(0).toUpperCase();
     $("new-job").hidden = !can("manage_jobs");
-    $("tab-suppliers").hidden = !can("manage_suppliers");
-    $("tab-contracts").hidden = !can("manage_contracts");
-    $("tab-users").hidden = !can("manage_users");
+    $("tab-suppliers").hidden = !can("view_suppliers");
+    $("tab-contracts").hidden = !can("view_contracts");
+    $("tab-users").hidden = !canReadUsers();
     $("tab-organization").hidden = !can("manage_groups");
     $("tab-audit").hidden = !can("view_audit");
     $("tab-alerts").hidden = !isAlertManager();
@@ -281,10 +531,11 @@
       if ($("alert-rule-dialog").open) $("alert-rule-dialog").close();
     }
     $("new-user").hidden = !can("manage_users");
+    $("job-wizard-open").hidden = !can("manage_jobs");
     document.querySelector(".jobs-table").classList.toggle("jobs-with-assignments", can("manage_assignments"));
-    $("entries-actions-heading").hidden = !can("edit_time_entries");
-    document.querySelector(".entries-table").classList.toggle("entries-readonly", !can("edit_time_entries"));
-    $("permission-hint").textContent = can("manage_jobs") ? t("Gestore · Gestisci commesse, contratti, fornitori e persone. Ogni modifica ha la sua traccia.") : t("Operatore · Registra il lavoro sulle commesse abilitate per te. Le ore inserite restano nel tuo registro.");
+    $("entries-actions-heading").hidden = false;
+    document.querySelector(".entries-table").classList.remove("entries-readonly");
+    $("permission-hint").textContent = can("manage_jobs") ? t("Gestore · Gestisci il lavoro e le persone della tua squadra. Contratti e costi dipendono dai profili funzionali assegnati.") : t("Operatore · Registra il lavoro sulle commesse abilitate per te. Le ore inserite restano nel tuo registro.");
     $("jobs-panel-description").textContent = can("manage_jobs") ? t("Dal primo passo all’ultimo dettaglio, tutto sotto controllo.") : t("Le commesse abilitate per te, pronte per registrare il lavoro svolto.");
     if (!can("manage_jobs")) {
       state.openEntryAfterJob = false;
@@ -297,7 +548,7 @@
       if ($("delete-dialog").open) $("delete-dialog").close();
       state.deleteEntry = null;
     }
-    if (!can("manage_users")) {
+    if (!canReadUsers()) {
       state.users = [];
       state.usersReady = false;
       state.usersRequest++;
@@ -336,7 +587,7 @@
       state.auditLoading = false;
       $("audit-list").replaceChildren();
     }
-    for (const [kind, permission] of [["suppliers", "manage_suppliers"], ["contracts", "manage_contracts"]]) {
+    for (const [kind, permission] of [["suppliers", "view_suppliers"], ["contracts", "view_contracts"]]) {
       if (!can(permission)) {
         state[kind + "Request"]++;
         state[kind] = [];
@@ -349,7 +600,7 @@
         if ($(kind === "suppliers" ? "supplier-dialog" : "contract-dialog").open) $(kind === "suppliers" ? "supplier-dialog" : "contract-dialog").close();
       }
     }
-    if (!can("manage_contracts")) {
+    if (!can("view_contracts")) {
       state.documentsRequest++;
       state.documentsContract = null;
       state.documents = [];
@@ -360,8 +611,17 @@
       if ($("documents-dialog").open) $("documents-dialog").close();
     }
     $("job-contract-field").hidden = !can("manage_contracts");
+    $("new-contract").hidden = !can("manage_contracts");
+    $("new-supplier").hidden = !can("manage_suppliers");
+    $("document-form").hidden = !can("manage_contracts");
+    if (!can("manage_contracts") && $("contract-dialog").open) $("contract-dialog").close();
+    if (!can("manage_suppliers") && $("supplier-dialog").open) $("supplier-dialog").close();
+    if (!can("manage_labor_rates") && $("labor-rate-dialog").open) $("labor-rate-dialog").close();
     selectTab(availableTabs().includes(state.activeTab) ? state.activeTab : "jobs", false, false);
     if (authorizationChanged && state.activeTab === "reports") writeReportRoute(true);
+    if (!can("view_team_hours")) { timeWorkflow.userId = ""; timeWorkflow.team = []; timeWorkflow.teamReady = false; }
+    renderHoursTeam();
+    $("documents-readonly-close").hidden = can("manage_contracts");
     renderJobs();
     renderEntries();
     return true;
@@ -389,7 +649,7 @@
       $("tab-" + tab).tabIndex = selected ? 0 : -1;
       $("panel-" + tab).hidden = !selected;
     });
-    $("workspace-summary").hidden = ["reports", "alerts", "notifications", "work-board", "inventory"].includes(name);
+    $("workspace-summary").hidden = ["my-work", "work-schedules", "reports", "alerts", "notifications", "work-board", "inventory", "calendar"].includes(name);
     const title = name === "reports" ? t("Analisi · ") + reportViews[state.reportView].label : $("tab-" + name).querySelector("span").textContent;
     $("workspace-current-view").textContent = title;
     document.title = title + t(" · punto");
@@ -403,20 +663,26 @@
     if (name === "reports" && state.reportView === "costo-ore" && (entering || !state.laborRatesReady && !state.laborRatesLoading)) refreshLaborRates();
     if (name === "work-board") { renderWorkJobs(); if (state.workJobId && !state.workLoading && (entering || !state.workReady)) refreshWorkBoard(); }
     if (name === "inventory" && !state.inventoryReady && !state.inventoryLoading) refreshInventory();
+    if (name === "calendar") { renderCalendarTickets(); if (!calendar.loading && (entering || !calendar.ready)) refreshCalendar(true); }
     if (name === "users" && !state.usersReady) refreshUsers();
     if (name === "organization" && !state.organizationReady && !state.organizationLoading) refreshOrganization();
     if (name === "audit" && !state.auditReady && !state.auditLoading) refreshAudit();
     if (name === "alerts" && (entering || !state.alertRulesReady) && !state.alertRulesLoading) refreshAlertRules();
     if (name === "notifications" && (entering || !state.notificationsReady) && !state.notificationsLoading) refreshNotifications();
+    if (name === "hours" && can("view_team_hours") && (entering || !timeWorkflow.teamReady)) refreshHoursTeam();
+    if (name === "hours" && (entering || !timeWorkflow.requestsReady) && !timeWorkflow.requestsLoading) refreshTimeCorrections();
+    if (name === "my-work" && !workspaceFlows.myLoading && (entering || !workspaceFlows.myWork)) refreshMyWork();
+    if (name === "work-schedules" && !workspaceFlows.scheduleLoading) refreshWorkSchedules();
+    if (name === "notifications" && !workspaceFlows.notificationLoading) refreshWorkNotifications();
     if (["suppliers", "contracts"].includes(name) && !state[name + "Ready"] && !state[name + "Loading"]) refreshRegistry(name);
   }
 
   function isReportManager() {
-    return state.session?.role === "manager";
+    return can("view_team_hours");
   }
 
   function availableReportViews() {
-    return Object.keys(reportViews).filter((view) => !["costi", "costo-ore"].includes(view) || isReportManager() && can("manage_contracts"));
+    return Object.keys(reportViews).filter((view) => !financialReport(view) || can("view_costs"));
   }
 
   function defaultReportFilters(today = localDate(new Date())) {
@@ -482,7 +748,7 @@
   }
 
   function renderReportControls() {
-    const manager = isReportManager();
+    const manager = reportCanFilterUsers();
     $("report-user-field").hidden = !manager;
     $("report-user").disabled = !manager;
     $("report-tab-costi").hidden = !availableReportViews().includes("costi");
@@ -495,22 +761,23 @@
     }
     $("report-view").setAttribute("aria-labelledby", "report-tab-" + state.reportView);
     $("report-title").textContent = reportViews[state.reportView].title;
-    $("report-scope").textContent = manager ? t("Vista dello spazio di lavoro: tutti gli utenti, oppure la persona selezionata. I totali riguardano soltanto i filtri applicati.") : t("Vista personale: soltanto le ore del tuo account, comprese quelle già registrate sulle commesse non più abilitate.");
+    $("report-scope").textContent = financialReport() ? t("Vista Finance: costi aggregati per commessa, senza il dettaglio delle ore delle altre persone.") : manager ? t("Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.") : t("Vista personale: soltanto le ore del tuo account, comprese quelle già registrate sulle commesse non più abilitate.");
     $("report-cost-notice").hidden = state.reportView !== "costi";
     $("report-labor-notice").hidden = state.reportView !== "costo-ore";
-    $("report-rates").hidden = state.reportView !== "costo-ore" || !manager;
+    $("report-rates").hidden = state.reportView !== "costo-ore" || !can("view_labor_rates");
+    $("report-new-rate").hidden = !can("manage_labor_rates");
     document.querySelectorAll("[data-report-preset]").forEach((button) => { button.disabled = !state.reportToday; });
     $("report-from").value = state.reportFilters.from;
     $("report-to").value = state.reportFilters.to;
     const options = state.reportData?.options || {};
-    reportSelectOptions("report-job", options.jobs || [], state.reportFilters.jobId, manager ? t("Tutte le commesse") : t("Tutte le tue commesse con ore"), (job) => `${job.code} · ${job.name}`);
-    reportSelectOptions("report-user", manager ? options.users || [] : [], manager ? state.reportFilters.userId : "", t("Tutti gli utenti"), (user) => `${user.name || user.email}${user.active ? "" : t(" · Disattivato")}`);
+    reportSelectOptions("report-job", options.jobs || [], state.reportFilters.jobId, manager || financialReport() ? t("Tutte le commesse") : t("Tutte le tue commesse con ore"), (job) => `${job.code} · ${job.name}`);
+    reportSelectOptions("report-user", manager ? options.users || [] : [], manager ? state.reportFilters.userId : "", t("Tutta la squadra"), (user) => `${user.name || user.email}${user.active ? "" : t(" · Disattivato")}`);
   }
 
   function writeReportRoute(replace = false) {
     const query = new URLSearchParams({ from: state.reportFilters.from, to: state.reportFilters.to });
     if (state.reportFilters.jobId) query.set("job_id", state.reportFilters.jobId);
-    if (isReportManager() && state.reportFilters.userId) query.set("user_id", state.reportFilters.userId);
+    if (reportCanFilterUsers() && state.reportFilters.userId) query.set("user_id", state.reportFilters.userId);
     const hash = "#analisi/" + state.reportView + "?" + query.toString();
     if (window.location.hash !== hash) window.history[replace ? "replaceState" : "pushState"](null, "", hash);
     state.routeHash = window.location.hash;
@@ -521,8 +788,17 @@
     const hash = window.location.hash.slice(1);
     state.routeHash = window.location.hash;
     if (hash === "main-content") return;
-    const connection = /^ticket-connect\?state=([a-f0-9]{64})$/.exec(hash);
-    if (connection) { selectTab("jobs", false, false); connectTicketSession(connection[1]); return; }
+    const connection = /^ticket-connect\?state=([a-f0-9]{64})(&calendar=1)?$/.exec(hash);
+    if (connection) {
+      selectTab(connection[2] ? "calendar" : "jobs", false, false);
+      if (connection[2]) {
+        calendar.consentState = connection[1];
+        $("ticket-calendar-consent-account").textContent = t("Account Punto: {0}", [state.session.name || state.session.email]);
+        $("ticket-calendar-consent-error").hidden = true;
+        if (!$("ticket-calendar-consent").open) $("ticket-calendar-consent").showModal();
+      } else connectTicketSession(connection[1]);
+      return;
+    }
     const jobRoute = /^jobs\?job_id=([1-9]\d*)$/.exec(hash);
     if (jobRoute && Number.isSafeInteger(Number(jobRoute[1]))) {
       state.linkedJobId = Number(jobRoute[1]); selectTab("jobs", false, false); renderJobs(); return;
@@ -542,7 +818,7 @@
     const params = new URLSearchParams(query);
     const defaults = defaultReportFilters(state.reportToday || localDate(new Date()));
     state.reportDefaultsPending = !params.has("from") && !params.has("to");
-    state.reportFilters = { from: params.get("from") ?? defaults.from, to: params.get("to") ?? defaults.to, jobId: params.get("job_id") || "", userId: isReportManager() ? params.get("user_id") || "" : "" };
+    state.reportFilters = { from: params.get("from") ?? defaults.from, to: params.get("to") ?? defaults.to, jobId: params.get("job_id") || "", userId: reportCanFilterUsers() ? params.get("user_id") || "" : "" };
     invalidateReports();
     renderReportControls();
     selectTab("reports", false, false);
@@ -552,6 +828,7 @@
   function chooseReportView(view, moveFocus = false) {
     if (!availableReportViews().includes(view)) return;
     state.reportView = view;
+    if (!reportCanFilterUsers()) state.reportFilters.userId = "";
     renderReportControls();
     writeReportRoute();
     $("workspace-current-view").textContent = t("Analisi · ") + reportViews[view].label;
@@ -562,7 +839,7 @@
   }
 
   function readReportFilters() {
-    return { from: $("report-from").value, to: $("report-to").value, jobId: $("report-job").value, userId: isReportManager() ? $("report-user").value : "" };
+    return { from: $("report-from").value, to: $("report-to").value, jobId: $("report-job").value, userId: reportCanFilterUsers() ? $("report-user").value : "" };
   }
 
   function applyReportFilters(filters) {
@@ -601,8 +878,8 @@
     const filters = state.reportFilters;
     const labels = [filters.from === filters.to ? dateLabel(filters.from) : `${dateLabel(filters.from)} – ${dateLabel(filters.to)}`];
     if (filters.jobId) labels.push($("report-job").selectedOptions[0]?.textContent || t("Commessa selezionata"));
-    if (isReportManager() && filters.userId) labels.push($("report-user").selectedOptions[0]?.textContent || t("Utente selezionato"));
-    labels.push(data.scope === "personal" ? t("Le tue ore") : t("Tutte le ore filtrate"));
+    if (reportCanFilterUsers() && filters.userId) labels.push($("report-user").selectedOptions[0]?.textContent || t("Utente selezionato"));
+    labels.push(data.scope === "financial" ? t("Costi aggregati per commessa") : data.scope === "personal" ? t("Le tue ore") : t("Ore della squadra filtrate"));
     $("report-caption").textContent = labels.join(" · ");
     $("report-cost-summary").hidden = !cost;
     $("report-labor-summary").hidden = !labor;
@@ -623,7 +900,7 @@
       commesse: [t("Commessa"), t("Cliente"), t("Stato"), t("Ore"), t("Registrazioni"), t("Utenti")],
       utenti: [t("Utente"), t("Accesso"), t("Ore"), t("Registrazioni"), t("Commesse")],
       costi: [t("Contratto"), t("Fornitore"), t("Validità contrattuale"), t("Valore contrattuale"), t("Stato"), t("Commesse con ore"), t("Ore nel periodo")],
-      "costo-ore": [t("Utente"), t("Commessa"), t("Ore"), t("Registrazioni"), t("Copertura tariffa"), t("Costo stimato (EUR)")]
+      "costo-ore": [t("Commessa"), t("Ore"), t("Registrazioni"), t("Copertura tariffa"), t("Costo stimato (EUR)")]
     };
     const heading = node("tr");
     for (const label of headers[state.reportView]) {
@@ -674,7 +951,7 @@
         job.append(node("strong", "", item.job_name), node("span", "report-secondary", item.code));
         const coverage = Number(item.priced_minutes) > 0 ? `${minutesLabel(item.priced_minutes)} coperte${Number(item.unpriced_minutes) > 0 ? " · " + minutesLabel(item.unpriced_minutes) + " scoperte" : ""}` : t("Nessuna tariffa valida");
         const amount = Number(item.priced_minutes) > 0 && item.cost_cents !== null ? euroLabel(item.cost_cents) + (Number(item.unpriced_minutes) > 0 ? t(" · Parziale") : "") : t("Non disponibile");
-        row.append(identity, job, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(coverage), reportCell(amount, true));
+        row.append(job, reportCell(minutesLabel(item.minutes), true), reportCell(String(item.entry_count), true), reportCell(coverage), reportCell(amount, true));
       }
       $("report-body").append(row);
     }
@@ -705,11 +982,11 @@
     $("report-results").setAttribute("aria-busy", "true");
     const query = new URLSearchParams({ view: reportViews[view].api, from: filters.from, to: filters.to });
     if (filters.jobId) query.set("job_id", filters.jobId);
-    if (isReportManager() && filters.userId) query.set("user_id", filters.userId);
+    if (reportCanFilterUsers() && filters.userId) query.set("user_id", filters.userId);
     try {
       const data = await api("/api/reports?" + query.toString());
       if (request !== state.reportRequest || state.activeTab !== "reports" || view !== state.reportView) return;
-      if (!data.summary || !Array.isArray(data.rows) || !data.options || data.view !== reportViews[view].api || data.from !== filters.from || data.to !== filters.to || !isReportManager() && data.scope !== "personal") throw new Error(t("Il server ha restituito un’analisi non valida. Riprova."));
+      if (!data.summary || !Array.isArray(data.rows) || !data.options || data.view !== reportViews[view].api || data.from !== filters.from || data.to !== filters.to || (financialReport(view) ? data.scope !== "financial" : !isReportManager() && data.scope !== "personal")) throw new Error(t("Il server ha restituito un’analisi non valida. Riprova."));
       if (validDate(data.today)) {
         state.reportToday = data.today;
         if (state.reportDefaultsPending) {
@@ -729,7 +1006,13 @@
       renderReportControls();
       renderReportData();
     } catch (error) {
-      if (request === state.reportRequest) showReportError(error.message);
+      if (request === state.reportRequest) {
+        if (error.status === 403 && state.reportFilters.userId) {
+          state.reportFilters.userId = "";
+          renderReportControls(); writeReportRoute(true);
+        }
+        showReportError(error.message);
+      }
     } finally {
       if (request === state.reportRequest) {
         state.reportLoading = false;
@@ -740,14 +1023,14 @@
   }
 
   function renderLaborRates() {
-    if (!isReportManager() || !state.laborRatesReady) return;
+    if (!can("view_labor_rates") || !state.laborRatesReady) return;
     $("report-rates-body").replaceChildren();
     for (const rate of state.laborRates) {
       const row = node("tr");
       const identity = reportCell();
       identity.append(node("strong", "", rate.user_name || rate.user_email), node("span", "report-secondary", rate.user_email));
       const actions = reportCell();
-      actions.append(action(t("Modifica"), t("Modifica tariffa di {0} dal {1}", [rate.user_name || rate.user_email, dateLabel(rate.starts_on)]), () => openLaborRate(rate)));
+      if (can("manage_labor_rates")) actions.append(action(t("Modifica"), t("Modifica tariffa di {0} dal {1}", [rate.user_name || rate.user_email, dateLabel(rate.starts_on)]), () => openLaborRate(rate)));
       row.append(identity, reportCell(euroLabel(rate.hourly_cents) + t(" / ora"), true), reportCell(dateLabel(rate.starts_on)), reportCell(rate.ends_on ? dateLabel(rate.ends_on) : t("Senza scadenza")), actions);
       $("report-rates-body").append(row);
     }
@@ -756,7 +1039,7 @@
   }
 
   async function refreshLaborRates() {
-    if (!isReportManager()) return;
+    if (!can("view_labor_rates")) return;
     const request = ++state.laborRatesRequest;
     state.laborRatesLoading = true;
     state.laborRatesReady = false;
@@ -766,15 +1049,15 @@
     $("report-rates-empty").hidden = true;
     $("report-new-rate").disabled = true;
     try {
-      const [data, users] = await Promise.all([api("/api/labor-rates"), api("/api/users")]);
-      if (request !== state.laborRatesRequest || !isReportManager()) return;
+      const [data, users] = await Promise.all([api("/api/labor-rates"), can("manage_labor_rates") ? api("/api/users") : Promise.resolve({ users: [] })]);
+      if (request !== state.laborRatesRequest || !can("view_labor_rates")) return;
       if (!Array.isArray(data.rates) || !Array.isArray(users.users)) throw new Error(t("Il server ha restituito un elenco tariffe non valido. Riprova."));
       state.laborRates = data.rates;
       state.laborRateUsers = users.users;
       state.laborRatesReady = true;
       renderLaborRates();
     } catch (error) {
-      if (request === state.laborRatesRequest && isReportManager()) {
+      if (request === state.laborRatesRequest && can("view_labor_rates")) {
         $("report-rates-error-text").textContent = error.message;
         $("report-rates-error").hidden = false;
       }
@@ -782,13 +1065,13 @@
       if (request === state.laborRatesRequest) {
         state.laborRatesLoading = false;
         $("report-rates-loading").hidden = true;
-        $("report-new-rate").disabled = !state.laborRatesReady;
+        $("report-new-rate").disabled = !can("manage_labor_rates") || !state.laborRatesReady;
       }
     }
   }
 
   function openLaborRate(rate = null) {
-    if (!isReportManager() || !state.laborRatesReady || busyDialogs.has("labor-rate-dialog")) return;
+    if (!can("manage_labor_rates") || !state.laborRatesReady || busyDialogs.has("labor-rate-dialog")) return;
     state.editingLaborRate = rate;
     $("labor-rate-form").reset();
     $("labor-rate-hourly").setCustomValidity("");
@@ -844,6 +1127,7 @@
   }
 
   function renderJobs() {
+    renderCalendarTickets();
     if (!state.jobsReady) return;
     if (state.linkedJobId) {
       const linked = state.jobs.find((job) => job.id === state.linkedJobId);
@@ -854,24 +1138,28 @@
     $("jobs-loading").hidden = true;
     const search = $("job-search").value.trim().toLocaleLowerCase(locale);
     const filter = $("job-filter").value;
-    const jobs = state.jobs.filter((job) => (!filter || job.status === filter) && [job.code, job.name, job.client, ...(can("manage_contracts") ? [job.contract_code, job.contract_title, job.supplier_name] : [])].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
+    const jobs = state.jobs.filter((job) => (!isJobArchived(job) || $("jobs-show-archived").checked) && (!filter || job.status === filter) && [job.code, job.name, job.client, ...(can("view_contracts") ? [job.contract_code, job.contract_title, job.supplier_name] : [])].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
     $("jobs-body").replaceChildren();
     for (const job of jobs) {
       const row = node("tr");
       row.dataset.jobId = String(job.id);
       const nameCell = node("td");
       nameCell.append(jobIdentity(job.code, job.name));
+      if (isJobArchived(job) || isJobTimeClosed(job)) nameCell.querySelector(".job-identity").append(node("span", "job-lifecycle-badge" + (isJobArchived(job) ? "" : " is-closed"), isJobArchived(job) ? t("Archiviata") : t("Ore chiuse")));
       if (isCommonJob(job)) nameCell.querySelector(".job-identity").append(node("span", "job-kind-badge job-kind-common", t("Comune · tutti gli utenti")));
-      if (can("manage_contracts") && job.contract_id) nameCell.querySelector(".job-identity").append(node("span", "job-contract-label", t("Contratto {0}{1}", [job.contract_code || job.contract_id, job.supplier_name ? " · " + job.supplier_name : ""])));
+      if (can("view_contracts") && job.contract_id) nameCell.querySelector(".job-identity").append(node("span", "job-contract-label", t("Contratto {0}{1}", [job.contract_code || job.contract_id, job.supplier_name ? " · " + job.supplier_name : ""])));
       const clientCell = node("td", job.client ? "" : "no-value", job.client || "—");
       const statusCell = node("td");
       statusCell.append(node("span", "status-badge status-" + (Object.hasOwn(states, job.status) ? job.status : "planned"), states[job.status] || t("Da avviare")));
       const hoursCell = node("td", "hours-cell", minutesLabel(job.total_minutes));
       const actionsCell = node("td");
       const actions = node("div", "row-actions");
+      actions.append(action(t("Riepilogo"), t("Apri riepilogo della commessa ") + job.name, () => openJobOverview(job)));
       actions.append(action(t("Attività"), t("Apri attività e blocchi di ") + job.name, () => { if (state.workBusy) return; resetWorkBoard(true); state.workJobId = String(job.id); selectTab("work-board"); }), node("span", "row-divider"));
-      if (state.session?.tickets?.configured) actions.append(ticketAppLink(t("Ticket ↗"), "job", job.id), node("span", "row-divider"), ticketAppLink(t("+ Ticket"), "job", job.id, true), node("span", "row-divider"));
+      if (state.session?.tickets?.configured) actions.append(ticketAppLink(t("Ticket ↗"), "job", job.id), node("span", "row-divider"), ticketAppLink(t("+ Ticket"), "job", job.id, true), node("span", "row-divider"), ticketAppLink(t("Agenda ↗"), "job", job.id, false, true), node("span", "row-divider"));
       if (can("manage_jobs")) actions.append(action(t("Modifica"), t("Modifica la commessa ") + job.name, () => openJob(job)), node("span", "row-divider"));
+      if (can("manage_jobs")) actions.append(action(t("Chiusura / archivio"), t("Gestisci chiusura e archivio di ") + job.name, () => openJobLifecycle(job)), node("span", "row-divider"));
+      if (can("manage_assignments")) actions.append(action(t("Spiega accesso"), t("Spiega accesso alla commessa ") + job.name, () => openJobAccess(job)), node("span", "row-divider"));
       if (can("manage_assignments")) {
         const count = Number(job.assigned_users) || 0;
         const groupCount = Number(job.assigned_groups) || 0;
@@ -900,12 +1188,16 @@
     $("jobs-visible-count").textContent = `${jobs.length} ${jobs.length === 1 ? t("commessa") : t("commesse")}${jobs.length !== state.jobs.length ? t(" su ") + state.jobs.length : ""}`;
     ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => { $(id).hidden = !can("manage_jobs") && !state.jobs.some(canLogTime); });
     if ($("entry-dialog").open) renderEntryJobs($("entry-job").value, true);
+    updateTimeWorkflowControls();
     renderStats();
   }
 
   function canLogTime(job) {
-    return can("manage_jobs") || job.can_log_time === true;
+    return !isJobArchived(job) && !isJobTimeClosed(job) && (can("manage_jobs") || job.can_log_time === true);
   }
+
+  function isJobArchived(job) { return job?.archived === true || job?.archived === 1; }
+  function isJobTimeClosed(job) { return job?.time_closed === true || job?.time_closed === 1; }
 
   function isCommonJob(job) {
     return job?.is_common === true || job?.is_common === 1;
@@ -931,6 +1223,8 @@
 
   function renderEntries() {
     if (!state.entriesReady) return;
+    updateTimeWorkflowControls();
+    if (timeWorkflow.view === "week") { renderWeekEntries(); return; }
     $("entries-loading").hidden = true;
     $("entries-body").replaceChildren();
     for (const entry of state.entries) {
@@ -938,16 +1232,18 @@
       const nameCell = node("td");
       nameCell.append(jobIdentity(entry.job_code, entry.job_name));
       const noteCell = node("td", entry.note ? "entry-note" : "no-value", entry.note || "—");
+      if (entry.task_title) noteCell.prepend(node("strong", "time-entry-task", entry.task_title));
       noteCell.title = entry.note || t("Nessuna nota");
       const hoursCell = node("td", "hours-cell", minutesLabel(entry.minutes));
       row.append(nameCell, noteCell, hoursCell);
-      if (can("edit_time_entries")) {
-        const actionsCell = node("td");
-        const actions = node("div", "row-actions");
+      const actionsCell = node("td");
+      const actions = node("div", "row-actions");
+      actions.append(action(t("Dettagli"), t("Apri la registrazione per ") + entry.job_name, () => openTimeEntryDetail(entry)));
+      if (viewingOwnHours() && can("edit_time_entries")) {
         actions.append(action(t("Modifica"), t("Modifica le ore per ") + entry.job_name, () => openEntry(entry)), node("span", "row-divider"), action(t("Elimina"), t("Elimina le ore per ") + entry.job_name, () => openDelete(entry), true));
-        actionsCell.append(actions);
-        row.append(actionsCell);
-      }
+      } else if (viewingOwnHours()) actions.append(action(t("Richiedi rettifica"), t("Richiedi rettifica delle ore per ") + entry.job_name, () => openTimeCorrection(entry)));
+      actionsCell.append(actions);
+      row.append(actionsCell);
       $("entries-body").append(row);
     }
     $("entries-table-wrap").hidden = state.entries.length === 0;
@@ -958,8 +1254,794 @@
     renderStats();
   }
 
+  function renderHoursTeam() {
+    $("hours-team-toolbar").hidden = !can("view_team_hours");
+    const select = $("hours-team-user");
+    select.replaceChildren(new Option(t("Le mie ore"), ""));
+    for (const user of timeWorkflow.team) {
+      if (String(user.id) === String(state.session?.user_id || state.session?.id || "") || user.email === state.session?.email) continue;
+      select.append(new Option((user.name || user.email) + (user.active ? "" : t(" · Disattivato")), user.id));
+    }
+    select.value = timeWorkflow.userId;
+    $("hours-panel-title").textContent = viewingOwnHours() ? t("Il tuo registro ore") : t("Registro ore della squadra");
+    $("hours-team-scope").textContent = viewingOwnHours() ? t("Le nuove registrazioni restano associate al tuo account. Puoi consultare le persone della tua squadra.") : t("Stai consultando le ore di {0}. Questa vista è di sola lettura; nuove ore e rettifiche riguardano il tuo account.", [select.selectedOptions[0]?.textContent || t("Persona selezionata")]);
+    updateTimeWorkflowControls();
+  }
+
+  async function refreshHoursTeam() {
+    if (!can("view_team_hours")) return;
+    const request = ++timeWorkflow.teamRequest;
+    $("hours-team-user").disabled = true; $("hours-team-retry").hidden = true;
+    try {
+      const data = await api("/api/time-team");
+      if (request !== timeWorkflow.teamRequest || !can("view_team_hours")) return;
+      if (!Array.isArray(data.users)) throw new Error(t("L’elenco della squadra non è disponibile. Riprova."));
+      timeWorkflow.team = data.users; timeWorkflow.teamReady = true;
+      if (timeWorkflow.userId && !data.users.some((user) => String(user.id) === timeWorkflow.userId)) { timeWorkflow.userId = ""; refreshEntries(); }
+      renderHoursTeam();
+    } catch (error) {
+      if (request === timeWorkflow.teamRequest) { $("hours-team-retry").hidden = false; $("hours-team-scope").textContent = error.message; }
+    } finally { if (request === timeWorkflow.teamRequest) $("hours-team-user").disabled = false; }
+  }
+
+  function resetTimeWorkflows() {
+    timeWorkflow.userId = ""; timeWorkflow.team = []; timeWorkflow.teamReady = false; timeWorkflow.teamRequest++;
+    timeWorkflow.requestsRequest++; timeWorkflow.lifecycleRequest++;
+    timeWorkflow.requests = []; timeWorkflow.requestsReady = false; timeWorkflow.requestsLoading = false;
+    timeWorkflow.week = null; timeWorkflow.entry = null; timeWorkflow.detailEntry = null;
+    timeWorkflow.lifecycle = null; timeWorkflow.lifecycleJob = null; timeWorkflow.decision = null;
+    timeWorkflow.batchRows = []; timeWorkflow.batchKey = null; timeWorkflow.batchPayload = null;
+    ["hours-week-grid", "time-corrections-list", "hours-entry-detail-content", "job-lifecycle-summary"].forEach((id) => $(id).replaceChildren());
+    $("hours-week-panel").hidden = true;
+  }
+
+  function shiftedWorkDate(value, offset) {
+    const date = new Date(value + "T12:00:00");
+    date.setDate(date.getDate() + offset);
+    return localDate(date);
+  }
+
+  function workWeekStart(value) {
+    const date = new Date(value + "T12:00:00");
+    return shiftedWorkDate(value, -((date.getDay() + 6) % 7));
+  }
+
+  function updateTimeWorkflowControls() {
+    const week = timeWorkflow.view === "week";
+    $("hours-view-day").setAttribute("aria-pressed", String(!week));
+    $("hours-view-week").setAttribute("aria-pressed", String(week));
+    document.querySelector('label[for="entry-date-filter"]').textContent = week ? t("Settimana del") : t("Giornata lavorativa");
+    $("previous-day").setAttribute("aria-label", week ? t("Settimana precedente") : t("Giorno precedente"));
+    $("next-day").setAttribute("aria-label", week ? t("Settimana successiva") : t("Giorno successivo"));
+    document.querySelector(".daily-total > span").textContent = week ? t("Totale della settimana") : t("Totale della giornata");
+    const writable = state.jobsReady && state.jobs.some(canLogTime);
+    $("hours-batch-open").hidden = !viewingOwnHours();
+    $("hours-copy-week").hidden = !viewingOwnHours();
+    $("hours-batch-open").disabled = !writable;
+    $("hours-copy-week").disabled = !writable || timeWorkflow.copyBusy;
+    $("hours-copy-week").textContent = timeWorkflow.copyBusy ? t("Preparazione anteprima…") : t("Copia settimana precedente");
+    $("hours-week-panel").hidden = !week || !state.entriesReady;
+  }
+
+  function renderWeekEntries() {
+    const data = timeWorkflow.week;
+    $("entries-loading").hidden = true; $("entries-table-wrap").hidden = true; $("entries-empty").hidden = true;
+    if (!data) { $("hours-week-panel").hidden = true; return; }
+    const start = data.start || workWeekStart(state.selectedDate), end = data.end || shiftedWorkDate(start, 6);
+    const days = Array.from({ length: 7 }, (_, index) => shiftedWorkDate(start, index));
+    $("hours-week-panel").hidden = false;
+    $("hours-week-period").textContent = t("Dal {0} al {1}. Seleziona una registrazione per leggere i dettagli.", [dateLabel(start), dateLabel(end)]);
+    const entries = data.entries || [], table = node("table", "hours-week-table"), caption = node("caption", "sr-only", t("Registro settimanale per commessa, da lunedì a domenica"));
+    const head = node("thead"), heading = node("tr"); heading.append(node("th", "", t("Commessa")));
+    for (const day of days) {
+      const cell = node("th"), date = new Date(day + "T12:00:00");
+      cell.scope = "col"; cell.append(node("span", "", date.toLocaleDateString(locale, { weekday: "short" })));
+      const when = node("time", "", date.toLocaleDateString(locale, { day: "numeric", month: "short" })); when.dateTime = day; cell.append(when);
+      if (day === localDate(new Date())) cell.setAttribute("aria-current", "date");
+      heading.append(cell);
+    }
+    heading.append(node("th", "", t("Totale"))); head.append(heading);
+    const body = node("tbody"), groups = new Map();
+    for (const entry of entries) {
+      const key = String(entry.job_id);
+      if (!groups.has(key)) groups.set(key, { id: entry.job_id, code: entry.job_code, name: entry.job_name, entries: [] });
+      groups.get(key).entries.push(entry);
+    }
+    for (const group of groups.values()) {
+      const row = node("tr"), title = node("th"); title.scope = "row"; title.append(jobIdentity(group.code, group.name)); row.append(title);
+      for (const day of days) {
+        const cell = node("td"), items = group.entries.filter((entry) => entry.date === day);
+        for (const entry of items) {
+          const button = node("button", "hours-week-entry"); button.type = "button";
+          button.setAttribute("aria-label", t("{0}, {1}, {2}. Apri dettaglio", [group.name, dateLabel(day), minutesLabel(entry.minutes)]));
+          button.append(node("strong", "", minutesLabel(entry.minutes)));
+          if (entry.note) button.append(node("small", "", entry.note));
+          button.addEventListener("click", () => openTimeEntryDetail(entry)); cell.append(button);
+        }
+        const job = state.jobs.find((item) => String(item.id) === String(group.id));
+        if (viewingOwnHours() && job && canLogTime(job)) cell.append(action(t("+ Aggiungi"), t("Aggiungi ore per {0}, {1}", [group.name, dateLabel(day)]), () => openHoursBatch([{ job_id: group.id, date: day, minutes: 60, note: "" }])));
+        if (!cell.children.length) cell.textContent = "—";
+        row.append(cell);
+      }
+      row.append(node("td", "hours-cell", minutesLabel(group.entries.reduce((sum, entry) => sum + Number(entry.minutes), 0)))); body.append(row);
+    }
+    if (!groups.size) { const row = node("tr"), cell = node("td", "hours-week-empty", t("Nessuna ora registrata in questa settimana. Aggiungi righe oppure copia la settimana precedente.")); cell.colSpan = 9; row.append(cell); body.append(row); }
+    const foot = node("tfoot"), totals = node("tr"); totals.append(node("th", "", t("Totale")));
+    for (const day of days) totals.append(node("td", "hours-cell", minutesLabel(entries.filter((entry) => entry.date === day).reduce((sum, entry) => sum + Number(entry.minutes), 0))));
+    totals.append(node("td", "hours-cell", minutesLabel(data.total_minutes))); foot.append(totals);
+    table.append(caption, head, body, foot); $("hours-week-grid").replaceChildren(table);
+    $("day-total").textContent = minutesLabel(data.total_minutes);
+    $("day-entries-count").textContent = t("{0} registrazioni nella settimana", [entries.length]);
+    $("go-today").disabled = start === workWeekStart(localDate(new Date())); renderStats();
+  }
+
+  function openTimeEntryDetail(entry) {
+    timeWorkflow.detailEntry = entry;
+    const data = node("dl");
+    for (const [label, value] of [[t("Commessa"), entry.job_code + " · " + entry.job_name], [t("Giornata lavorativa"), dateLabel(entry.date)], [t("Ore lavorate"), minutesLabel(entry.minutes)], [t("Attività svolta / nota"), entry.note || t("Nessuna nota")]]) data.append(node("dt", "", label), node("dd", "", value));
+    $("hours-entry-detail-content").replaceChildren(data);
+    const close = action(t("Chiudi"), t("Chiudi dettaglio"), () => $("hours-entry-detail").close());
+    const correction = action(t("Richiedi rettifica"), t("Richiedi rettifica"), () => { $("hours-entry-detail").close(); openTimeCorrection(entry); });
+    $("hours-entry-detail-actions").replaceChildren(close);
+    if (viewingOwnHours()) $("hours-entry-detail-actions").append(correction);
+    if (viewingOwnHours() && can("edit_time_entries")) $("hours-entry-detail-actions").append(action(t("Modifica"), t("Modifica registrazione"), () => { $("hours-entry-detail").close(); openEntry(entry); }));
+    $("hours-entry-detail").showModal(); close.focus();
+  }
+
+  function batchSelectJobs(select, selected) {
+    select.replaceChildren(); const empty = node("option", "", t("Seleziona una commessa")); empty.value = ""; select.append(empty);
+    const jobs = state.jobs.filter(canLogTime);
+    for (const job of jobs) { const option = node("option", "", job.code + " · " + job.name); option.value = String(job.id); select.append(option); }
+    if (selected && !jobs.some((job) => String(job.id) === String(selected))) { const option = node("option", "", t("Commessa non disponibile: scegline un’altra")); option.value = String(selected); option.disabled = true; select.append(option); }
+    select.value = selected ? String(selected) : "";
+  }
+
+  function openHoursBatch(rows = null) {
+    if (busyDialogs.has("hours-batch-dialog") || !state.jobs.some(canLogTime)) return;
+    timeWorkflow.batchRows = (rows || [{ job_id: "", date: state.selectedDate, minutes: 60, note: "" }]).map((row) => ({ ...row, key: ++timeWorkflow.batchSequence }));
+    timeWorkflow.batchKey = null; timeWorkflow.batchPayload = null;
+    $("hours-batch-error").hidden = true; renderHoursBatch();
+    $("hours-batch-dialog").showModal(); $("hours-batch-rows").querySelector("select")?.focus();
+  }
+
+  function batchField(label, control, className) {
+    const field = node("div", "work-field " + className), title = node("label", "", label); title.htmlFor = control.id; field.append(title, control); return field;
+  }
+
+  function renderHoursBatch() {
+    const parent = $("hours-batch-rows"); parent.replaceChildren();
+    for (const row of timeWorkflow.batchRows) {
+      const wrapper = node("div", "hours-batch-row"), select = node("select"); select.id = "batch-job-" + row.key; select.required = true; batchSelectJobs(select, row.job_id);
+      select.addEventListener("change", () => { row.job_id = select.value; row.task_id = null; row.task_title = ""; renderHoursBatch(); $("batch-job-" + row.key)?.focus(); });
+      const date = node("input"); date.type = "date"; date.id = "batch-date-" + row.key; date.required = true; date.min = "0001-01-01"; date.max = "9999-12-31"; date.value = row.date;
+      date.addEventListener("input", () => { row.date = date.value; updateHoursBatchTotal(); });
+      const minutes = node("input"); minutes.id = "batch-minutes-" + row.key; minutes.type = "number"; minutes.min = "1"; minutes.max = "1440"; minutes.step = "1"; minutes.required = true; minutes.value = row.minutes;
+      minutes.addEventListener("input", () => { row.minutes = minutes.value; updateHoursBatchTotal(); });
+      const note = node("textarea"); note.id = "batch-note-" + row.key; note.rows = 2; note.maxLength = 1000; note.value = row.note || ""; note.addEventListener("input", () => { row.note = note.value; });
+      const remove = action(t("Rimuovi"), t("Rimuovi riga {0}", [timeWorkflow.batchRows.indexOf(row) + 1]), () => { timeWorkflow.batchRows = timeWorkflow.batchRows.filter((item) => item !== row); renderHoursBatch(); $("hours-batch-add").focus(); }); remove.classList.add("batch-remove");
+      wrapper.append(batchField(t("Commessa"), select, "batch-job"), batchField(t("Data"), date, "batch-date"), batchField(t("Minuti"), minutes, "batch-minutes"), batchField(t("Nota"), note, "batch-note"), remove);
+      if (row.task_id) { const task = node("div", "batch-task workflow-note"); task.append(node("span", "", t("Attività collegata: {0}", [row.task_title || "#" + row.task_id])), action(t("Rimuovi collegamento attività"), t("Rimuovi l’attività da questa riga"), () => { row.task_id = null; row.task_title = ""; renderHoursBatch(); })); wrapper.append(task); }
+      parent.append(wrapper);
+    }
+    $("hours-batch-add").disabled = timeWorkflow.batchRows.length >= 100;
+    $("hours-batch-save").disabled = !timeWorkflow.batchRows.length;
+    updateHoursBatchTotal();
+  }
+
+  function updateHoursBatchTotal() {
+    const minutes = timeWorkflow.batchRows.reduce((sum, row) => sum + (Number(row.minutes) || 0), 0);
+    $("hours-batch-total").textContent = t("{0} righe da aggiungere · {1}. Nessuna registrazione ancora salvata.", [timeWorkflow.batchRows.length, minutesLabel(minutes)]);
+  }
+
+  async function copyPreviousHoursWeek() {
+    if (!viewingOwnHours() || timeWorkflow.copyBusy || busyDialogs.has("hours-batch-dialog")) return;
+    const target = workWeekStart(state.selectedDate), source = shiftedWorkDate(target, -7), identity = state.session?.email;
+    timeWorkflow.copyBusy = true; updateTimeWorkflowControls();
+    try {
+      const data = await api("/api/time-entries/week?date=" + encodeURIComponent(source));
+      if (state.session?.email !== identity) return;
+      const rows = (data.entries || []).map((entry) => ({ job_id: entry.job_id, task_id: entry.task_id || null, task_title: entry.task_title || "", date: shiftedWorkDate(entry.date, 7), minutes: entry.minutes, note: entry.note || "" }));
+      if (!rows.length) { showNotice(t("La settimana precedente non contiene ore da copiare.")); return; }
+      if (rows.length > 100) { showNotice(t("La settimana precedente contiene più di 100 righe. Copia un gruppo più piccolo con Aggiungi righe."), true); return; }
+      openHoursBatch(rows);
+    } catch (error) { if (state.session?.email === identity) showNotice(error.message, true); }
+    finally { timeWorkflow.copyBusy = false; updateTimeWorkflowControls(); }
+  }
+
+  function workflowError(id, error) { dialogError(id, error); $(id).focus(); }
+
+  async function saveHoursBatch(event) {
+    event.preventDefault(); if (busyDialogs.has("hours-batch-dialog")) return;
+    $("hours-batch-error").hidden = true;
+    if (!$("hours-batch-form").reportValidity()) return;
+    const rows = timeWorkflow.batchRows.map((row) => ({ job_id: Number(row.job_id), task_id: row.task_id ? Number(row.task_id) : null, date: row.date, minutes: Number(row.minutes), note: (row.note || "").trim() }));
+    const invalid = rows.some((row) => !validDate(row.date) || !Number.isInteger(row.minutes) || row.minutes < 1 || row.minutes > 1440 || !state.jobs.some((job) => Number(job.id) === row.job_id && canLogTime(job)));
+    if (!rows.length || rows.length > 100 || invalid) { workflowError("hours-batch-error", new Error(t("Controlla tutte le righe: servono una commessa abilitata, una data valida e da 1 a 1440 minuti."))); return; }
+    const totals = new Map(); rows.forEach((row) => totals.set(row.date, (totals.get(row.date) || 0) + row.minutes));
+    if ([...totals.values()].some((minutes) => minutes > 1440)) { workflowError("hours-batch-error", new Error(t("Le nuove righe superano 24 ore nella stessa giornata. Riduci i minuti prima di confermare."))); return; }
+    const payload = JSON.stringify(rows);
+    if (payload !== timeWorkflow.batchPayload) { timeWorkflow.batchKey = crypto.randomUUID(); timeWorkflow.batchPayload = payload; }
+    dialogBusy("hours-batch-dialog", true, "hours-batch-save", t("Conferma e salva tutte le righe"));
+    try {
+      await post("/api/time-entries/batch", { request_key: timeWorkflow.batchKey, entries: payload });
+      $("hours-batch-dialog").close(); state.auditReady = false; timeWorkflow.userId = ""; renderHoursTeam();
+      showNotice(t("{0} registrazioni salvate.", [rows.length])); await refreshAll();
+    } catch (error) { workflowError("hours-batch-error", error); }
+    finally { dialogBusy("hours-batch-dialog", false, "hours-batch-save", t("Conferma e salva tutte le righe")); $("hours-batch-add").disabled = timeWorkflow.batchRows.length >= 100; $("hours-batch-save").disabled = !timeWorkflow.batchRows.length; }
+  }
+
+  function openTimeCorrection(entry) {
+    if (!viewingOwnHours() || busyDialogs.has("time-correction-dialog")) return;
+    timeWorkflow.entry = entry; $("time-correction-form").reset(); $("time-correction-error").hidden = true; $("time-correction-hours").setCustomValidity("");
+    $("time-correction-original").textContent = t("Originale: {0} · {1} · {2}", [entry.job_name, dateLabel(entry.date), minutesLabel(entry.minutes)]);
+    batchSelectJobs($("time-correction-job"), entry.job_id);
+    const selected = $("time-correction-job").querySelector('option[value="' + entry.job_id + '"]'); if (selected) { selected.disabled = false; selected.textContent = entry.job_code + " · " + entry.job_name; }
+    $("time-correction-date").value = entry.date; $("time-correction-hours").value = Math.floor(entry.minutes / 60) + ":" + String(entry.minutes % 60).padStart(2, "0"); $("time-correction-note").value = entry.note || "";
+    $("time-correction-fields").disabled = false; $("time-correction-dialog").showModal(); $("time-correction-reason").focus();
+  }
+
+  async function refreshTimeCorrections() {
+    if (!state.session?.authenticated || timeWorkflow.requestsLoading) return;
+    const request = ++timeWorkflow.requestsRequest; timeWorkflow.requestsLoading = true;
+    $("time-corrections-loading").hidden = false; $("time-corrections-error").hidden = true; $("time-corrections-refresh").disabled = true;
+    try {
+      const data = await api("/api/time-corrections"); if (request !== timeWorkflow.requestsRequest) return;
+      timeWorkflow.requests = data.requests || []; timeWorkflow.requestsReady = true; renderTimeCorrections();
+    } catch (error) { if (request === timeWorkflow.requestsRequest) dialogError("time-corrections-error", error); }
+    finally { if (request === timeWorkflow.requestsRequest) { timeWorkflow.requestsLoading = false; $("time-corrections-loading").hidden = true; $("time-corrections-refresh").disabled = false; } }
+  }
+
+  const correctionStatuses = { pending: t("In attesa"), approved: t("Approvata"), rejected: t("Rifiutata"), cancelled: t("Annullata"), conflict: t("Conflitto: registrazione cambiata") };
+  function correctionComparison(request) {
+    const comparison = node("div", "time-correction-comparison");
+    for (const [title, record, deleted] of [[t("Originale"), request.before || {}, false], [t("Proposta"), request, request.delete_requested]]) {
+      const panel = node("div"); panel.append(node("h5", "", title));
+      if (deleted) panel.append(node("p", "", t("Cancellazione della registrazione")));
+      else {
+        panel.append(node("p", "", (record.job_code || "") + " · " + (record.job_name || t("Commessa non disponibile"))));
+        panel.append(node("p", "", (record.date && validDate(record.date) ? dateLabel(record.date) : "—") + " · " + minutesLabel(record.minutes)));
+        if (record.note) panel.append(node("p", "", record.note));
+      }
+      comparison.append(panel);
+    }
+    return comparison;
+  }
+
+  function renderTimeCorrections() {
+    $("time-corrections-scope").textContent = can("manage_jobs") ? t("Coda delle richieste della tua squadra. Un gestore della squadra diverso dal richiedente può approvare o rifiutare.") : t("Le tue richieste, con originale, proposta e decisione del gestore.");
+    $("time-corrections-empty").hidden = timeWorkflow.requests.length !== 0; $("time-corrections-list").replaceChildren();
+    for (const request of timeWorkflow.requests) {
+      const item = node("li", "time-correction-card"), heading = node("div", "time-correction-meta");
+      heading.append(node("h4", "", request.requester_name || request.requester_email || t("Richiesta di rettifica")), node("span", "correction-status correction-status-" + request.status, correctionStatuses[request.status] || request.status)); item.append(heading, correctionComparison(request));
+      item.append(node("p", "time-correction-reason", t("Motivo: {0}", [request.reason || "—"])));
+      if (request.decision_reason) item.append(node("p", "time-correction-reason", t("Decisione: {0}", [request.decision_reason])));
+      const actions = node("div", "row-actions");
+      if (request.can_decide) actions.append(action(t("Approva"), t("Approva richiesta {0}", [request.id]), () => openTimeDecision(request, "approved")), action(t("Rifiuta"), t("Rifiuta richiesta {0}", [request.id]), () => openTimeDecision(request, "rejected"), true));
+      if (request.can_cancel) actions.append(action(t("Annulla richiesta"), t("Annulla richiesta {0}", [request.id]), () => openTimeDecision(request, "cancelled")));
+      if (actions.children.length) item.append(actions); $("time-corrections-list").append(item);
+    }
+  }
+
+  async function saveTimeCorrection(event) {
+    event.preventDefault(); if (!timeWorkflow.entry || busyDialogs.has("time-correction-dialog")) return;
+    $("time-correction-hours").setCustomValidity(""); $("time-correction-reason").value = $("time-correction-reason").value.trim();
+    if (!$("time-correction-form").reportValidity()) return;
+    const entry = timeWorkflow.entry, deleted = $("time-correction-delete").checked;
+    let minutes = Number(entry.minutes);
+    if (!deleted) { try { minutes = hoursToMinutes($("time-correction-hours").value); } catch (error) { $("time-correction-hours").setCustomValidity(error.message); $("time-correction-hours").reportValidity(); return; } }
+    const fields = { entry_id: entry.id, revision: entry.revision, job_id: deleted ? entry.job_id : $("time-correction-job").value, date: deleted ? entry.date : $("time-correction-date").value, minutes, note: deleted ? entry.note || "" : $("time-correction-note").value.trim(), reason: $("time-correction-reason").value, delete_requested: deleted ? "1" : "0" };
+    if (!validDate(fields.date)) { workflowError("time-correction-error", new Error(t("Scegli una giornata lavorativa valida."))); return; }
+    dialogBusy("time-correction-dialog", true, "time-correction-save", t("Invia richiesta di rettifica"));
+    try { await post("/api/time-corrections", fields); $("time-correction-dialog").close(); showNotice(t("Richiesta inviata. La registrazione originale resta invariata fino all’approvazione.")); await refreshTimeCorrections(); }
+    catch (error) { workflowError("time-correction-error", error); }
+    finally { dialogBusy("time-correction-dialog", false, "time-correction-save", t("Invia richiesta di rettifica")); $("time-correction-fields").disabled = $("time-correction-delete").checked; }
+  }
+
+  function openTimeDecision(request, decision) {
+    if (busyDialogs.has("time-decision-dialog")) return;
+    timeWorkflow.decision = { request, decision }; $("time-decision-form").reset(); $("time-decision-error").hidden = true;
+    $("time-decision-title").textContent = decision === "approved" ? t("Approva rettifica") : decision === "rejected" ? t("Rifiuta rettifica") : t("Annulla richiesta");
+    $("time-decision-context").replaceChildren(correctionComparison(request), node("p", "workflow-note", t("Motivo della richiesta: {0}", [request.reason])));
+    $("time-decision-save").textContent = t("Conferma decisione"); $("time-decision-dialog").showModal(); $("time-decision-reason").focus();
+  }
+
+  async function saveTimeDecision(event) {
+    event.preventDefault(); if (!timeWorkflow.decision || busyDialogs.has("time-decision-dialog")) return;
+    $("time-decision-reason").value = $("time-decision-reason").value.trim(); if (!$("time-decision-form").reportValidity()) return;
+    const { request, decision } = timeWorkflow.decision; dialogBusy("time-decision-dialog", true, "time-decision-save", t("Conferma decisione"));
+    try { await post("/api/time-corrections/" + encodeURIComponent(request.id) + "/decision", { decision, reason: $("time-decision-reason").value }); $("time-decision-dialog").close(); state.auditReady = false; showNotice(t("Decisione registrata.")); await refreshAll(); }
+    catch (error) { workflowError("time-decision-error", error); if (error.status === 409) await refreshTimeCorrections(); }
+    finally { dialogBusy("time-decision-dialog", false, "time-decision-save", t("Conferma decisione")); }
+  }
+
+  async function openJobLifecycle(job) {
+    if (!can("manage_jobs") || busyDialogs.has("job-lifecycle-dialog")) return;
+    timeWorkflow.lifecycleJob = job; timeWorkflow.lifecycle = null; $("job-lifecycle-form").reset(); $("job-lifecycle-summary").replaceChildren(); $("job-lifecycle-action").replaceChildren();
+    $("job-lifecycle-dialog").showModal(); await loadJobLifecycle();
+  }
+
+  async function loadJobLifecycle() {
+    const job = timeWorkflow.lifecycleJob; if (!job || !can("manage_jobs")) return;
+    const request = ++timeWorkflow.lifecycleRequest; timeWorkflow.lifecycle = null;
+    $("job-lifecycle-loading").hidden = false; $("job-lifecycle-error").hidden = true; $("job-lifecycle-retry").hidden = true; $("job-lifecycle-save").disabled = true;
+    try {
+      const data = await api("/api/jobs/" + encodeURIComponent(job.id) + "/closure");
+      if (request !== timeWorkflow.lifecycleRequest || !$("job-lifecycle-dialog").open || !can("manage_jobs")) return;
+      timeWorkflow.lifecycle = data; const details = node("dl");
+      for (const [label, value] of [[t("Commessa"), data.code + " · " + data.name], [t("Stato ore"), data.archived ? t("Archiviata") : data.time_closed ? t("Ore chiuse") : t("Registrazione ore aperta")], [t("Attività ancora aperte"), data.open_tasks], [t("Blocchi ancora aperti"), data.open_blockers], [t("Registrazioni conservate"), data.time_entries], [t("Ore conservate"), minutesLabel(data.total_minutes)], [t("Persone con ore registrate"), data.users_with_hours]]) details.append(node("dt", "", label), node("dd", "", String(value)));
+      $("job-lifecycle-summary").replaceChildren(details);
+      if (Number(data.open_tasks) || Number(data.open_blockers)) $("job-lifecycle-summary").append(node("p", "workflow-lifecycle-warning", t("Ci sono attività o blocchi ancora aperti. Controlla il lavoro residuo prima di confermare: la chiusura non li completa automaticamente.")));
+      const choices = data.archived ? [["reopen", t("Riapri commessa")]] : data.time_closed ? [["archive", t("Archivia commessa")], ["reopen", t("Riapri registrazione ore")]] : [["close", t("Chiudi registrazione ore")], ["archive", t("Archivia commessa")]];
+      $("job-lifecycle-action").replaceChildren(...choices.map(([value, label]) => { const option = node("option", "", label); option.value = value; return option; }));
+      $("job-lifecycle-save").disabled = false; updateJobLifecycleHelp();
+    } catch (error) { if (request === timeWorkflow.lifecycleRequest) { workflowError("job-lifecycle-error", error); $("job-lifecycle-retry").hidden = false; } }
+    finally { if (request === timeWorkflow.lifecycleRequest) $("job-lifecycle-loading").hidden = true; }
+  }
+
+  function updateJobLifecycleHelp() {
+    const action = $("job-lifecycle-action").value;
+    $("job-lifecycle-action-help").textContent = action === "reopen" ? t("La commessa torna disponibile secondo le abilitazioni esistenti. Nessuna nuova abilitazione viene creata.") : action === "archive" ? t("La commessa esce dall’elenco ordinario e non accetta nuove ore. Usa Mostra archiviate per ritrovarla.") : t("La commessa resta consultabile nell’elenco, ma non accetta nuove ore.");
+  }
+
+  async function saveJobLifecycle(event) {
+    event.preventDefault(); if (!timeWorkflow.lifecycle || !timeWorkflow.lifecycleJob || !can("manage_jobs") || busyDialogs.has("job-lifecycle-dialog")) return;
+    $("job-lifecycle-reason").value = $("job-lifecycle-reason").value.trim(); if (!$("job-lifecycle-form").reportValidity()) return;
+    dialogBusy("job-lifecycle-dialog", true, "job-lifecycle-save", t("Conferma operazione"));
+    try {
+      await post("/api/jobs/" + encodeURIComponent(timeWorkflow.lifecycleJob.id) + "/lifecycle", { revision: timeWorkflow.lifecycle.lifecycle_revision, action: $("job-lifecycle-action").value, reason: $("job-lifecycle-reason").value });
+      $("job-lifecycle-dialog").close(); state.auditReady = false; showNotice(t("Stato della commessa aggiornato. Dati e storico sono conservati.")); await refreshAll();
+    } catch (error) { workflowError("job-lifecycle-error", error); if (error.status === 409) { timeWorkflow.lifecycle = null; $("job-lifecycle-retry").hidden = false; } }
+    finally { dialogBusy("job-lifecycle-dialog", false, "job-lifecycle-save", t("Conferma operazione")); $("job-lifecycle-save").disabled = !timeWorkflow.lifecycle; }
+  }
+
+  function resetWorkspaceFlows() {
+    workspaceFlows.epoch++; workspaceFlows.myRequest++; workspaceFlows.overviewRequest++; workspaceFlows.accessRequest++; workspaceFlows.scheduleRequest++; workspaceFlows.notificationRequest++; workspaceFlows.wizard.request++;
+    workspaceFlows.myWork = null; workspaceFlows.myLoading = false; workspaceFlows.scheduleLoading = false; workspaceFlows.notificationLoading = false;
+    workspaceFlows.workNotifications = []; workspaceFlows.workUnread = 0; workspaceFlows.users = []; workspaceFlows.schedules = []; workspaceFlows.exceptions = []; workspaceFlows.holidays = [];
+    workspaceFlows.overviewJob = null; workspaceFlows.accessJob = null; workspaceFlows.reading.clear();
+    ["my-work-summary", "my-work-tasks", "my-work-blockers", "job-overview-content", "job-access-content", "work-schedules-list", "work-exceptions-list", "work-holidays-list", "work-notifications-list"].forEach((id) => $(id).replaceChildren());
+  }
+
+  function workflowMetric(label, value) { const card = node("div", "workflow-metric"); card.append(node("span", "", label), node("strong", "", value)); return card; }
+
+  async function openWorkflowWork(jobId, id = null, kind = "task") {
+    if (state.workBusy) return;
+    resetWorkBoard(true); selectTab("work-board"); state.workJobId = String(jobId); renderWorkJobs(); await refreshWorkBoard();
+    if (id) focusWorkResult(kind, id, true);
+  }
+
+  async function refreshMyWork() {
+    if (!state.session?.authenticated || workspaceFlows.myLoading) return;
+    const request = ++workspaceFlows.myRequest; workspaceFlows.myLoading = true;
+    $("my-work-loading").hidden = false; $("my-work-error").hidden = true; $("my-work-refresh").disabled = true;
+    refreshDashboardInventory(request); refreshWorkNotifications(); renderDashboardNotices();
+    try {
+      const data = await api("/api/my-work"); if (request !== workspaceFlows.myRequest) return;
+      workspaceFlows.myWork = data;
+      $("my-work-summary").replaceChildren(workflowMetric(t("Le tue ore di oggi"), minutesLabel(data.today_minutes)), workflowMetric(t("Attività da seguire"), String(data.tasks_count)), workflowMetric(t("Blocchi aperti che segui"), String(data.blockers_count)));
+      for (const [kind, items] of [["task", data.tasks || []], ["blocker", data.blockers || []]]) {
+        const list = $(kind === "task" ? "my-work-tasks" : "my-work-blockers"); list.replaceChildren();
+        if (!items.length) list.append(node("li", "workflow-note", kind === "task" ? t("Nessuna attività aperta assegnata a te.") : t("Nessun blocco aperto da seguire.")));
+        for (const item of items) {
+          const card = node("li", "workflow-work-item"); card.append(node("h4", "", item.title), node("p", "", item.job_code + " · " + item.job_name), node("p", "", (kind === "task" ? workTaskStates[item.status] : workBlockerStates[item.status]) + " · " + workDateText(item.due_date)));
+          if (item.next_action) card.append(node("p", "", t("Prossima azione: {0}", [item.next_action])));
+          const actions = node("div", "row-actions"); actions.append(action(t("Apri nella commessa"), t("Apri ") + item.title, () => openWorkflowWork(item.job_id, item.id, kind)));
+          const job = state.jobs.find((job) => String(job.id) === String(item.job_id));
+          if (kind === "task" && job && canLogTime(job)) actions.append(action(t("Registra ore"), t("Registra ore per ") + item.title, () => openEntry(null, item.job_id, item.id)));
+          card.append(actions); list.append(card);
+        }
+      }
+      $("my-work-tasks-limit").hidden = !data.tasks_more; $("my-work-blockers-limit").hidden = !data.blockers_more;
+      $("my-work-log").disabled = !state.jobs.some(canLogTime);
+      $("my-work-tickets").hidden = !state.session?.tickets?.configured; $("my-work-tickets-help").hidden = !state.session?.tickets?.configured;
+      if (state.session?.tickets?.configured) { const url = new URL(ticketAppURL()); url.searchParams.set("queue", "mine"); $("my-work-tickets").href = url.href; }
+    } catch (error) { if (request === workspaceFlows.myRequest) dialogError("my-work-error", error); }
+    finally { if (request === workspaceFlows.myRequest) { workspaceFlows.myLoading = false; $("my-work-loading").hidden = true; $("my-work-refresh").disabled = false; } }
+  }
+
+  async function openJobOverview(job) {
+    workspaceFlows.overviewJob = job; $("job-overview-content").replaceChildren(); $("job-overview-dialog").showModal(); await loadJobOverview();
+  }
+
+  async function refreshDashboardInventory(request) {
+    $("my-work-inventory-summary").textContent = t("Caricamento delle dotazioni…");
+    try {
+      const data = await api("/api/inventory/dashboard?mine=1");
+      if (request !== workspaceFlows.myRequest) return;
+      const counts = data.counts || {};
+      $("my-work-inventory-summary").textContent = t("{0} beni assegnati a te · {1} restituzioni in ritardo · {2} verifiche da eseguire.", [counts.total || 0, counts.overdue_returns || 0, (Number(counts.never_verified) || 0) + (Number(counts.verification_due) || 0)]);
+    } catch (error) { if (request === workspaceFlows.myRequest) $("my-work-inventory-summary").textContent = t("Inventario non disponibile. Puoi aprire I miei asset per riprovare."); }
+  }
+
+  function renderDashboardNotices() {
+    const assets = $("my-work-inventory-notices"), work = $("my-work-operational-notices"); assets.replaceChildren(); work.replaceChildren();
+    for (const notification of state.notifications.filter((item) => item.event_kind?.startsWith("inventory_") && !item.read_at).slice(0, 5)) {
+      const card = node("li", "workflow-work-item"); card.append(node("h4", "", t(notification.title)), node("p", "", notificationMessage(notification)));
+      const actions = node("div", "row-actions");
+      if (notification.asset_id) actions.append(action(t("Apri asset"), t("Apri l’asset relativo alla notifica"), () => { selectTab("inventory"); openInventoryDetail(notification.asset_id); }));
+      if (notification.asset_id && state.session?.tickets?.configured) actions.append(ticketAppLink(t("Nuovo ticket ↗"), "asset", notification.asset_id, true));
+      card.append(actions); assets.append(card);
+    }
+    if (!assets.children.length) assets.append(node("li", "workflow-note", t("Nessun avviso inventario da leggere.")));
+    for (const notification of workspaceFlows.workNotifications.filter((item) => !item.read_at).slice(0, 5)) {
+      const card = node("li", "workflow-work-item"); card.append(node("h4", "", t(notification.title)), node("p", "", workNotificationMessage(notification)), action(t("Apri nella commessa"), t("Apri ") + t(notification.title), () => openWorkflowWork(notification.job_id, notification.task_id || notification.blocker_id, notification.blocker_id ? "blocker" : "task"))); work.append(card);
+    }
+    if (!work.children.length) work.append(node("li", "workflow-note", t("Nessun avviso operativo da leggere.")));
+  }
+
+  async function loadJobOverview() {
+    const job = workspaceFlows.overviewJob; if (!job) return;
+    const request = ++workspaceFlows.overviewRequest; $("job-overview-loading").hidden = false; $("job-overview-error").hidden = true;
+    try {
+      const data = await api("/api/jobs/" + encodeURIComponent(job.id) + "/overview"); if (request !== workspaceFlows.overviewRequest || !$("job-overview-dialog").open) return;
+      const info = data.job || job, container = $("job-overview-content"); container.replaceChildren();
+      $("job-overview-title").textContent = info.code + " · " + info.name;
+      container.append(node("p", "workflow-note", ["team", "all"].includes(data.scope) ? t("Ore di tutta la squadra; collaboratori visibili al Gestore.") : t("Le tue ore personali; attività e blocchi della commessa abilitata.")));
+      const metrics = node("div", "workflow-metrics"); metrics.append(workflowMetric(t("Ore registrate"), minutesLabel(data.total_minutes)), workflowMetric(t("Attività aperte"), String(data.tasks?.open || 0)), workflowMetric(t("Blocchi aperti"), String(data.blockers?.open || 0))); container.append(metrics);
+      if (info.description) container.append(node("p", "workflow-note", info.description));
+      const links = node("div", "row-actions"); links.append(action(t("Attività e blocchi"), t("Apri attività e blocchi"), () => { $("job-overview-dialog").close(); openWorkflowWork(job.id); }));
+      if (canLogTime(info)) links.append(action(t("Registra ore"), t("Registra ore nella commessa"), () => { $("job-overview-dialog").close(); openEntry(null, job.id); }));
+      if (state.session?.tickets?.configured) links.append(ticketAppLink(t("Ticket collegati ↗"), "job", job.id), ticketAppLink(t("Nuovo ticket ↗"), "job", job.id, true));
+      if (info.contract_id && can("view_contracts")) links.append(action(t("Contratto e documenti"), t("Apri il contratto collegato"), async () => { $("job-overview-dialog").close(); selectTab("contracts"); if (!state.contractsReady) await refreshRegistry("contracts"); const contract = state.contracts.find((item) => String(item.id) === String(info.contract_id)); if (contract) openDocuments(contract); }));
+      container.append(links);
+      const details = node("section", "workflow-overview-section"); details.append(node("h3", "", t("Ore per attività")));
+      const table = node("table"), head = node("tr"); [t("Attività"), t("Stato"), t("Ore"), t("Registrazioni")].forEach((label) => head.append(node("th", "", label)));
+      const thead = node("thead"); thead.append(head); const tbody = node("tbody");
+      for (const task of data.task_totals || []) { const row = node("tr"), title = node("td"); title.append(action(task.title || t("Ore senza attività specifica"), t("Apri attività ") + (task.title || ""), () => { $("job-overview-dialog").close(); openWorkflowWork(job.id, task.task_id); })); row.append(title, node("td", "", workTaskStates[task.status] || "—"), node("td", "", minutesLabel(task.total_minutes)), node("td", "", String(task.time_entries))); tbody.append(row); }
+      table.append(thead, tbody); const wrap = node("div", "table-wrap"); wrap.append(table); details.append(wrap);
+      if (!(data.task_totals || []).length) details.append(node("p", "workflow-note", t("Nessuna registrazione associata alle attività."))); container.append(details);
+      if (Array.isArray(data.collaborators)) { const people = node("section", "workflow-overview-section"); people.append(node("h3", "", t("Collaboratori e accesso effettivo"))); const list = node("ul", "workflow-work-list");
+        for (const person of data.collaborators) { const item = node("li", "workflow-work-item"); item.append(node("h4", "", person.name), node("p", "", person.email), node("p", "", person.can_log_time ? t("Può consultare e registrare ore") : person.can_view ? t("Può consultare") : t("Nessun accesso effettivo oggi"))); list.append(item); } people.append(list); container.append(people); }
+    } catch (error) { if (request === workspaceFlows.overviewRequest) workflowError("job-overview-error", error); }
+    finally { if (request === workspaceFlows.overviewRequest) $("job-overview-loading").hidden = true; }
+  }
+
+  async function openJobAccess(job) {
+    if (!can("manage_assignments")) return; workspaceFlows.accessJob = job; $("job-access-context").textContent = job.code + " · " + job.name;
+    $("job-access-content").replaceChildren(); $("job-access-error").hidden = true; $("job-access-dialog").showModal();
+    const request = ++workspaceFlows.accessRequest;
+    try { const data = await api("/api/users"); if (request !== workspaceFlows.accessRequest || !$("job-access-dialog").open) return;
+      workspaceFlows.users = data.users || []; fillWorkflowUsers($("job-access-user"), workspaceFlows.users, state.session.id || state.session.user_id, false); await loadJobAccess();
+    } catch (error) { if (request === workspaceFlows.accessRequest) workflowError("job-access-error", error); }
+  }
+
+  function fillWorkflowUsers(select, users, selected = "", empty = true) {
+    select.replaceChildren(); if (empty) { const option = node("option", "", t("Seleziona una persona")); option.value = ""; select.append(option); }
+    for (const user of users) { const option = node("option", "", (user.name || user.email) + (user.active === false || user.active === 0 ? t(" · Disattivato") : "")); option.value = String(user.id); select.append(option); }
+    if (selected && users.some((user) => String(user.id) === String(selected))) select.value = String(selected);
+  }
+
+  async function loadJobAccess() {
+    const job = workspaceFlows.accessJob, user = $("job-access-user").value; if (!job || !user || !can("manage_assignments")) return;
+    const request = ++workspaceFlows.accessRequest; $("job-access-loading").hidden = false; $("job-access-error").hidden = true; $("job-access-content").replaceChildren();
+    try { const data = await api("/api/jobs/" + encodeURIComponent(job.id) + "/access?user_id=" + encodeURIComponent(user));
+      if (request !== workspaceFlows.accessRequest || !$("job-access-dialog").open) return;
+      const content = $("job-access-content"), rights = node("div", "workflow-rights"); rights.append(node("span", "", data.effective?.can_view ? t("Consultazione consentita") : t("Consultazione non consentita")), node("span", "", data.effective?.can_log_time ? t("Registrazione ore consentita") : t("Registrazione ore non consentita"))); content.append(rights);
+      if (data.archived || data.time_closed) content.append(node("p", "workflow-lifecycle-warning", t("La commessa è chiusa o archiviata: non accetta nuove ore, anche se un’abilitazione consente normalmente di registrarle.")));
+      if (!data.groups_available) content.append(node("p", "workflow-lifecycle-warning", t("I gruppi aziendali non sono disponibili. Le relative abilitazioni non vengono applicate.")));
+      const list = node("ul", "workflow-work-list"), labels = { direct: t("Abilitazione diretta"), group: t("Abilitazione tramite gruppo"), common: t("Commessa comune"), manager: t("Ruolo Gestore") };
+      for (const source of data.sources || []) { const item = node("li", "workflow-work-item" + (source.active ? "" : " workflow-source-inactive")); item.append(node("h4", "", labels[source.type] || source.type));
+        if (source.group_name) item.append(node("p", "", source.group_name + (source.inherited ? t(" · ereditata dal gruppo superiore") : "")));
+        item.append(node("p", "", (source.role_name || "") + " · " + (source.can_log_time ? t("Consultazione e ore") : t("Consultazione"))), node("p", "", source.active ? t("Attiva oggi") : t("Non attiva oggi")));
+        if (source.starts_on || source.ends_on) item.append(node("p", "", t("Validità: {0} — {1}", [source.starts_on ? dateLabel(source.starts_on) : t("Senza inizio"), source.ends_on ? dateLabel(source.ends_on) : t("Senza fine")])));
+        list.append(item); }
+      if (!list.children.length) list.append(node("li", "workflow-note", t("Nessuna fonte di abilitazione trovata per questo utente."))); content.append(list);
+    } catch (error) { if (request === workspaceFlows.accessRequest) workflowError("job-access-error", error); }
+    finally { if (request === workspaceFlows.accessRequest) $("job-access-loading").hidden = true; }
+  }
+
+  const workflowWeekDays = [["mon", t("Lunedì")], ["tue", t("Martedì")], ["wed", t("Mercoledì")], ["thu", t("Giovedì")], ["fri", t("Venerdì")], ["sat", t("Sabato")], ["sun", t("Domenica")]];
+
+  async function refreshWorkSchedules() {
+    if (!state.session?.authenticated || workspaceFlows.scheduleLoading) return;
+    const request = ++workspaceFlows.scheduleRequest, manager = can("manage_jobs"); workspaceFlows.scheduleLoading = true;
+    $("work-schedules-loading").hidden = false; $("work-schedules-error").hidden = true; $("work-schedules-refresh").disabled = true; $("work-schedules-actions").hidden = !manager;
+    $("work-schedules-user").disabled = true;
+    try {
+      if (!workspaceFlows.users.length) { const users = manager ? await api("/api/users") : { users: [{ id: state.session.id || state.session.user_id || "", name: state.session.name, email: state.session.email, active: true }] }; if (request !== workspaceFlows.scheduleRequest) return;
+        workspaceFlows.users = users.users || []; }
+      const selected = $("work-schedules-user").value;
+      const ownId = state.session.id || state.session.user_id || workspaceFlows.users.find((user) => user.email === state.session.email)?.id;
+      fillWorkflowUsers($("work-schedules-user"), workspaceFlows.users, selected || ownId, false);
+      const query = $("work-schedules-user").value ? "?user_id=" + encodeURIComponent($("work-schedules-user").value) : "";
+      const results = await Promise.all([api("/api/work-schedules" + query), api("/api/work-exceptions" + query), api("/api/business-holidays")]);
+      if (request !== workspaceFlows.scheduleRequest) return;
+      workspaceFlows.schedules = results[0].schedules || []; workspaceFlows.exceptions = results[1].exceptions || []; workspaceFlows.holidays = results[2].holidays || []; renderWorkSchedules();
+    } catch (error) { if (request === workspaceFlows.scheduleRequest) dialogError("work-schedules-error", error); }
+    finally { if (request === workspaceFlows.scheduleRequest) { workspaceFlows.scheduleLoading = false; $("work-schedules-loading").hidden = true; $("work-schedules-refresh").disabled = false; $("work-schedules-user").disabled = !manager; } }
+  }
+
+  function renderWorkSchedules() {
+    for (const [kind, items, target] of [["schedule", workspaceFlows.schedules, "work-schedules-list"], ["exception", workspaceFlows.exceptions, "work-exceptions-list"], ["holiday", workspaceFlows.holidays, "work-holidays-list"]]) {
+      const list = $(target); list.replaceChildren(); if (!items.length) list.append(node("li", "workflow-note", t("Nessuna voce registrata.")));
+      for (const item of items) {
+        const card = node("li", "workflow-work-item"); card.append(node("h4", "", kind === "holiday" ? item.name : item.user_name), node("p", "", kind === "schedule" ? t("In vigore dal {0}", [dateLabel(item.starts_on)]) : dateLabel(item.date)));
+        if (kind === "schedule") card.append(node("p", "", workflowWeekDays.map(([key, label]) => label + ": " + minutesLabel(item[key])).join(" · ")));
+        if (kind === "exception") card.append(node("p", "", t("Lavoro atteso: {0}", [minutesLabel(item.expected_minutes)])), node("p", "", item.reason));
+        if (can("manage_jobs")) { const actions = node("div", "row-actions"); actions.append(action(t("Modifica"), t("Modifica ") + (item.name || item.user_name), () => openWorkSchedule(kind, item)));
+          if (kind !== "schedule") actions.append(action(t("Rimuovi"), t("Rimuovi ") + (item.name || item.user_name), () => openWorkScheduleDelete(kind, item), true)); card.append(actions); }
+        list.append(card);
+      }
+    }
+  }
+
+  function openWorkSchedule(kind, item = null) {
+    if (!can("manage_jobs") || busyDialogs.has("work-schedule-dialog")) return;
+    workspaceFlows.scheduleKind = kind; $("work-schedule-form").reset(); $("work-schedule-error").hidden = true;
+    const schedule = kind === "schedule", holiday = kind === "holiday";
+    $("work-schedule-title").textContent = schedule ? t("Imposta orario settimanale") : holiday ? t("Festività aziendale") : t("Assenza o eccezione personale");
+    $("work-schedule-person-field").hidden = holiday; $("work-schedule-person").disabled = holiday; $("work-schedule-person").required = !holiday;
+    fillWorkflowUsers($("work-schedule-person"), workspaceFlows.users.filter((user) => user.active !== false && user.active !== 0 || String(user.id) === String(item?.user_id)), item?.user_id || $("work-schedules-user").value);
+    $("work-schedule-date-label").textContent = schedule ? t("In vigore dal") : t("Data");
+    $("work-schedule-date").value = item?.starts_on || item?.date || localDate(new Date());
+    $("work-schedule-week-fields").hidden = !schedule; $("work-schedule-week-fields").replaceChildren();
+    if (schedule) for (const [key, label] of workflowWeekDays) { const input = node("input"); input.id = "work-schedule-" + key; input.type = "number"; input.min = "0"; input.max = "1440"; input.step = "1"; input.required = true; input.value = item ? item[key] : ["sat", "sun"].includes(key) ? 0 : 480; $("work-schedule-week-fields").append(batchField(t("{0} · minuti", [label]), input, "")); }
+    $("work-schedule-minutes-field").hidden = kind !== "exception"; $("work-schedule-minutes").required = kind === "exception"; $("work-schedule-minutes").disabled = kind !== "exception"; $("work-schedule-minutes").value = item?.expected_minutes || 0;
+    $("work-schedule-reason-field").hidden = schedule; $("work-schedule-reason").required = !schedule; $("work-schedule-reason").disabled = schedule; $("work-schedule-reason").maxLength = holiday ? 160 : 1000; $("work-schedule-reason").value = item?.reason || item?.name || "";
+    $("work-schedule-help").textContent = schedule ? t("Una nuova data conserva gli orari precedenti. Salvando la stessa persona e data aggiorni quella versione dell’orario.") : holiday ? t("La festività imposta a zero il lavoro atteso, salvo un’eccezione personale per la stessa data.") : t("L’eccezione prevale sull’orario e sulle festività per questa persona e giornata.");
+    $("work-schedule-dialog").showModal(); $("work-schedule-date").focus();
+  }
+
+  async function saveWorkSchedule(event) {
+    event.preventDefault(); if (!can("manage_jobs") || busyDialogs.has("work-schedule-dialog")) return;
+    $("work-schedule-reason").value = $("work-schedule-reason").value.trim(); if (!$("work-schedule-form").reportValidity()) return;
+    const kind = workspaceFlows.scheduleKind, fields = {};
+    if (!validDate($("work-schedule-date").value)) { workflowError("work-schedule-error", new Error(t("Inserisci una data valida."))); return; }
+    let endpoint;
+    if (kind === "schedule") { endpoint = "/api/work-schedules"; fields.user_id = $("work-schedule-person").value; fields.starts_on = $("work-schedule-date").value; for (const [key] of workflowWeekDays) fields[key] = $("work-schedule-" + key).value; }
+    else if (kind === "exception") { endpoint = "/api/work-exceptions"; Object.assign(fields, { user_id: $("work-schedule-person").value, date: $("work-schedule-date").value, expected_minutes: $("work-schedule-minutes").value, reason: $("work-schedule-reason").value }); }
+    else { endpoint = "/api/business-holidays"; Object.assign(fields, { date: $("work-schedule-date").value, name: $("work-schedule-reason").value }); }
+    dialogBusy("work-schedule-dialog", true, "work-schedule-save", t("Salva"));
+    try { await post(endpoint, fields); $("work-schedule-dialog").close(); state.auditReady = false; showNotice(t("Calendario di lavoro aggiornato.")); await refreshWorkSchedules(); }
+    catch (error) { workflowError("work-schedule-error", error); }
+    finally { dialogBusy("work-schedule-dialog", false, "work-schedule-save", t("Salva")); $("work-schedule-person").disabled = kind === "holiday"; $("work-schedule-minutes").disabled = kind !== "exception"; $("work-schedule-reason").disabled = kind === "schedule"; }
+  }
+
+  function openWorkScheduleDelete(kind, item) {
+    workspaceFlows.scheduleDelete = { kind, item }; $("work-schedule-delete-error").hidden = true;
+    $("work-schedule-delete-description").textContent = t("{0} · {1}. Rimuovendo questa voce, il lavoro atteso viene nuovamente calcolato dalle altre regole del calendario.", [item.name || item.user_name, dateLabel(item.date)]);
+    $("work-schedule-delete-dialog").showModal();
+  }
+
+  async function deleteWorkSchedule(event) {
+    event.preventDefault(); if (!can("manage_jobs") || !workspaceFlows.scheduleDelete || busyDialogs.has("work-schedule-delete-dialog")) return;
+    const { kind, item } = workspaceFlows.scheduleDelete; dialogBusy("work-schedule-delete-dialog", true, "work-schedule-delete-save", t("Conferma rimozione"));
+    try { await post((kind === "holiday" ? "/api/business-holidays/" + encodeURIComponent(item.date) : "/api/work-exceptions/" + encodeURIComponent(item.id)) + "/delete", {}); $("work-schedule-delete-dialog").close(); state.auditReady = false; await refreshWorkSchedules(); }
+    catch (error) { workflowError("work-schedule-delete-error", error); }
+    finally { dialogBusy("work-schedule-delete-dialog", false, "work-schedule-delete-save", t("Conferma rimozione")); }
+  }
+
+  function workNotificationMessage(notification) {
+    if (!notification.entity_title) return notification.message || "";
+    if (notification.type === "assigned") return t("{0} · apri la commessa per consultare attività e prossimo passo.", [notification.entity_title]);
+    if (notification.work_date && validDate(notification.work_date)) return t("{0} · scadenza {1}. {2}", [notification.entity_title, dateLabel(notification.work_date), t(notification.work_date < localDate(new Date()) ? "La scadenza è trascorsa." : "Controlla il prossimo passo.")]);
+    return notification.message || "";
+  }
+
+  async function refreshWorkNotifications() {
+    if (!state.session?.authenticated || workspaceFlows.notificationLoading) return;
+    const request = ++workspaceFlows.notificationRequest; workspaceFlows.notificationLoading = true; $("work-notifications-refresh").disabled = true; $("work-notifications-error").hidden = true;
+    try { const data = await api("/api/work-notifications"); if (request !== workspaceFlows.notificationRequest) return;
+      workspaceFlows.workNotifications = data.notifications || []; workspaceFlows.workUnread = Number(data.unread_count) || 0; renderWorkNotifications();
+    } catch (error) { if (request === workspaceFlows.notificationRequest) dialogError("work-notifications-error", error); }
+    finally { if (request === workspaceFlows.notificationRequest) { workspaceFlows.notificationLoading = false; $("work-notifications-refresh").disabled = false; } }
+  }
+
+  function renderWorkNotifications() {
+    $("work-notifications-list").replaceChildren(); $("work-notifications-summary").textContent = workspaceFlows.workUnread ? t("{0} avvisi operativi da leggere.", [workspaceFlows.workUnread]) : t("Nessun avviso operativo da leggere.");
+    for (const notification of workspaceFlows.workNotifications) {
+      const item = node("li", "workflow-work-item"); item.append(node("h4", "", t(notification.title)), node("p", "", workNotificationMessage(notification)), node("p", "", alertDateTime(notification.created_at, "")));
+      const actions = node("div", "row-actions");
+      actions.append(action(t("Apri nella commessa"), t("Apri ") + t(notification.title), () => openWorkflowWork(notification.job_id, notification.task_id || notification.blocker_id, notification.blocker_id ? "blocker" : "task")));
+      if (!notification.read_at) { const button = action(t("Segna come letta"), t("Segna come letta: ") + t(notification.title), async () => {
+        if (workspaceFlows.reading.has(notification.id)) return; workspaceFlows.reading.add(notification.id); button.disabled = true;
+        try { await post("/api/work-notifications/" + encodeURIComponent(notification.id) + "/read", {}); await refreshWorkNotifications(); }
+        catch (error) { dialogError("work-notifications-error", error); }
+        finally { workspaceFlows.reading.delete(notification.id); button.disabled = false; }
+      }); button.disabled = workspaceFlows.reading.has(notification.id); actions.append(button); }
+      else item.append(node("p", "", t("Letta il ") + alertDateTime(notification.read_at, "")));
+      item.append(actions); $("work-notifications-list").append(item);
+    }
+    updateCombinedNotificationBadge();
+    renderDashboardNotices();
+  }
+
+  function updateCombinedNotificationBadge() {
+    const unread = state.notificationsUnread + workspaceFlows.workUnread;
+    $("nav-notifications-count").textContent = unread; $("nav-notifications-count").hidden = !unread;
+    $("nav-notifications-count").setAttribute("aria-label", t("{0} notifiche non lette", [unread]));
+  }
+
+  async function openJobWizard() {
+    if (!can("manage_jobs") || busyDialogs.has("job-wizard-dialog")) return;
+    const wizard = workspaceFlows.wizard; wizard.step = 0; wizard.team = []; wizard.tasks = []; wizard.key = null; wizard.payload = null; wizard.createdId = null; wizard.createdDefinition = null;
+    $("job-wizard-form").reset(); $("job-wizard-error").hidden = true; $("job-wizard-dialog").showModal(); renderJobWizardStep(); await loadJobWizardCatalogues();
+  }
+
+  async function loadJobWizardCatalogues() {
+    const wizard = workspaceFlows.wizard, request = ++wizard.request; wizard.ready = false;
+    $("job-wizard-loading").hidden = false; $("job-wizard-retry").hidden = true; $("job-wizard-next").disabled = true;
+    try {
+      const results = await Promise.allSettled([api("/api/users"), api("/api/groups"), api("/api/job-roles"), can("view_contracts") ? api("/api/contracts") : Promise.resolve({ contracts: [] }), api("/api/job-templates")]);
+      if (request !== wizard.request || !$("job-wizard-dialog").open || !can("manage_jobs")) return;
+      for (const index of [0, 2, 3, 4]) if (results[index].status === "rejected") throw results[index].reason;
+      wizard.users = (results[0].value.users || []).filter((user) => user.active !== false && user.active !== 0);
+      wizard.groups = results[1].status === "fulfilled" ? (results[1].value.groups || []).filter((group) => group.active !== false && group.active !== 0) : [];
+      wizard.roles = (results[2].value.roles || []).filter((role) => role.active !== false && role.active !== 0);
+      wizard.contracts = (results[3].value.contracts || []).filter((contract) => !["closed", "cancelled"].includes(contract.status));
+      wizard.templates = results[4].value.templates || []; wizard.ready = true;
+      const contract = $("job-wizard-contract").value, template = $("job-wizard-template").value;
+      $("job-wizard-contract").replaceChildren(new Option(t("Nessun contratto"), ""), ...wizard.contracts.map((item) => new Option(item.code + " · " + item.title, item.id))); $("job-wizard-contract").value = can("manage_contracts") ? contract : ""; $("job-wizard-contract").disabled = !can("manage_contracts");
+      $("job-wizard-template").replaceChildren(new Option(t("Nessun modello"), ""), ...wizard.templates.map((item) => new Option(item.name, item.id))); $("job-wizard-template").value = template;
+      $("job-wizard-group-add").disabled = !wizard.groups.length;
+      if (results[1].status === "rejected") dialogError("job-wizard-error", new Error(t("I gruppi non sono disponibili. Puoi proseguire con abilitazioni dirette agli utenti.")));
+      renderJobWizardTeam(); renderJobWizardTasks(); renderJobWizardStep();
+    } catch (error) { if (request === wizard.request) { workflowError("job-wizard-error", error); $("job-wizard-retry").hidden = false; } }
+    finally { if (request === wizard.request) { $("job-wizard-loading").hidden = true; $("job-wizard-next").disabled = !wizard.ready; } }
+  }
+
+  function wizardValidateStep(step) {
+    for (const control of $("job-wizard-step-" + step).querySelectorAll("input,select,textarea")) if (!control.disabled && !control.reportValidity()) return false;
+    return true;
+  }
+
+  function renderJobWizardStep() {
+    const wizard = workspaceFlows.wizard;
+    for (let index = 0; index < 4; index++) { $("job-wizard-step-" + index).hidden = index !== wizard.step; const item = $("job-wizard-progress").children[index]; if (index === wizard.step) item.setAttribute("aria-current", "step"); else item.removeAttribute("aria-current"); }
+    $("job-wizard-back").hidden = wizard.step === 0 || !!wizard.createdId; $("job-wizard-next").hidden = wizard.step === 3; $("job-wizard-save").hidden = wizard.step !== 3;
+    $("job-wizard-next").disabled = !wizard.ready; $("job-wizard-save").disabled = !wizard.ready;
+    $("job-wizard-contract").disabled = !can("manage_contracts");
+    $("job-wizard-save").textContent = wizard.createdId ? t("Salva modello e termina") : t("Crea commessa, squadra e attività");
+    if (wizard.step === 3) renderJobWizardReview();
+  }
+
+  function addWizardTeam(kind) {
+    const wizard = workspaceFlows.wizard; if (!wizard.ready || wizard.team.filter((item) => item.kind === kind).length >= 200 || busyDialogs.has("job-wizard-dialog")) return;
+    wizard.team.push({ key: ++wizard.sequence, kind, target: "", role_id: "", starts_on: "", ends_on: "" }); renderJobWizardTeam();
+    $("job-wizard-team").lastElementChild?.querySelector("select")?.focus();
+  }
+
+  function wizardCatalogSelect(items, selected, labelFor, emptyLabel) {
+    const select = node("select"); select.append(new Option(emptyLabel, ""));
+    for (const item of items) select.append(new Option(labelFor(item), item.id));
+    if (selected && !items.some((item) => String(item.id) === String(selected))) { const missing = new Option(t("Voce non disponibile: scegline un’altra"), selected); missing.disabled = true; select.append(missing); }
+    select.value = String(selected || ""); return select;
+  }
+
+  function renderJobWizardTeam() {
+    const wizard = workspaceFlows.wizard; $("job-wizard-team").replaceChildren();
+    for (const row of wizard.team) {
+      const wrapper = node("div", "workflow-editor-row");
+      const target = wizardCatalogSelect(row.kind === "user" ? wizard.users : wizard.groups, row.target, (item) => item.name || item.email, row.kind === "user" ? t("Seleziona una persona") : t("Seleziona un gruppo")); target.id = "wizard-team-target-" + row.key; target.required = true; target.addEventListener("change", () => { row.target = target.value; });
+      const role = wizardCatalogSelect(wizard.roles, row.role_id, (item) => item.name, t("Seleziona un ruolo")); role.id = "wizard-team-role-" + row.key; role.required = true; role.addEventListener("change", () => { row.role_id = role.value; });
+      wrapper.append(batchField(row.kind === "user" ? t("Utente") : t("Gruppo"), target, ""), batchField(t("Ruolo nella commessa"), role, ""));
+      for (const [key, label] of [["starts_on", t("Valido dal")], ["ends_on", t("Valido fino al")]]) { const input = node("input"); input.type = "date"; input.id = "wizard-team-" + key + "-" + row.key; input.value = row[key]; input.addEventListener("input", () => { row[key] = input.value; }); wrapper.append(batchField(label, input, "")); }
+      wrapper.append(action(t("Rimuovi abilitazione"), t("Rimuovi questa abilitazione dalla bozza"), () => { wizard.team = wizard.team.filter((item) => item !== row); renderJobWizardTeam(); })); $("job-wizard-team").append(wrapper);
+    }
+    if (!wizard.team.length) $("job-wizard-team").append(node("p", "workflow-note", t("Nessuna abilitazione proposta. I gestori conservano il proprio accesso amministrativo.")));
+  }
+
+  function addWizardTask() {
+    const wizard = workspaceFlows.wizard; if (!wizard.ready || wizard.tasks.length >= 100 || busyDialogs.has("job-wizard-dialog")) return;
+    wizard.tasks.push({ key: ++wizard.sequence, title: "", assigned_user_id: "", priority: "normal", due_date: "" }); renderJobWizardTasks(); $("job-wizard-tasks").lastElementChild?.querySelector("input")?.focus();
+  }
+
+  function renderJobWizardTasks() {
+    const wizard = workspaceFlows.wizard; $("job-wizard-tasks").replaceChildren();
+    for (const row of wizard.tasks) {
+      const wrapper = node("div", "workflow-editor-row"), title = node("input"); title.id = "wizard-task-title-" + row.key; title.maxLength = 160; title.required = true; title.value = row.title; title.addEventListener("input", () => { row.title = title.value; });
+      const person = wizardCatalogSelect(wizard.users, row.assigned_user_id, (item) => item.name || item.email, t("Da assegnare")); person.id = "wizard-task-person-" + row.key; person.addEventListener("change", () => { row.assigned_user_id = person.value; });
+      const priority = node("select"); priority.id = "wizard-task-priority-" + row.key; for (const [value, label] of Object.entries(workPriorities)) priority.append(new Option(label, value)); priority.value = row.priority || "normal"; priority.addEventListener("change", () => { row.priority = priority.value; });
+      const due = node("input"); due.type = "date"; due.id = "wizard-task-due-" + row.key; due.value = row.due_date || ""; due.addEventListener("input", () => { row.due_date = due.value; });
+      wrapper.append(batchField(t("Titolo attività"), title, "workflow-editor-full"), batchField(t("Responsabile"), person, ""), batchField(t("Priorità"), priority, ""), batchField(t("Scadenza"), due, ""), action(t("Rimuovi attività"), t("Rimuovi questa attività dalla bozza"), () => { wizard.tasks = wizard.tasks.filter((item) => item !== row); renderJobWizardTasks(); })); $("job-wizard-tasks").append(wrapper);
+    }
+    if (!wizard.tasks.length) $("job-wizard-tasks").append(node("p", "workflow-note", t("Nessuna attività iniziale. Potrai aggiungerne dopo la creazione.")));
+  }
+
+  function jobWizardDefinition() {
+    const wizard = workspaceFlows.wizard, definition = { name: $("job-wizard-name").value.trim(), client: $("job-wizard-client").value.trim(), description: $("job-wizard-description-field").value.trim(), status: $("job-wizard-status").value, contract_id: can("manage_contracts") ? $("job-wizard-contract").value : "", is_common: $("job-wizard-common").checked ? "1" : "0", assignments: [], groups: [], tasks: [] };
+    for (const item of wizard.team) definition[item.kind === "user" ? "assignments" : "groups"].push({ [item.kind === "user" ? "user_id" : "group_id"]: Number(item.target), role_id: Number(item.role_id), starts_on: item.starts_on || "", ends_on: item.ends_on || "" });
+    definition.tasks = wizard.tasks.map((item) => ({ title: item.title.trim(), assigned_user_id: item.assigned_user_id ? Number(item.assigned_user_id) : null, priority: item.priority || "normal", due_date: item.due_date || "" })); return definition;
+  }
+
+  function renderJobWizardReview() {
+    const wizard = workspaceFlows.wizard, definition = wizard.createdDefinition || jobWizardDefinition(), content = $("job-wizard-review"), data = node("dl");
+    const contract = wizard.contracts.find((item) => String(item.id) === String(definition.contract_id));
+    for (const [label, value] of [[t("Codice commessa"), $("job-wizard-code").value.trim()], [t("Nome commessa"), definition.name], [t("Cliente"), definition.client || "—"], [t("Stato"), states[definition.status] || definition.status], [t("Contratto"), contract ? contract.code + " · " + contract.title : t("Nessun contratto")], [t("Accesso comune"), definition.is_common === "1" ? t("Tutti gli utenti attivi: consultazione e ore") : t("Solo utenti abilitati e gestori")]]) data.append(node("dt", "", label), node("dd", "", value)); content.replaceChildren(data);
+    const team = node("ul", "workflow-work-list");
+    for (const [kind, rows] of [["user", definition.assignments], ["group", definition.groups]]) for (const row of rows) {
+      const person = (kind === "user" ? wizard.users : wizard.groups).find((item) => Number(item.id) === Number(row[kind === "user" ? "user_id" : "group_id"])), role = wizard.roles.find((item) => Number(item.id) === Number(row.role_id));
+      const item = node("li", "workflow-work-item"); item.append(node("h4", "", (kind === "user" ? t("Utente: ") : t("Gruppo: ")) + (person?.name || person?.email || t("Voce non disponibile"))), node("p", "", t("Ruolo: {0}", [role?.name || t("Non disponibile")])), node("p", "", t("Validità: {0} — {1}", [row.starts_on ? dateLabel(row.starts_on) : t("Senza inizio"), row.ends_on ? dateLabel(row.ends_on) : t("Senza fine")]))); team.append(item);
+    }
+    content.append(node("h4", "", t("Abilitazioni che saranno create")), team);
+    if (!team.children.length) content.append(node("p", "workflow-note", t("Nessuna abilitazione aggiuntiva.")));
+    content.append(node("h4", "", t("Attività che saranno create"))); const tasks = node("ul", "workflow-work-list");
+    for (const task of definition.tasks) { const user = wizard.users.find((item) => Number(item.id) === Number(task.assigned_user_id)), item = node("li", "workflow-work-item"); item.append(node("h4", "", task.title), node("p", "", t("Responsabile: {0}", [user?.name || t("Da assegnare")])), node("p", "", (workPriorities[task.priority] || task.priority) + " · " + workDateText(task.due_date))); tasks.append(item); } content.append(tasks);
+  }
+
+  function applyJobWizardTemplate() {
+    const wizard = workspaceFlows.wizard, selected = wizard.templates.find((item) => String(item.id) === $("job-wizard-template").value); if (!selected || !wizard.ready) return;
+    try {
+      const definition = JSON.parse(selected.definition_json);
+      for (const [key, id] of [["name", "job-wizard-name"], ["client", "job-wizard-client"], ["description", "job-wizard-description-field"], ["status", "job-wizard-status"], ["contract_id", "job-wizard-contract"]]) $(id).value = definition[key] || (key === "status" ? "planned" : "");
+      if (!can("manage_contracts")) $("job-wizard-contract").value = "";
+      $("job-wizard-common").checked = ["1", 1, true].includes(definition.is_common);
+      wizard.team = []; for (const [kind, rows] of [["user", definition.assignments || []], ["group", definition.groups || []]]) for (const row of rows) wizard.team.push({ key: ++wizard.sequence, kind, target: row[kind === "user" ? "user_id" : "group_id"], role_id: row.role_id, starts_on: row.starts_on || "", ends_on: row.ends_on || "" });
+      wizard.tasks = (definition.tasks || []).map((row) => ({ ...row, key: ++wizard.sequence })); renderJobWizardTeam(); renderJobWizardTasks();
+      showNotice(t("Modello caricato nella bozza. Controlla squadra e attività prima di confermare."));
+    } catch (error) { workflowError("job-wizard-error", new Error(t("Il modello non contiene dati validi."))); }
+  }
+
+  async function saveJobWizard(event) {
+    event.preventDefault(); const wizard = workspaceFlows.wizard; if (!can("manage_jobs") || !wizard.ready || busyDialogs.has("job-wizard-dialog")) return;
+    if (wizard.step !== 3) { if (wizardValidateStep(wizard.step)) { wizard.step++; renderJobWizardStep(); } return; }
+    if (!wizard.createdId) for (let index = 0; index < 3; index++) { wizard.step = index; renderJobWizardStep(); if (!wizardValidateStep(index)) return; } wizard.step = 3; renderJobWizardStep();
+    const definition = wizard.createdDefinition || jobWizardDefinition(), fields = { ...definition, code: $("job-wizard-code").value.trim(), assignments: JSON.stringify(definition.assignments), groups: JSON.stringify(definition.groups), tasks: JSON.stringify(definition.tasks) };
+    const payload = JSON.stringify(fields); if (payload !== wizard.payload) { wizard.key = crypto.randomUUID(); wizard.payload = payload; }
+    fields.request_key = wizard.key; dialogBusy("job-wizard-dialog", true, "job-wizard-save", t("Crea commessa, squadra e attività"));
+    try {
+      if (!wizard.createdId) { const result = await post("/api/jobs/wizard", fields); wizard.createdId = result.id; wizard.createdDefinition = definition; }
+      const template = $("job-wizard-save-template").value.trim();
+      if (template) await post("/api/job-templates", { name: template, definition: JSON.stringify(wizard.createdDefinition) });
+      $("job-wizard-dialog").close(); state.auditReady = false; selectTab("jobs"); showNotice(t("Commessa, squadra e attività iniziali create.")); await refreshAll();
+      const job = state.jobs.find((item) => String(item.id) === String(wizard.createdId)); if (job) openJobOverview(job);
+    } catch (error) { workflowError("job-wizard-error", new Error(wizard.createdId ? t("La commessa è stata creata. Il modello non è stato salvato: {0}. Correggi il nome e riprova; la commessa non verrà creata nuovamente.", [error.message]) : error.message)); }
+    finally { dialogBusy("job-wizard-dialog", false, "job-wizard-save", t("Crea commessa, squadra e attività")); renderJobWizardStep(); $("job-wizard-group-add").disabled = !wizard.groups.length; }
+  }
+
+  async function openAccessProfiles(user) {
+    if (!requirePermission("manage_access_groups") || busyDialogs.has("access-groups-dialog")) return;
+    accessProfiles.user = user; accessProfiles.data = null;
+    $("access-groups-person").textContent = user.name + " · " + user.email;
+    $("access-groups-options").replaceChildren(); $("access-groups-effective").textContent = "";
+    $("access-groups-dialog").showModal();
+    await loadAccessProfiles();
+  }
+
+  async function loadAccessProfiles() {
+    if (!can("manage_access_groups") || !accessProfiles.user) return;
+    const request = ++accessProfiles.request, userId = accessProfiles.user.id;
+    $("access-groups-fields").disabled = true; $("access-groups-save").disabled = true;
+    $("access-groups-loading").hidden = false; $("access-groups-error").hidden = true; $("access-groups-retry").hidden = true;
+    try {
+      const [catalog, data] = await Promise.all([api("/api/access-groups"), api("/api/users/" + encodeURIComponent(userId) + "/access-groups")]);
+      if (request !== accessProfiles.request || !can("manage_access_groups") || !$("access-groups-dialog").open) return;
+      if (!Array.isArray(catalog.groups) || !Array.isArray(data.selected) || !Array.isArray(data.effective)) throw new Error(t("Il server ha restituito profili non validi. Riprova."));
+      accessProfiles.catalog = catalog.groups; accessProfiles.data = data;
+      $("access-groups-options").replaceChildren();
+      for (const group of catalog.groups) {
+        const label = node("label", "access-profile-option"), input = node("input"); input.type = "checkbox"; input.value = group.code;
+        input.disabled = group.editable !== true || !["sales", "finance"].includes(group.code);
+        input.checked = input.disabled ? data.effective.includes(group.code) : data.selected.includes(group.code);
+        const info = node("span"); info.append(node("strong", "", accessProfileLabels[group.code] || t(group.name)));
+        if (input.disabled) info.append(node("small", "", t("Automatico dall’identità dell’account")));
+        label.append(input, info); $("access-groups-options").append(label);
+      }
+      $("access-groups-effective").textContent = data.active ? t("Profili attivi: {0}", [data.effective.map((code) => accessProfileLabels[code] || code).join(" · ")]) : t("Account disattivato: nessun profilo è attivo. Le assegnazioni saranno conservate per un’eventuale riattivazione.");
+      $("access-groups-fields").disabled = false; $("access-groups-save").disabled = false;
+      $("access-groups-options").querySelector("input:not(:disabled)")?.focus();
+    } catch (error) { if (request === accessProfiles.request) { workflowError("access-groups-error", error); $("access-groups-retry").hidden = false; } }
+    finally { if (request === accessProfiles.request) $("access-groups-loading").hidden = true; }
+  }
+
+  async function saveAccessProfiles(event) {
+    event.preventDefault();
+    if (!can("manage_access_groups") || !accessProfiles.user || !accessProfiles.data || busyDialogs.has("access-groups-dialog")) return;
+    const user = accessProfiles.user, identity = state.session?.email;
+    const groups = Array.from($("access-groups-options").querySelectorAll("input:checked:not(:disabled)"), (input) => input.value);
+    $("access-groups-error").hidden = true; dialogBusy("access-groups-dialog", true, "access-groups-save", t("Salva profili"));
+    try {
+      await post("/api/users/" + encodeURIComponent(user.id) + "/access-groups", { groups: JSON.stringify(groups) });
+      if (state.session?.email !== identity) return;
+      $("access-groups-dialog").close(); state.auditReady = false;
+      if (user.email === identity) await refreshSession(); else await refreshUsers();
+      showNotice(t("Profili funzionali aggiornati. I permessi si applicano alle richieste successive."));
+    } catch (error) { if (state.session?.email === identity) workflowError("access-groups-error", error); }
+    finally { dialogBusy("access-groups-dialog", false, "access-groups-save", t("Salva profili")); for (const input of $("access-groups-options").querySelectorAll("input")) input.disabled = !["sales", "finance"].includes(input.value); }
+  }
+
   function renderUsers() {
-    if (!can("manage_users") || !state.usersReady) return;
+    if (!canReadUsers() || !state.usersReady) return;
     $("users-loading").hidden = true;
     $("users-table-wrap").hidden = state.users.length === 0;
     $("users-body").replaceChildren();
@@ -971,11 +2053,15 @@
       if (user.email === state.session.email) identity.append(node("span", "user-self", t("Il tuo account")));
       identityCell.append(identity);
       const roleCell = node("td");
-      roleCell.append(node("span", "role-badge", roles[user.role] || t("Operatore")));
+      for (const code of (Array.isArray(user.access_groups) ? user.access_groups : ["operator", ...(user.role === "manager" ? ["manager"] : [])])) roleCell.append(node("span", "role-badge", accessProfileLabels[code] || code));
       const accessCell = node("td");
       accessCell.append(node("span", "status-badge " + (user.active ? "status-active" : "status-cancelled"), user.active ? t("Attivo") : t("Disattivato")));
       const actionsCell = node("td");
-      actionsCell.append(action(t("Modifica"), t("Modifica l’utente ") + user.name, () => openUser(user)));
+      const actions = node("div", "row-actions");
+      if (can("manage_users")) actions.append(action(t("Identità"), t("Modifica l’identità di {0}", [user.name]), () => openUser(user)));
+      else if (state.usersAdminURL) { const link = node("a", "row-button", t("Identità in Keycloak ↗")); link.href = state.usersAdminURL; actions.append(link); }
+      if (can("manage_access_groups")) actions.append(action(t("Profili"), t("Gestisci i profili funzionali di {0}", [user.name]), () => openAccessProfiles(user)));
+      actionsCell.append(actions);
       row.append(identityCell, roleCell, accessCell, actionsCell);
       $("users-body").append(row);
     }
@@ -1004,7 +2090,7 @@
   }
 
   function renderSuppliers() {
-    if (!can("manage_suppliers") || !state.suppliersReady) return;
+    if (!can("view_suppliers") || !state.suppliersReady) return;
     const search = $("supplier-search").value.trim().toLocaleLowerCase(locale);
     const filter = $("supplier-filter").value;
     const suppliers = state.suppliers.filter((supplier) => (!filter || String(Number(activeSupplier(supplier))) === filter) && [supplier.code, supplier.name, supplier.vat_number].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
@@ -1019,7 +2105,7 @@
       const status = node("td");
       status.append(node("span", "status-badge " + (activeSupplier(supplier) ? "status-active" : "status-cancelled"), activeSupplier(supplier) ? t("Attivo") : t("Disattivato")));
       const actions = node("td");
-      actions.append(action(t("Modifica"), t("Modifica il fornitore ") + supplier.name, () => openSupplier(supplier)));
+      if (can("manage_suppliers")) actions.append(action(t("Modifica"), t("Modifica il fornitore ") + supplier.name, () => openSupplier(supplier)));
       row.append(identity, node("td", supplier.vat_number ? "" : "no-value", supplier.vat_number || "—"), contact, status, actions);
       $("suppliers-body").append(row);
     }
@@ -1039,7 +2125,7 @@
   }
 
   function renderContracts() {
-    if (!can("manage_contracts") || !state.contractsReady) return;
+    if (!can("view_contracts") || !state.contractsReady) return;
     const search = $("contract-search").value.trim().toLocaleLowerCase(locale);
     const filter = $("contract-filter").value;
     const contracts = state.contracts.filter((contract) => (!filter || contract.status === filter) && [contract.code, contract.title, contract.supplier_name].some((value) => (value || "").toLocaleLowerCase(locale).includes(search)));
@@ -1055,7 +2141,8 @@
       status.append(node("span", "status-badge status-" + statusClass, contractStates[contract.status] || contract.status));
       const actionsCell = node("td");
       const actions = node("div", "row-actions");
-      actions.append(action(t("Modifica"), t("Modifica il contratto ") + contract.title, () => openContract(contract)), node("span", "row-divider"), action(t("PDF · {0}", [Number(contract.documents_count) || 0]), t("Apri i documenti del contratto ") + contract.title, () => openDocuments(contract)));
+      if (can("manage_contracts")) actions.append(action(t("Modifica"), t("Modifica il contratto ") + contract.title, () => openContract(contract)), node("span", "row-divider"));
+      actions.append(action(t("PDF · {0}", [Number(contract.documents_count) || 0]), t("Apri i documenti del contratto ") + contract.title, () => openDocuments(contract)));
       actionsCell.append(actions);
       row.append(identity, node("td", "contract-period", contractPeriod(contract)), node("td", "contract-value", euroLabel(contract.value_cents)), status, actionsCell);
       $("contracts-body").append(row);
@@ -1069,7 +2156,7 @@
   }
 
   async function refreshRegistry(kind) {
-    const permission = kind === "suppliers" ? "manage_suppliers" : "manage_contracts";
+    const permission = kind === "suppliers" ? "view_suppliers" : "view_contracts";
     if (!can(permission)) return false;
     const request = ++state[kind + "Request"];
     state[kind + "Loading"] = true;
@@ -1212,7 +2299,7 @@
   }
 
   function renderDocuments() {
-    if (!state.documentsReady || !state.documentsContract || !can("manage_contracts")) return;
+    if (!state.documentsReady || !state.documentsContract || !can("view_contracts")) return;
     $("documents-list").replaceChildren();
     for (const document of state.documents) {
       const item = node("li", "document-item");
@@ -1228,7 +2315,7 @@
   }
 
   async function loadDocuments() {
-    if (!state.documentsContract || !can("manage_contracts")) return;
+    if (!state.documentsContract || !can("view_contracts")) return;
     const request = ++state.documentsRequest;
     const id = state.documentsContract.id;
     state.documentsReady = false;
@@ -1239,7 +2326,7 @@
     $("documents-list").replaceChildren();
     try {
       const data = await api(`/api/contracts/${encodeURIComponent(id)}/documents`);
-      if (request !== state.documentsRequest || !can("manage_contracts")) return;
+      if (request !== state.documentsRequest || !can("view_contracts")) return;
       if (!Array.isArray(data.documents)) throw new Error(t("Il server ha restituito un elenco non valido. Riprova."));
       state.documents = data.documents;
       state.documentsReady = true;
@@ -1254,14 +2341,16 @@
   }
 
   function openDocuments(contract) {
-    if (!requirePermission("manage_contracts") || busyDialogs.has("documents-dialog")) return;
+    if (!requirePermission("view_contracts") || busyDialogs.has("documents-dialog")) return;
     state.documentsContract = contract;
     state.documents = [];
     state.documentsReady = false;
     $("document-form").reset();
+    $("document-form").hidden = !can("manage_contracts");
+    $("documents-readonly-close").hidden = can("manage_contracts");
     $("document-file").setCustomValidity("");
     $("documents-dialog-title").textContent = t("PDF · ") + contract.code;
-    $("documents-dialog-description").textContent = contract.title + ". Scarica i documenti originali o aggiungi un PDF all’archivio.";
+    $("documents-dialog-description").textContent = contract.title + ". " + t(can("manage_contracts") ? "Scarica i documenti originali o aggiungi un PDF all’archivio." : "Consulta e scarica i documenti originali del contratto.");
     $("documents-dialog").showModal();
     loadDocuments();
   }
@@ -1457,8 +2546,8 @@
     state.organizationBusy = busy;
     $("panel-organization").setAttribute("aria-busy", String(busy));
     $("panel-organization").querySelectorAll("button, input, select").forEach((element) => { element.disabled = busy; });
-    $("group-member-user").disabled = busy || !state.groupMembersReady;
-    $("group-member-save").disabled = busy || !state.groupMembersReady || !$("group-member-user").options.length || $("group-member-user").options.length === 1;
+    $("group-member-user").disabled = busy || !canEditGroups() || !state.groupMembersReady;
+    $("group-member-save").disabled = busy || !canEditGroups() || !state.groupMembersReady || !$("group-member-user").options.length || $("group-member-user").options.length === 1;
   }
 
   function renderOrganization() {
@@ -1498,10 +2587,13 @@
     $("groups-tree").replaceChildren();
     appendBranch(null, $("groups-tree"));
     const group = state.selectedGroup;
-    $("group-detail-actions").hidden = !group;
+    $("group-detail-actions").hidden = !group || !canEditGroups();
+    $("new-group").hidden = !canEditGroups();
+    $("group-member-form").hidden = !canEditGroups();
+    $("groups-empty").textContent = state.groupsManaged ? t("Crea il primo gruppo in Keycloak per organizzare la squadra.") : t("Crea il primo gruppo per organizzare la squadra.");
     $("group-members-content").hidden = !group;
     $("group-detail-title").textContent = group ? group.name : t("Seleziona un gruppo");
-    $("group-detail-path").textContent = group ? groupPath(group) : t("Seleziona un gruppo nell’albero per gestire i suoi membri diretti.");
+    $("group-detail-path").textContent = group ? groupPath(group) : state.groupsManaged ? t("Seleziona un gruppo nell’albero per consultare i suoi membri diretti.") : t("Seleziona un gruppo nell’albero per gestire i suoi membri diretti.");
     $("job-roles-list").replaceChildren();
     for (const role of state.organizationRoles) {
       const item = node("li", "job-role-card");
@@ -1557,7 +2649,9 @@
       const item = node("li", "organization-member");
       const identity = node("div", "assignment-identity");
       identity.append(node("strong", "", member.name), node("span", "assignment-email", member.email), node("span", "field-help", `${roles[member.role] || t("Operatore")}${member.active ? "" : t(" · Disattivato")}`));
-      item.append(identity, action(t("Rimuovi"), t("Rimuovi ") + member.name + t(" dal gruppo"), () => {
+      item.append(identity);
+      if (canEditGroups()) item.append(action(t("Rimuovi"), t("Rimuovi ") + member.name + t(" dal gruppo"), () => {
+        if (!requireGroupEditing()) return;
         const group = state.selectedGroup;
         confirmOrganization(t("Rimuovere {0} da {1}? Le abilitazioni ricevute da questo gruppo e dai suoi gruppi padre non saranno più applicate tramite questa appartenenza. Altre appartenenze e abilitazioni dirette restano valide.", [member.name, group.name]), async () => {
           await api(`/api/groups/${encodeURIComponent(group.id)}/members/${encodeURIComponent(member.user_id)}`, { method: "DELETE" });
@@ -1606,7 +2700,7 @@
   }
 
   function openGroup(group = null) {
-    if (!requirePermission("manage_groups") || state.organizationBusy || !state.organizationReady || busyDialogs.has("group-dialog")) return;
+    if (!requireGroupEditing() || state.organizationBusy || !state.organizationReady || busyDialogs.has("group-dialog")) return;
     $("group-form").reset();
     $("group-error").hidden = true;
     $("group-id").value = group?.id || "";
@@ -1641,7 +2735,7 @@
   }
 
   function confirmOrganization(message, operation) {
-    if (!requirePermission("manage_groups") || state.organizationBusy) return;
+    if (!requireGroupEditing() || state.organizationBusy) return;
     state.organizationConfirm = operation;
     $("organization-confirm-text").textContent = message;
     $("organization-confirm").hidden = false;
@@ -1907,8 +3001,8 @@
   function notificationMessage(notification) {
     const message = notification.message || "";
     let match;
-    if (notification.event_kind === "missing_hours" && (match = /^(.*): il (\d{4}-\d{2}-\d{2}) risultano registrati (\d+) minuti su 480 previsti\. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa\.$/s.exec(message))) {
-      return t("{0}: il {1} risultano registrati {2} minuti su 480 previsti. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa.", [match[1], dateLabel(match[2]), Number(match[3]).toLocaleString(locale)]);
+    if (notification.event_kind === "missing_hours" && (match = /^(.*): il (\d{4}-\d{2}-\d{2}) risultano registrati (\d+) minuti su (\d+) previsti\. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa\.$/s.exec(message))) {
+      return t("{0}: il {1} risultano registrati {2} minuti su {3} previsti. Sono trascorse almeno 48 ore dalla fine della giornata lavorativa.", [match[1], dateLabel(match[2]), Number(match[3]).toLocaleString(locale), Number(match[4]).toLocaleString(locale)]);
     }
     if (notification.event_kind === "invalid_job" && (match = /^(.*) ha tentato di registrare (\d+) minuti il (\d{4}-\d{2}-\d{2}) sulla commessa inesistente #(\d+)\. La registrazione è stata rifiutata\.$/s.exec(message))) {
       return t("{0} ha tentato di registrare {1} minuti il {2} sulla commessa inesistente #{3}. La registrazione è stata rifiutata.", [match[1], Number(match[2]).toLocaleString(locale), dateLabel(match[3]), match[4]]);
@@ -1936,14 +3030,18 @@
       created.dateTime = notification.created_at;
       item.append(heading, node("p", "notification-message", notificationMessage(notification)), created);
       if (notification.work_date && validDate(notification.work_date)) item.append(node("p", "notification-context", t("Giornata: ") + dateLabel(notification.work_date)));
+      const actions = node("div", "row-actions");
       if (["inventory_due", "inventory_return", "inventory_verification"].includes(notification.event_kind) && Number.isSafeInteger(notification.asset_id) && notification.asset_id > 0) {
-        item.append(action(t("Apri asset"), t("Apri l’asset relativo alla notifica"), () => { selectTab("inventory"); openInventoryDetail(notification.asset_id); }));
+        actions.append(action(t("Apri asset"), t("Apri l’asset relativo alla notifica"), () => { selectTab("inventory"); openInventoryDetail(notification.asset_id); }));
+        if (state.session?.tickets?.configured) actions.append(ticketAppLink(t("Nuovo ticket ↗"), "asset", notification.asset_id, true), ticketAppLink(t("Ticket collegati ↗"), "asset", notification.asset_id));
       }
       if (unread) {
         const button = action(state.readingNotifications.has(notification.id) ? t("Aggiornamento…") : t("Segna come letta"), t("Segna come letta: ") + t(notification.title), () => markNotificationRead(notification));
         button.disabled = state.readingNotifications.has(notification.id);
-        item.append(button);
-      } else item.append(node("span", "notification-read-label", t("Letta il ") + alertDateTime(notification.read_at, "")));
+        actions.append(button);
+      }
+      if (actions.childElementCount) item.append(actions);
+      if (!unread) item.append(node("span", "notification-read-label", t("Letta il ") + alertDateTime(notification.read_at, "")));
       $("notifications-list").append(item);
     }
     $("notifications-count").textContent = state.notifications.length;
@@ -1952,6 +3050,8 @@
     $("nav-notifications-count").hidden = state.notificationsUnread === 0;
     $("notifications-summary").textContent = (state.notifications.length === 100 ? t("Sono mostrati gli ultimi 100 avvisi. ") : "") + (state.notificationsUnread ? `${state.notificationsUnread} ${state.notificationsUnread === 1 ? t("notifica da leggere") : t("notifiche da leggere")}.` : t("Hai letto tutti gli avvisi ricevuti."));
     $("notifications-empty").hidden = !state.notificationsReady || state.notifications.length > 0;
+    updateCombinedNotificationBadge();
+    renderDashboardNotices();
   }
 
   async function refreshNotifications() {
@@ -2160,13 +3260,13 @@
   }
 
   async function refreshUsers() {
-    if (!can("manage_users")) return;
+    if (!canReadUsers()) return;
     const request = ++state.usersRequest;
     $("users-loading").hidden = false;
     $("users-loading").textContent = t("Caricamento degli utenti…");
     try {
       const data = await api("/api/users");
-      if (request !== state.usersRequest || !can("manage_users")) return;
+      if (request !== state.usersRequest || !canReadUsers()) return;
       state.users = data.users;
       state.usersReady = true;
       renderUsers();
@@ -2179,7 +3279,7 @@
 
   async function refreshEntries() {
     const request = ++state.entriesRequest;
-    const date = state.selectedDate;
+    const date = state.selectedDate, userId = timeWorkflow.userId;
     state.entriesReady = false;
     $("entries-loading").hidden = false;
     $("entries-loading").textContent = t("Caricamento delle ore…");
@@ -2187,14 +3287,18 @@
     $("entries-empty").hidden = true;
     $("day-total").textContent = "—";
     $("day-entries-count").textContent = "";
+    $("hours-week-panel").hidden = true;
     try {
-      const data = await api("/api/time-entries?date=" + encodeURIComponent(date));
+      const weekView = timeWorkflow.view === "week";
+      const data = await api((weekView ? "/api/time-entries/week?date=" : "/api/time-entries?date=") + encodeURIComponent(date) + (userId ? "&user_id=" + encodeURIComponent(userId) : ""));
       if (request !== state.entriesRequest) return;
-      state.entries = data.entries;
+      if (weekView) timeWorkflow.week = data; else state.entries = data.entries;
       state.entriesReady = true;
-      if (date === localDate(new Date())) {
-        state.todayMinutes = Number(data.total_minutes);
-        state.todayCount = data.entries.length;
+      if (!userId && weekView && data.start <= localDate(new Date()) && data.end >= localDate(new Date())) {
+        const todayEntries = data.entries.filter((entry) => entry.date === localDate(new Date()));
+        state.todayMinutes = todayEntries.reduce((sum, entry) => sum + Number(entry.minutes), 0); state.todayCount = todayEntries.length;
+      } else if (!userId && !weekView && date === localDate(new Date())) {
+        state.todayMinutes = Number(data.total_minutes); state.todayCount = data.entries.length;
       }
       renderEntries();
     } catch (error) {
@@ -2223,11 +3327,14 @@
       if (!state.jobsReady) $("jobs-loading").textContent = t("Le commesse non sono disponibili. Usa Riprova per ricaricare i dati.");
       showLoadError(error);
     });
-    const tasks = [jobsTask, refreshEntries(), refreshNotifications()];
+    const tasks = [jobsTask, refreshEntries(), refreshNotifications(), refreshWorkNotifications()];
+    if (state.activeTab === "my-work") tasks.push(refreshMyWork());
+    if (state.activeTab === "work-schedules") tasks.push(refreshWorkSchedules());
+    if (state.activeTab === "hours") { tasks.push(refreshTimeCorrections()); if (can("view_team_hours")) tasks.push(refreshHoursTeam()); }
     if (state.activeTab === "inventory" && !state.inventoryLoading) tasks.push(refreshInventory());
-    if (can("manage_users")) tasks.push(refreshUsers());
-    if (can("manage_suppliers")) tasks.push(refreshRegistry("suppliers"));
-    if (can("manage_contracts")) tasks.push(refreshRegistry("contracts"));
+    if (canReadUsers()) tasks.push(refreshUsers());
+    if (can("view_suppliers")) tasks.push(refreshRegistry("suppliers"));
+    if (can("view_contracts")) tasks.push(refreshRegistry("contracts"));
     if (can("manage_groups") && state.activeTab === "organization") tasks.push(refreshOrganization());
     if (can("view_audit") && state.activeTab === "audit") tasks.push(refreshAudit());
     if (isAlertManager() && state.activeTab === "alerts") tasks.push(refreshAlertRules());
@@ -2284,7 +3391,7 @@
     $("job-delete-dialog").showModal();
   }
 
-  function openEntry(entry = null, jobId = "") {
+  function openEntry(entry = null, jobId = "", taskId = "") {
     if (entry && !requirePermission("edit_time_entries")) return;
     if (busyDialogs.has("entry-dialog")) return;
     if (!state.jobsReady) { showNotice(t("Attendi il caricamento delle commesse, poi riprova."), true); return; }
@@ -2301,9 +3408,11 @@
     $("entry-hours").removeAttribute("aria-invalid");
     $("entry-error").hidden = true;
     $("entry-id").value = entry ? entry.id : "";
+    state.editingTimeEntry = entry;
     $("entry-dialog-title").textContent = entry ? t("Modifica registrazione") : t("Registra ore");
     $("entry-save").textContent = entry ? t("Salva modifiche") : t("Salva ore");
     renderEntryJobs(entry ? entry.job_id : jobId);
+    loadEntryTasks(entry?.task_id || taskId);
     $("entry-date").value = entry ? entry.date : state.activeTab === "hours" ? state.selectedDate : localDate(new Date());
     if (entry) {
       $("entry-hours").value = `${Math.floor(entry.minutes / 60)}:${String(entry.minutes % 60).padStart(2, "0")}`;
@@ -2311,6 +3420,23 @@
     }
     $("entry-dialog").showModal();
     if (entry || jobId) $("entry-hours").focus(); else $("entry-job").focus();
+  }
+
+  async function loadEntryTasks(selected = "") {
+    const request = state.entryTasksRequest = (state.entryTasksRequest || 0) + 1, jobId = $("entry-job").value;
+    state.entryTaskLoading = true; state.entryTaskDesired = selected;
+    const empty = node("option", "", t("Nessuna attività specifica")); empty.value = ""; $("entry-task").replaceChildren(empty); $("entry-task").disabled = true;
+    $("entry-task-status").textContent = jobId ? t("Caricamento delle attività…") : t("Scegli prima una commessa."); $("entry-task-retry").hidden = true;
+    if (!jobId) { state.entryTaskLoading = false; return; }
+    try {
+      const data = await api("/api/work-board?job_id=" + encodeURIComponent(jobId));
+      if (request !== state.entryTasksRequest || $("entry-job").value !== jobId) return;
+      for (const task of data.tasks || []) { const option = node("option", "", task.title + " · " + (workTaskStates[task.status] || task.status)); option.value = String(task.id); $("entry-task").append(option); }
+      $("entry-task").value = String(selected || ""); $("entry-task").disabled = false;
+      if (selected && !$("entry-task").value) { $("entry-task-status").textContent = t("L’attività precedente non è più disponibile. Scegli un’altra attività o salva senza collegamento."); }
+      else $("entry-task-status").textContent = t("Le ore restano nella commessa e possono indicare anche l’attività svolta.");
+    } catch (error) { if (request === state.entryTasksRequest) { $("entry-task-status").textContent = error.message; $("entry-task-retry").hidden = false; } }
+    finally { if (request === state.entryTasksRequest) state.entryTaskLoading = false; }
   }
 
   function openDelete(entry) {
@@ -2546,7 +3672,16 @@
   const inventoryConditions = { good: t("Buone"), fair: t("Segni di usura"), damaged: t("Danneggiato") };
   let inventoryPlacesPromise = null, inventoryUsersPromise = null;
   function inventoryTangible(asset) { return Boolean(asset) && ["it_device", "network_device", "physical"].includes(inventoryAssetType(asset)); }
-  function inventoryCanCheckout(asset) { return asset && !asset.custody && (asset.status === "available" || asset.status === "assigned" && asset.context?.assignee_user_id); }
+  function inventoryCanCheckout(asset) { return asset && !asset.custody && (asset.status === "available" || asset.status === "assigned" && (asset.context?.assignee_person_id || asset.context?.assignee_user_id)); }
+  function inventoryAssigneeName(context) { return context?.assignee_person_name || context?.assignee_user_name || ""; }
+  function inventoryCustodyName(custody) { return custody?.person_name || custody?.user_name || (custody?.person_id ? t("Persona #") + custody.person_id : t("Utente #") + custody?.user_id); }
+  const inventoryRecipientSelections = { context: null, checkout: null, relation: null };
+  function inventoryContextRecipient(asset) {
+    const context = asset?.context || {};
+    $("inventory-context-recipient-kind").value = context.assignee_user_id ? "user" : "person";
+    inventoryRecipientSelections.context = context.assignee_person_id ? { id: context.assignee_person_id, display_name: context.assignee_person_name, person_code: "" } : null;
+    inventoryFillUsers($("inventory-context-user"), context.assignee_user_id || "", context.assignee_user_name);
+  }
   function inventoryPlacementLabel(asset) { const c = asset?.context; return c ? [c.site_name, c.department_name, c.location_name].filter(Boolean).join(" · ") || asset.location : asset?.location; }
   function inventoryUserLabel(user) { return user.name + (user.email ? " · " + user.email : ""); }
   function inventoryPlace(id) { return state.inventoryPlaces.find((place) => String(place.id) === String(id)); }
@@ -2624,11 +3759,17 @@
   function inventoryContextControls() {
     const asset = state.inventoryContextAsset, busy = state.inventoryContextBusy;
     $("inventory-context-fields").disabled = busy || state.inventoryContextLoading;
-    $("inventory-context-save").disabled = busy || state.inventoryContextLoading || state.inventoryContextConflict || !inventoryTangible(asset) || !state.inventoryPlacesReady || !state.inventoryUsersReady || !isInventoryManager();
+    $("inventory-context-save").disabled = busy || state.inventoryContextLoading || state.inventoryContextConflict || !inventoryTangible(asset) || !state.inventoryPlacesReady || $("inventory-context-recipient-kind").value === "user" && !state.inventoryUsersReady || !isInventoryManager();
     $("inventory-context-save").textContent = busy ? t("Salvataggio…") : state.inventoryContextLoading ? t("Caricamento anagrafiche…") : t("Salva assegnazione e collocazione");
     $("inventory-context-reload").disabled = busy;
-    $("inventory-context-user").disabled = Boolean(asset?.custody);
-    $("inventory-context-user-help").textContent = asset?.custody ? t("La consegna è ancora aperta. Registra la restituzione prima di cambiare utente; puoi aggiornare i luoghi.") : t("L’assegnazione identifica il responsabile. Usa Consegna per registrare anche il passaggio fisico e la restituzione prevista.");
+    const person = $("inventory-context-recipient-kind").value === "person", fixed = Boolean(asset?.custody);
+    $("inventory-context-recipient-kind").disabled = fixed;
+    $("inventory-context-person-field").hidden = !person; $("inventory-context-user-field").hidden = person;
+    $("inventory-context-user").disabled = fixed || person;
+    $("inventory-context-person-pick").disabled = busy || fixed;
+    $("inventory-context-person-clear").disabled = busy || fixed || !inventoryRecipientSelections.context;
+    $("inventory-context-person-label").textContent = inventoryRecipientSelections.context ? inventorySubjectLabel("person", inventoryRecipientSelections.context) : t("Non assegnato");
+    $("inventory-context-user-help").textContent = asset?.custody ? t("La consegna è ancora aperta. Registra la restituzione prima di cambiare assegnatario; puoi aggiornare i luoghi.") : t("L’assegnazione identifica il responsabile. Usa Consegna per registrare anche il passaggio fisico e la restituzione prevista.");
     if (busy) { busyDialogs.add("inventory-context-dialog"); busyDialogs.add("inventory-detail-dialog"); }
     else { busyDialogs.delete("inventory-context-dialog"); busyDialogs.delete("inventory-detail-dialog"); }
   }
@@ -2640,9 +3781,9 @@
     const current = () => request === state.inventoryContextRequest && epoch === state.inventoryEpoch && $("inventory-context-dialog").open && isInventoryManager();
     state.inventoryContextAsset = asset; state.inventoryContextConflict = false; state.inventoryContextLoading = true;
     $("inventory-context-form").reset(); $("inventory-context-error").hidden = true; $("inventory-placement-error").hidden = true; $("inventory-placement-retry").hidden = true; $("inventory-context-reload").hidden = true;
-    const legacy = [!asset.context?.assignee_user_id ? asset.assignee : "", !asset.context?.site_id && !asset.context?.location_id ? asset.location : ""].filter(Boolean);
+    const legacy = [!asset.context?.assignee_user_id && !asset.context?.assignee_person_id ? asset.assignee : "", !asset.context?.site_id && !asset.context?.location_id ? asset.location : ""].filter(Boolean);
     $("inventory-context-description").textContent = inventoryAssetLabel(asset) + (legacy.length ? t(". Riferimenti testuali attuali: ") + legacy.join(" · ") + t(". Le selezioni salvate sostituiscono questi riferimenti.") : "");
-    inventoryFillUsers($("inventory-context-user"), asset.context?.assignee_user_id || "", asset.context?.assignee_user_name);
+    inventoryContextRecipient(asset);
     renderInventoryContextPlaces(false); inventoryContextControls(); $("inventory-context-dialog").showModal();
     try {
       await Promise.all([loadInventoryPlaces(true), loadInventoryUsers(true)]);
@@ -2669,7 +3810,7 @@
     try {
       const data = await api("/api/inventory/assets/" + encodeURIComponent(source.id)); if (!current()) return;
       state.inventoryContextAsset = inventoryRemember(data.asset); state.inventoryContextConflict = false;
-      if (data.asset.custody) inventoryFillUsers($("inventory-context-user"), data.asset.context?.assignee_user_id || "", data.asset.context?.assignee_user_name);
+      if (data.asset.custody) inventoryContextRecipient(data.asset);
       $("inventory-context-error").hidden = true; $("inventory-context-reload").hidden = true;
       inventoryUpdateDetail(data.asset); showNotice(t("Scheda aggiornata. Controlla le selezioni prima di salvarle; la collocazione non è stata modificata."));
     } catch (error) { if (current()) dialogError("inventory-context-error", new Error(inventoryMessage(error))); }
@@ -2678,10 +3819,10 @@
 
   async function saveInventoryContext(event) {
     event.preventDefault(); const source = state.inventoryContextAsset;
-    if (!source || state.inventoryContextBusy || state.inventoryContextLoading || state.inventoryContextConflict || !state.inventoryPlacesReady || !state.inventoryUsersReady || !isInventoryManager() || !$("inventory-context-form").reportValidity()) return;
+    if (!source || state.inventoryContextBusy || state.inventoryContextLoading || state.inventoryContextConflict || !state.inventoryPlacesReady || $("inventory-context-recipient-kind").value === "user" && !state.inventoryUsersReady || !isInventoryManager() || !$("inventory-context-form").reportValidity()) return;
     const request = ++state.inventoryContextRequest, epoch = state.inventoryEpoch;
     const current = () => request === state.inventoryContextRequest && epoch === state.inventoryEpoch && $("inventory-context-dialog").open && isInventoryManager();
-    const fields = { version: String(source.version), assignee_user_id: $("inventory-context-user").value, site_id: $("inventory-site-id").value, department_id: $("inventory-department-id").value, location_id: $("inventory-location-id").value };
+    const fields = { version: String(source.version), [$("inventory-context-recipient-kind").value === "person" ? "assignee_person_id" : "assignee_user_id"]: $("inventory-context-recipient-kind").value === "person" ? inventoryRecipientSelections.context?.id || "" : $("inventory-context-user").value, site_id: $("inventory-site-id").value, department_id: $("inventory-department-id").value, location_id: $("inventory-location-id").value };
     state.inventoryContextBusy = true; $("inventory-context-error").hidden = true; inventoryContextControls();
     try {
       const data = await post("/api/inventory/assets/" + encodeURIComponent(source.id) + "/context", fields); if (!current()) return;
@@ -2783,17 +3924,17 @@
     if (custody) {
       const overdue = custody.due_on && custody.due_on < localDate(new Date());
       const card = node("div", "inventory-custody-current" + (overdue ? " inventory-custody-overdue" : ""));
-      card.append(node("strong", "", t("In consegna a ") + custody.user_name), node("p", "", t("Dal ") + (validDate(custody.checkout_on) ? dateLabel(custody.checkout_on) : custody.checkout_on) + (custody.due_on ? t(" · restituzione prevista ") + dateLabel(custody.due_on) : t(" · senza data di restituzione prevista"))));
+      card.append(node("strong", "", t("In consegna a ") + inventoryCustodyName(custody)), node("p", "", t("Dal ") + (validDate(custody.checkout_on) ? dateLabel(custody.checkout_on) : custody.checkout_on) + (custody.due_on ? t(" · restituzione prevista ") + dateLabel(custody.due_on) : t(" · senza data di restituzione prevista"))));
       if (overdue) card.append(node("span", "inventory-status inventory-status-maintenance", t("Restituzione in ritardo")));
       $("inventory-custody-current").append(card);
-    } else $("inventory-custody-current").append(node("p", "field-help", c?.assignee_user_id ? t("Responsabile: ") + c.assignee_user_name + t(". Nessuna consegna fisica aperta.") : t("Nessuna consegna aperta.")));
+    } else $("inventory-custody-current").append(node("p", "field-help", (c?.assignee_person_id || c?.assignee_user_id) ? t("Responsabile: ") + inventoryAssigneeName(c) + t(". Nessuna consegna fisica aperta.") : t("Nessuna consegna aperta.")));
   }
 
   function renderInventoryCustody() {
     $("inventory-custody-history").replaceChildren();
     state.inventoryCustodyItems.forEach((entry) => {
       const item = node("li");
-      item.append(node("h4", "", entry.user_name || t("Utente #") + entry.user_id), node("p", "inventory-history-meta", t("Consegna: ") + dateLabel(entry.checkout_on) + (entry.due_on ? t(" · prevista: ") + dateLabel(entry.due_on) : "")), node("p", "inventory-history-summary", t("Condizioni alla consegna: ") + (inventoryConditions[entry.condition_out] || entry.condition_out)));
+      item.append(node("h4", "", inventoryCustodyName(entry)), node("p", "inventory-history-meta", t("Consegna: ") + dateLabel(entry.checkout_on) + (entry.due_on ? t(" · prevista: ") + dateLabel(entry.due_on) : "")), node("p", "inventory-history-summary", t("Condizioni alla consegna: ") + (inventoryConditions[entry.condition_out] || entry.condition_out)));
       item.append(node("p", "inventory-history-summary", entry.returned_on ? t("Restituito il ") + dateLabel(entry.returned_on) + t(" · condizioni: ") + (inventoryConditions[entry.condition_in] || entry.condition_in || "—") : t("Consegna ancora aperta")));
       if (entry.notes) item.append(node("p", "inventory-history-summary", entry.notes));
       if (entry.return_notes) item.append(node("p", "inventory-history-summary", t("Restituzione: ") + entry.return_notes));
@@ -2840,10 +3981,15 @@
     $("inventory-operation-fields").disabled = busy || state.inventoryOperationLoading;
     const source = state.inventoryOperationAsset, operation = state.inventoryOperation;
     const unavailable = operation === "checkout" ? !inventoryCanCheckout(source) : operation === "checkin" ? !source?.custody : !inventoryTangible(source);
-    $("inventory-operation-save").disabled = busy || state.inventoryOperationLoading || state.inventoryOperationConflict || unavailable || !isInventoryManager() || operation === "checkout" && !state.inventoryUsersReady || operation === "verify" && !state.inventoryPlacesReady;
+    $("inventory-operation-save").disabled = busy || state.inventoryOperationLoading || state.inventoryOperationConflict || unavailable || !isInventoryManager() || operation === "checkout" && $("inventory-operation-recipient-kind").value === "user" && !state.inventoryUsersReady || operation === "verify" && !state.inventoryPlacesReady;
     $("inventory-operation-save").textContent = busy ? t("Salvataggio…") : state.inventoryOperationLoading ? t("Caricamento…") : ({ checkout: t("Registra consegna"), checkin: t("Registra restituzione"), verify: t("Registra verifica") }[state.inventoryOperation] || t("Salva"));
-    $("inventory-operation-reload").disabled = busy;
-    if (operation === "checkout") $("inventory-operation-user").disabled = source?.status === "assigned" && Boolean(source?.context?.assignee_user_id) && String(source.context.assignee_user_id) === $("inventory-operation-user").value;
+    $("inventory-operation-reload").disabled = busy || state.inventoryOperationLoading;
+    const checkout = operation === "checkout", person = $("inventory-operation-recipient-kind").value === "person", fixed = checkout && source?.status === "assigned";
+    $("inventory-operation-recipient-field").hidden = !checkout; $("inventory-operation-recipient-kind").disabled = !checkout || fixed;
+    $("inventory-operation-person-field").hidden = !checkout || !person; $("inventory-operation-person-pick").disabled = busy || fixed;
+    $("inventory-operation-person-label").textContent = inventoryRecipientSelections.checkout ? inventorySubjectLabel("person", inventoryRecipientSelections.checkout) : t("Seleziona una persona.");
+    $("inventory-operation-user-field").hidden = !checkout || person; $("inventory-operation-user").disabled = !checkout || person || fixed;
+    $("inventory-operation-user").required = checkout && !person;
     if (busy) { busyDialogs.add("inventory-operation-dialog"); busyDialogs.add("inventory-detail-dialog"); }
     else { busyDialogs.delete("inventory-operation-dialog"); busyDialogs.delete("inventory-detail-dialog"); }
   }
@@ -2856,10 +4002,12 @@
     const current = () => request === state.inventoryOperationRequest && epoch === state.inventoryEpoch && $("inventory-operation-dialog").open && isInventoryManager();
     $("inventory-operation-form").reset(); $("inventory-operation-error").hidden = true; $("inventory-operation-reload").hidden = true; $("inventory-operation-users-retry").hidden = true;
     $("inventory-operation-title").textContent = { checkout: t("Consegna del bene"), checkin: t("Restituzione del bene"), verify: t("Verifica fisica") }[operation];
-    $("inventory-operation-description").textContent = inventoryAssetLabel(asset) + (operation === "checkin" ? t(" · in consegna a ") + asset.custody.user_name : operation === "checkout" && asset.status === "assigned" ? t(" · destinatario già assegnato: ") + asset.context.assignee_user_name + t(". La consegna mantiene questo utente.") : "");
+    $("inventory-operation-description").textContent = inventoryAssetLabel(asset) + (operation === "checkin" ? t(" · in consegna a ") + inventoryCustodyName(asset.custody) : operation === "checkout" && asset.status === "assigned" ? t(" · destinatario già assegnato: ") + inventoryAssigneeName(asset.context) + t(". La consegna mantiene questo destinatario.") : "");
     $("inventory-operation-date-label").textContent = { checkout: t("Data di consegna *"), checkin: t("Data di restituzione *"), verify: t("Data della verifica *") }[operation];
     $("inventory-operation-date").value = localDate(new Date()); $("inventory-operation-date").max = localDate(new Date()); $("inventory-operation-date").min = operation === "checkin" ? asset.custody.checkout_on : "0001-01-01";
     $("inventory-operation-due").min = $("inventory-operation-date").value;
+    $("inventory-operation-recipient-kind").value = operation === "checkout" && asset.status === "assigned" && asset.context?.assignee_user_id ? "user" : "person";
+    inventoryRecipientSelections.checkout = operation === "checkout" && asset.status === "assigned" && asset.context?.assignee_person_id ? { id: asset.context.assignee_person_id, display_name: asset.context.assignee_person_name, person_code: "" } : null;
     $("inventory-operation-user-field").hidden = operation !== "checkout"; $("inventory-operation-user").disabled = operation !== "checkout"; $("inventory-operation-user").required = operation === "checkout";
     $("inventory-operation-due-field").hidden = operation !== "checkout"; $("inventory-operation-due").disabled = operation !== "checkout";
     $("inventory-operation-observed-field").hidden = operation !== "verify"; $("inventory-operation-observed").disabled = operation !== "verify";
@@ -2901,7 +4049,7 @@
 
   async function reloadInventoryOperation() {
     const source = state.inventoryOperationAsset;
-    if (!source || state.inventoryOperationBusy || !isInventoryManager()) return;
+    if (!source || state.inventoryOperationBusy || state.inventoryOperationLoading || !isInventoryManager()) return;
     const request = ++state.inventoryOperationRequest, epoch = state.inventoryEpoch;
     const current = () => request === state.inventoryOperationRequest && epoch === state.inventoryEpoch && $("inventory-operation-dialog").open && isInventoryManager();
     state.inventoryOperationBusy = true; inventoryOperationControls();
@@ -2911,6 +4059,12 @@
       $("inventory-operation-error").hidden = true; $("inventory-operation-reload").hidden = true;
       if (state.inventoryOperation === "checkin") $("inventory-operation-date").min = data.asset.custody?.checkout_on || "0001-01-01";
       const operation = state.inventoryOperation;
+      if (operation === "checkout" && data.asset.status === "assigned") {
+        const context = data.asset.context || {};
+        $("inventory-operation-recipient-kind").value = context.assignee_person_id ? "person" : "user";
+        inventoryRecipientSelections.checkout = context.assignee_person_id ? { id: context.assignee_person_id, display_name: context.assignee_person_name, person_code: "" } : null;
+        inventoryFillUsers($("inventory-operation-user"), context.assignee_user_id || "", context.assignee_user_name || "", false);
+      }
       if (operation === "checkin" && !data.asset.custody || operation === "checkout" && !inventoryCanCheckout(data.asset) || !inventoryTangible(data.asset)) dialogError("inventory-operation-error", new Error(t("La scheda aggiornata non consente più questa operazione. I dati inseriti restano visibili; chiudi la finestra per consultare lo stato corrente.")));
       else showNotice(t("Scheda aggiornata. L’operazione non è stata registrata: controlla i dati e riprova."));
     } catch (error) { if (current()) dialogError("inventory-operation-error", new Error(inventoryMessage(error))); }
@@ -2919,15 +4073,20 @@
 
   async function saveInventoryOperation(event) {
     event.preventDefault(); const source = state.inventoryOperationAsset, operation = state.inventoryOperation;
-    if (!source || state.inventoryOperationBusy || state.inventoryOperationLoading || state.inventoryOperationConflict || !isInventoryManager() || operation === "checkout" && (!state.inventoryUsersReady || !inventoryCanCheckout(source)) || operation === "verify" && !state.inventoryPlacesReady || operation === "checkin" && !source.custody) return;
+    if (!source || state.inventoryOperationBusy || state.inventoryOperationLoading || state.inventoryOperationConflict || !isInventoryManager() || operation === "checkout" && ($("inventory-operation-recipient-kind").value === "user" && !state.inventoryUsersReady || !inventoryCanCheckout(source)) || operation === "verify" && !state.inventoryPlacesReady || operation === "checkin" && !source.custody) return;
     const date = $("inventory-operation-date"), due = $("inventory-operation-due"), notes = $("inventory-operation-notes");
-    $("inventory-operation-user").setCustomValidity(operation === "checkout" && source.status === "assigned" && String(source.context?.assignee_user_id) !== $("inventory-operation-user").value ? t("Seleziona l’utente già assegnato nella scheda aggiornata.") : "");
+    $("inventory-operation-user").setCustomValidity("");
+    if (operation === "checkout") {
+      const person = $("inventory-operation-recipient-kind").value === "person", selected = person ? inventoryRecipientSelections.checkout?.id : $("inventory-operation-user").value;
+      const assigned = person ? source.context?.assignee_person_id : source.context?.assignee_user_id;
+      if (!selected || source.status === "assigned" && String(assigned || "") !== String(selected)) { dialogError("inventory-operation-error", new Error(!selected ? t("Seleziona un destinatario.") : t("Seleziona il destinatario già assegnato nella scheda aggiornata."))); return; }
+    }
     date.setCustomValidity(!validDate(date.value) || date.value > localDate(new Date()) ? t("Inserisci una data valida, non futura.") : operation === "checkin" && source.custody && date.value < source.custody.checkout_on ? t("La restituzione non può precedere la consegna.") : "");
     due.setCustomValidity(operation === "checkout" && due.value && (!validDate(due.value) || due.value < date.value) ? t("La restituzione prevista non può precedere la consegna.") : "");
     notes.setCustomValidity(new TextEncoder().encode(notes.value).length > 2000 ? t("Accorcia le note.") : "");
     if (!$("inventory-operation-form").reportValidity()) return;
     const fields = { version: String(source.version), notes: notes.value };
-    if (operation === "checkout") Object.assign(fields, { user_id: $("inventory-operation-user").value, checkout_on: date.value, due_on: due.value, condition_out: $("inventory-operation-condition").value });
+    if (operation === "checkout") Object.assign(fields, { [$("inventory-operation-recipient-kind").value === "person" ? "person_id" : "user_id"]: $("inventory-operation-recipient-kind").value === "person" ? inventoryRecipientSelections.checkout.id : $("inventory-operation-user").value, checkout_on: date.value, due_on: due.value, condition_out: $("inventory-operation-condition").value });
     if (operation === "checkin") Object.assign(fields, { returned_on: date.value, condition_in: $("inventory-operation-condition").value, status: $("inventory-operation-status").value });
     if (operation === "verify") Object.assign(fields, { verified_on: date.value, condition: $("inventory-operation-condition").value, observed_location_id: $("inventory-operation-observed").value });
     const request = ++state.inventoryOperationRequest, epoch = state.inventoryEpoch;
@@ -2936,7 +4095,7 @@
     try {
       const data = await post("/api/inventory/assets/" + encodeURIComponent(source.id) + "/" + operation, fields); if (!current()) return;
       inventoryUpdateDetail(data.asset); state.inventoryOperationBusy = false; inventoryOperationControls(); $("inventory-operation-dialog").close(); refreshInventory();
-      showNotice({ checkout: t("Consegna registrata. Il bene compare tra gli asset dell’utente."), checkin: t("Restituzione registrata e consegna chiusa."), verify: t("Verifica fisica registrata nello storico del bene.") }[operation]);
+      showNotice({ checkout: t("Consegna registrata nello storico del bene."), checkin: t("Restituzione registrata e consegna chiusa."), verify: t("Verifica fisica registrata nello storico del bene.") }[operation]);
     } catch (error) {
       if (!current()) return;
       if (error.status === 409) { state.inventoryOperationConflict = true; $("inventory-operation-reload").hidden = false; }
@@ -2952,6 +4111,12 @@
   $("inventory-directory-dialog").addEventListener("close", () => { state.inventoryDirectoryRequest++; state.inventoryDirectoryEditing = null; });
   $("inventory-context-open").addEventListener("click", openInventoryContext);
   $("inventory-context-form").addEventListener("submit", saveInventoryContext);
+  $("inventory-context-recipient-kind").addEventListener("change", inventoryContextControls);
+  $("inventory-context-person-pick").addEventListener("click", () => openInventoryRecipientPicker("context"));
+  $("inventory-context-person-clear").addEventListener("click", () => { if (!state.inventoryContextBusy && !state.inventoryContextAsset?.custody) { inventoryRecipientSelections.context = null; inventoryContextControls(); } });
+  $("inventory-operation-recipient-kind").addEventListener("change", inventoryOperationControls);
+  $("inventory-operation-person-pick").addEventListener("click", () => openInventoryRecipientPicker("checkout"));
+  $("inventory-relation-subject-pick").addEventListener("click", () => openInventoryRecipientPicker("relation"));
   $("inventory-context-reload").addEventListener("click", reloadInventoryContext);
   $("inventory-site-id").addEventListener("change", () => {
     const site = $("inventory-site-id").value, department = inventoryPlace($("inventory-department-id").value), location = inventoryPlace($("inventory-location-id").value);
@@ -2998,11 +4163,12 @@
   let inventorySubjectFilter = null;
 
   function inventorySubjectPath(kind) { return kind === "person" ? "people" : "identities"; }
-  function inventorySubjectLabel(kind, item) { return kind === "person" ? item.display_name + " · " + item.person_code : (item.display_name ? item.display_name + " · " : "") + item.realm + " / " + item.login; }
+  function inventorySubjectLabel(kind, item) { return kind === "person" ? [item.display_name, item.person_code].filter(Boolean).join(" · ") : (item.display_name ? item.display_name + " · " : "") + item.realm + " / " + item.login; }
   function inventorySubjectRecord(kind, response) { return response[kind]; }
   function inventorySubjectPost(path, fields) { return api(path, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields) }); }
   function inventorySubjectInputValue(key) { const input = $("inventory-subject-input-" + key); return input.type === "checkbox" ? input.checked ? "1" : "0" : input.value; }
   function inventorySubjectReset() {
+    Object.keys(inventoryRecipientSelections).forEach((key) => inventoryRecipientSelections[key] = null);
     inventorySubjectDirectory.request++; inventorySubjectDetail.request++; inventorySubjectPicker.request++; inventoryAssetSubjects.request++;
     inventorySubjectDetail.panels = {};
     Object.assign(inventorySubjectDirectory, { items: [], cursor: null, loading: false, retryMore: false });
@@ -3220,6 +4386,24 @@
     } catch (error) { if (current()) { detail.conflict = error.status === 409; $("inventory-subject-detail-reload").hidden = !detail.conflict; dialogError("inventory-subject-detail-error", new Error(inventoryMessage(error))); } }
     finally { if (current()) { detail.busy = false; inventorySubjectDetailControls(); } }
   }
+  function openInventoryRecipientPicker(type) {
+    const source = type === "context" ? state.inventoryContextAsset : type === "checkout" ? state.inventoryOperationAsset : state.inventoryDetailAsset;
+    const parent = type === "context" ? "inventory-context-dialog" : type === "checkout" ? "inventory-operation-dialog" : "inventory-detail-dialog";
+    if (!source || !$(parent).open || busyDialogs.has(parent) || !isInventoryManager() || inventorySubjectPicker.busy) return;
+    if (type === "context" && source.custody || type === "checkout" && source.status === "assigned") return;
+    const kind = type === "relation" ? $("inventory-relation-recipient-kind").value : "person";
+    if (!["person", "identity"].includes(kind)) return;
+    const picker = inventorySubjectPicker;
+    picker.request++; Object.assign(picker, { owner: { type, id: source.id, parent, selection: true, kind }, items: [], cursor: null, loading: false, selected: inventoryRecipientSelections[type], busy: false, conflict: false });
+    $("inventory-subject-picker-form").reset(); $("inventory-subject-picker-kind").value = kind;
+    $("inventory-subject-picker-title").textContent = kind === "person" ? t("Scegli persona") : t("Scegli identità");
+    $("inventory-subject-picker-kind-field").hidden = true;
+    $("inventory-subject-picker-role-field").hidden = $("inventory-subject-picker-notes-field").hidden = true;
+    $("inventory-subject-picker-role").disabled = $("inventory-subject-picker-notes").disabled = true;
+    $("inventory-subject-picker-error").hidden = $("inventory-subject-picker-reload").hidden = true;
+    $("inventory-subject-picker-description").textContent = kind === "identity" ? t("Scegli un’identità censita. Un’identità condivisa consuma solo la quantità di posti indicata.") : t("Scegli una persona censita, anche senza account Punto.");
+    inventorySubjectPickerControls(); $("inventory-subject-picker-dialog").showModal(); loadInventorySubjectPicker();
+  }
   function inventorySubjectPickerControls() {
     const picker = inventorySubjectPicker;
     $("inventory-subject-picker-fields").disabled = picker.busy;
@@ -3228,11 +4412,11 @@
     $("inventory-subject-picker-more").disabled = picker.loading || picker.busy;
     $("inventory-subject-picker-search").disabled = picker.busy;
     $("inventory-subject-picker-save").disabled = picker.busy || picker.conflict || !picker.selected || !isInventoryManager();
-    $("inventory-subject-picker-save").textContent = picker.busy ? t("Salvataggio…") : t("Salva collegamento");
+    $("inventory-subject-picker-save").textContent = picker.busy ? t("Salvataggio…") : picker.owner?.selection ? t("Conferma selezione") : t("Salva collegamento");
     $("inventory-subject-picker-selected").textContent = picker.selected ? t("Selezionato: {0}", [inventorySubjectLabel($("inventory-subject-picker-kind").value, picker.selected)]) : t("Seleziona una voce dai risultati.");
     $("inventory-subject-picker-reload").disabled = picker.busy;
-    if (picker.busy) { busyDialogs.add("inventory-subject-picker-dialog"); busyDialogs.add(picker.owner?.type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog"); }
-    else { busyDialogs.delete("inventory-subject-picker-dialog"); if (picker.owner) busyDialogs.delete(picker.owner.type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog"); }
+    if (picker.busy) { busyDialogs.add("inventory-subject-picker-dialog"); busyDialogs.add(picker.owner?.parent || (picker.owner?.type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog")); }
+    else { busyDialogs.delete("inventory-subject-picker-dialog"); if (picker.owner) busyDialogs.delete(picker.owner.parent || (picker.owner.type === "asset" ? "inventory-detail-dialog" : "inventory-subject-detail-dialog")); }
   }
   function openInventorySubjectPicker(type) {
     const item = type === "asset" ? state.inventoryDetailAsset : inventorySubjectDetail.item;
@@ -3240,6 +4424,9 @@
     const picker = inventorySubjectPicker;
     picker.request++; Object.assign(picker, { owner: { type, id: item.id, version: item.version }, items: [], cursor: null, loading: false, selected: null, busy: false, conflict: false });
     $("inventory-subject-picker-form").reset(); $("inventory-subject-picker-kind").value = "person";
+    $("inventory-subject-picker-title").textContent = t("Collega persona o identità");
+    $("inventory-subject-picker-role-field").hidden = $("inventory-subject-picker-notes-field").hidden = false;
+    $("inventory-subject-picker-role").disabled = $("inventory-subject-picker-notes").disabled = false;
     $("inventory-subject-picker-kind-field").hidden = type !== "asset";
     $("inventory-subject-picker-role").replaceChildren(...(type === "asset" ? ["user", "owner", "administrator"] : ["user", "owner"]).map((role) => new Option(inventorySubjectRoles[role], role)));
     $("inventory-subject-picker-error").hidden = $("inventory-subject-picker-reload").hidden = true;
@@ -3260,7 +4447,7 @@
       if (!current()) return;
       picker.items.push(...data.items); picker.cursor = data.next_after_id || null; picker.retryMore = false; $("inventory-subject-picker-list").replaceChildren();
       for (const item of picker.items) {
-        const row = node("li"), button = node("button", "inventory-subject-choice", inventorySubjectLabel(kind, item)); button.type = "button";
+        const row = node("li"), button = node("button", "inventory-subject-choice", inventorySubjectLabel(kind, item) + (kind === "identity" ? " · " + (inventoryIdentityKinds[item.kind] || item.kind) + (item.kind === "shared" ? " · " + (Number(item.people_count) === 1 ? t("1 persona collegata") : t("{0} persone collegate", [item.people_count || 0])) : "") : "")); button.type = "button";
         button.setAttribute("aria-pressed", String(picker.selected?.id === item.id));
         button.addEventListener("click", () => { if (picker.busy) return; picker.selected = item; $("inventory-subject-picker-list").querySelectorAll("button").forEach((option) => option.setAttribute("aria-pressed", String(option === button))); inventorySubjectPickerControls(); });
         row.append(button); $("inventory-subject-picker-list").append(row);
@@ -3288,6 +4475,13 @@
   async function saveInventorySubjectLink(event) {
     event.preventDefault(); const picker = inventorySubjectPicker, owner = picker.owner;
     if (!owner || !picker.selected || picker.busy || picker.conflict || !isInventoryManager()) return;
+    if (owner.selection) {
+      const source = owner.type === "context" ? state.inventoryContextAsset : owner.type === "checkout" ? state.inventoryOperationAsset : state.inventoryDetailAsset;
+      if (!source || String(source.id) !== String(owner.id) || !$(owner.parent).open || busyDialogs.has(owner.parent)) return;
+      inventoryRecipientSelections[owner.type] = picker.selected;
+      if (owner.type === "context") inventoryContextControls(); else if (owner.type === "checkout") inventoryOperationControls(); else inventoryRelationControls();
+      $("inventory-subject-picker-dialog").close(); return;
+    }
     if (new TextEncoder().encode($("inventory-subject-picker-notes").value).length > 2000) { dialogError("inventory-subject-picker-error", new Error(t("Il testo è troppo lungo in byte. Accorcialo e riprova."))); return; }
     const kind = $("inventory-subject-picker-kind").value, fields = { version: owner.version, role: $("inventory-subject-picker-role").value, notes: $("inventory-subject-picker-notes").value };
     if (owner.type === "asset") { fields.subject_kind = kind; fields.subject_id = picker.selected.id; } else fields.person_id = picker.selected.id;
@@ -3447,7 +4641,7 @@
       button.addEventListener("click", () => { state.inventoryAttention = state.inventoryAttention === key ? "" : key; refreshInventory(); });
       $("inventory-dashboard-cards").append(button);
     }
-    const groups = [[t("Per sede"), data.by_site, t("Sede non indicata")], [t("Per reparto"), data.by_department, t("Reparto non indicato")], [t("Per utente"), data.by_user, t("Non assegnato")]];
+    const groups = [[t("Per sede"), data.by_site, t("Sede non indicata")], [t("Per reparto"), data.by_department, t("Reparto non indicato")], [t("Per utente Punto"), data.by_user, t("Senza utente Punto")]];
     for (const [title, entries, absent] of groups) {
       const section = node("section"); section.append(node("h4", "", title));
       const list = node("ul");
@@ -3590,7 +4784,8 @@
       const status = node("td");
       status.append(node("span", "inventory-status inventory-status-" + asset.status, inventoryStates[asset.status] || asset.status));
       const assigned = node("td");
-      assigned.append(node("span", "inventory-cell-line", asset.context?.assignee_user_name || asset.assignee || t("Non assegnato")), node("span", "inventory-cell-secondary", inventoryPlacementLabel(asset) || t("Sede non indicata")));
+      if (asset.context?.assignee_person_id || asset.context?.assignee_user_id) assigned.append(node("span", "inventory-cell-secondary", asset.context.assignee_person_id ? t("Persona") : t("Utente Punto")));
+      assigned.append(node("span", "inventory-cell-line", inventoryAssigneeName(asset.context) || asset.assignee || t("Non assegnato")), node("span", "inventory-cell-secondary", inventoryPlacementLabel(asset) || t("Sede non indicata")));
       if (asset.custody?.due_on && asset.custody.due_on < localDate(new Date())) assigned.append(node("span", "inventory-cell-secondary inventory-return-overdue", t("Restituzione in ritardo")));
       const actions = node("td");
       const group = node("div", "inventory-row-actions");
@@ -3803,7 +4998,7 @@
     softwarePicker.request++; softwarePicker.items = []; softwarePicker.cursor = null; softwarePicker.loading = false; softwarePicker.retryMore = false; softwarePicker.error.hidden = true;
     softwarePicker.setSelected(asset?.details?.software_id || null);
     inventoryShowTypeFields(); inventoryRemember(asset);
-    const context = asset?.context, structuredUser = Boolean(context?.assignee_user_id || asset?.custody), structuredPlace = Boolean(context?.site_id || context?.department_id || context?.location_id);
+    const context = asset?.context, structuredUser = Boolean(context?.assignee_person_id || context?.assignee_user_id || asset?.custody), structuredPlace = Boolean(context?.site_id || context?.department_id || context?.location_id);
     $("inventory-assignee").readOnly = structuredUser;
     $("inventory-location").readOnly = structuredPlace || Boolean(asset?.custody);
     $("inventory-status").disabled = structuredUser;
@@ -3869,7 +5064,7 @@
     const details = node("dl", "inventory-detail-grid");
     const fields = [[t("Codice inventario"), asset.asset_tag], [t("Nome"), asset.name], [t("Tipologia"), inventoryTypes[inventoryAssetType(asset)] || asset.asset_type], [t("Stato"), inventoryStates[asset.status] || asset.status], [t("Categoria"), asset.category], [t("Numero di serie"), asset.serial_number], [t("Produttore"), asset.manufacturer], [t("Modello"), asset.model], [t("Assegnato a"), asset.assignee], [t("Ubicazione"), asset.location], [t("Acquistato il"), asset.purchase_date && validDate(asset.purchase_date) ? dateLabel(asset.purchase_date) : asset.purchase_date], [t("Garanzia fino al"), asset.warranty_until && validDate(asset.warranty_until) ? dateLabel(asset.warranty_until) : asset.warranty_until], [t("Versione"), asset.version]];
     if (asset.context) {
-      fields.push([t("Utente assegnatario"), asset.context.assignee_user_name], [t("Sede censita"), asset.context.site_name], [t("Reparto censito"), asset.context.department_name], [t("Ubicazione censita"), asset.context.location_name]);
+      fields.push([asset.context.assignee_person_id ? t("Persona assegnataria") : t("Utente assegnatario"), inventoryAssigneeName(asset.context)], [t("Sede censita"), asset.context.site_name], [t("Reparto censito"), asset.context.department_name], [t("Ubicazione censita"), asset.context.location_name]);
     }
     if (asset.custody) fields.push([t("Consegna aperta dal"), dateLabel(asset.custody.checkout_on)], [t("Restituzione prevista"), asset.custody.due_on ? dateLabel(asset.custody.due_on) : ""]);
     fields.push(...inventoryTypedDisplay(asset));
@@ -3980,11 +5175,11 @@
         }
         if (entry.change?.context) {
           const context = entry.change.context;
-          item.append(node("p", "inventory-history-summary", [context.assignee_user_name || t("Nessun utente assegnato"), context.site_name, context.department_name, context.location_name].filter(Boolean).join(" · ")));
+          item.append(node("p", "inventory-history-summary", [inventoryAssigneeName(context) || t("Non assegnato"), context.site_name, context.department_name, context.location_name].filter(Boolean).join(" · ")));
         }
         if (entry.change?.custody) {
           const custody = entry.change.custody;
-          item.append(node("p", "inventory-history-summary", operation === "checked_in" ? t("Restituito da ") + custody.user_name + " · " + dateLabel(custody.returned_on) + " · " + (inventoryConditions[custody.condition_in] || custody.condition_in) : custody.user_name + " · " + dateLabel(custody.checkout_on) + (custody.due_on ? t(" · restituzione prevista ") + dateLabel(custody.due_on) : "")));
+          item.append(node("p", "inventory-history-summary", operation === "checked_in" ? t("Restituito da ") + inventoryCustodyName(custody) + " · " + dateLabel(custody.returned_on) + " · " + (inventoryConditions[custody.condition_in] || custody.condition_in) : inventoryCustodyName(custody) + " · " + dateLabel(custody.checkout_on) + (custody.due_on ? t(" · restituzione prevista ") + dateLabel(custody.due_on) : "")));
         }
         if (entry.change?.verification) {
           const verification = entry.change.verification;
@@ -4017,6 +5212,7 @@
   }
 
   function resetInventoryRelations() {
+    inventoryRecipientSelections.relation = null;
     state.inventoryRelationsRequest++; state.inventoryRelations = []; state.inventoryRelationsReady = false; state.inventoryRelationsCursor = null; state.inventoryRelationsLoading = false; state.inventoryRelationsRetryMore = false; state.inventoryRelationConflict = false;
     $("inventory-relations").replaceChildren(); $("inventory-relation-form").reset(); $("inventory-relation-form").hidden = true;
     $("inventory-relation-error").hidden = true; $("inventory-relation-reload").hidden = true; $("inventory-relations-error").hidden = true; $("inventory-relations-retry").hidden = true; $("inventory-relations-more").hidden = true;
@@ -4027,7 +5223,8 @@
     const source = relation.source || relation.source_asset || inventoryAssetCache.get(String(relation.source_id));
     const target = relation.target || relation.target_asset || inventoryAssetCache.get(String(relation.target_id));
     const origin = source ? inventoryAssetLabel(source) : t("Asset #") + relation.source_id;
-    const destination = target ? inventoryAssetLabel(target) : relation.target_id ? t("Asset #") + relation.target_id : relation.assignee || t("Destinatario non indicato");
+    const subject = relation.subject_snapshot || relation.subject;
+    const destination = relation.subject_kind && subject ? inventorySubjectLabel(relation.subject_kind, subject) : target ? inventoryAssetLabel(target) : relation.target_id ? t("Asset #") + relation.target_id : relation.assignee || t("Destinatario non indicato");
     let summary = (inventoryRelationNames[relation.relation_type] || relation.relation_type) + " · " + origin + " → " + destination;
     if (relation.relation_type === "licensed_to") summary += " · " + relation.quantity + (Number(relation.quantity) === 1 ? " posto" : " posti");
     if (relation.installed_version) summary += t(" · versione ") + relation.installed_version;
@@ -4047,7 +5244,7 @@
     if (allowed.includes(previous)) select.value = previous;
     $("inventory-relation-new").hidden = !isInventoryManager() || !allowed.length;
     $("inventory-relation-new").disabled = state.inventoryRelationBusy;
-    $("inventory-relation-help").textContent = inventoryAssetType(asset) === "license" ? t("Registra i posti assegnati a dispositivi o persone secondo il modello della licenza. Le assegnazioni sono inserite manualmente.") : t("Consulta software installato, collegamenti di rete e licenze assegnate a questo bene.");
+    $("inventory-relation-help").textContent = inventoryAssetType(asset) === "license" ? t("Assegna posti a dispositivi, persone o identità secondo il modello della licenza. Ogni quantità viene conteggiata una sola volta.") : t("Consulta software installato, collegamenti di rete e licenze assegnate a questo bene.");
     if (!allowed.length) $("inventory-relation-form").hidden = true;
     inventoryRelationControls();
   }
@@ -4055,20 +5252,25 @@
   function inventoryRelationControls() {
     const asset = state.inventoryDetailAsset; if (!asset) return;
     const type = $("inventory-relation-type").value, model = asset.details?.license_model || "per_device";
-    const license = type === "licensed_to", flexible = license && ["concurrent", "site"].includes(model);
-    const user = license && (model === "per_user" || flexible && $("inventory-relation-recipient-kind").value === "user");
-    $("inventory-relation-recipient").hidden = !flexible;
-    $("inventory-relation-recipient-kind").disabled = !flexible;
-    $("inventory-relation-target").hidden = user;
-    $("inventory-relation-assignee-field").hidden = !user;
-    $("inventory-relation-assignee").disabled = !user; $("inventory-relation-assignee").required = user;
+    const license = type === "licensed_to";
+    const kinds = !license || model === "per_device" ? ["device"] : model === "per_user" ? ["person", "identity", "legacy"] : ["device", "person", "identity", "legacy"];
+    const recipient = $("inventory-relation-recipient-kind"), previous = recipient.value;
+    recipient.replaceChildren(...kinds.map((kind) => new Option(({ device: t("Dispositivo"), person: t("Persona"), identity: t("Identità"), legacy: t("Testo libero precedente") })[kind], kind)));
+    recipient.value = kinds.includes(previous) ? previous : kinds[0];
+    const structured = license && ["person", "identity"].includes(recipient.value), legacy = license && recipient.value === "legacy", device = !structured && !legacy;
+    $("inventory-relation-recipient").hidden = !license || kinds.length < 2; recipient.disabled = !license || kinds.length < 2;
+    $("inventory-relation-target").hidden = !device; $("inventory-relation-subject-field").hidden = !structured;
+    $("inventory-relation-subject-pick").disabled = state.inventoryRelationBusy || state.inventoryRelationConflict;
+    $("inventory-relation-subject-label").textContent = inventoryRecipientSelections.relation ? inventorySubjectLabel(recipient.value, inventoryRecipientSelections.relation) : t("Seleziona un destinatario.");
+    $("inventory-relation-assignee-field").hidden = !legacy;
+    $("inventory-relation-assignee").disabled = !legacy; $("inventory-relation-assignee").required = legacy;
     $("inventory-relation-quantity-field").hidden = !license; $("inventory-relation-quantity").disabled = !license;
     $("inventory-relation-version-field").hidden = type !== "installed_on"; $("inventory-relation-installed-version").disabled = type !== "installed_on";
     $("inventory-relation-ports").hidden = type !== "connected_to";
     $("inventory-relation-source-port").disabled = type !== "connected_to"; $("inventory-relation-target-port").disabled = type !== "connected_to";
     const picker = inventoryPickers.get("inventory-relation-picker"), types = type === "connected_to" ? ["network_device"] : ["it_device", "network_device"];
     if (picker.types.join() !== types.join()) picker.setTypes(types);
-    picker.enabled = !user; picker.choice.required = !user; picker.render();
+    picker.enabled = device; picker.choice.required = device; picker.render();
     $("inventory-relation-fields").disabled = state.inventoryRelationBusy || state.inventoryRelationConflict;
     $("inventory-relation-save").disabled = state.inventoryRelationBusy || state.inventoryRelationConflict || !isInventoryManager();
     $("inventory-relation-cancel").disabled = state.inventoryRelationBusy;
@@ -4088,6 +5290,7 @@
       item.append(heading, node("p", "inventory-relation-summary", inventoryRelationSummary(relation)));
       if (relation.notes) item.append(node("p", "inventory-history-summary", relation.notes));
       const actions = node("div", "inventory-row-actions");
+      if (relation.subject_kind && relation.subject_id) { const open = action(t("Apri anagrafica"), t("Apri anagrafica"), () => { if (!state.inventoryRelationBusy) openInventorySubjectDetail(relation.subject_kind, relation.subject_id); }); open.disabled = state.inventoryRelationBusy; actions.append(open); }
       if (counterpart) { const open = action(t("Apri scheda collegata"), t("Apri ") + counterpart.name, () => { if (!state.inventoryRelationBusy) openInventoryDetail(counterpart.id); }); open.disabled = state.inventoryRelationBusy; actions.append(open); }
       if (outgoing && isInventoryManager()) {
         const remove = action(t("Rimuovi relazione"), t("Rimuovi ") + inventoryRelationNames[relation.relation_type], () => {
@@ -4157,7 +5360,7 @@
       const data = await post(path, payload); if (!current()) return;
       state.inventoryDetailAsset = inventoryRemember(data.asset);
       $("inventory-detail-data").replaceChildren(inventoryDetails(data.asset));
-      $("inventory-relation-form").hidden = true; $("inventory-relation-form").reset();
+      $("inventory-relation-form").hidden = true; $("inventory-relation-form").reset(); inventoryRecipientSelections.relation = null;
       const picker = inventoryPickers.get("inventory-relation-picker"); picker.setSelected(null);
       showNotice(removing ? t("Relazione rimossa e conservata nello storico.") : t("Relazione aggiunta all’inventario."));
       loadInventoryRelations(); loadInventoryHistory(); refreshInventory();
@@ -4178,24 +5381,26 @@
   inventoryShowTypeFields();
   $("inventory-relation-new").addEventListener("click", () => {
     if (!isInventoryManager() || state.inventoryRelationBusy || !state.inventoryDetailAsset || busyDialogs.has("inventory-detail-dialog")) return;
+    inventoryRecipientSelections.relation = null; $("inventory-relation-recipient-kind").value = state.inventoryDetailAsset.details?.license_model === "per_user" ? "person" : "device";
     $("inventory-relation-form").hidden = false; inventoryRelationControls();
     inventoryPickers.get("inventory-relation-picker").load(); $("inventory-relation-type").focus();
   });
   $("inventory-relation-cancel").addEventListener("click", () => { if (!state.inventoryRelationBusy) $("inventory-relation-form").hidden = true; });
   $("inventory-relation-type").addEventListener("change", inventoryRelationControls);
-  $("inventory-relation-recipient-kind").addEventListener("change", inventoryRelationControls);
+  $("inventory-relation-recipient-kind").addEventListener("change", () => { inventoryRecipientSelections.relation = null; inventoryRelationControls(); });
   $("inventory-relations-retry").addEventListener("click", () => loadInventoryRelations(state.inventoryRelationsRetryMore));
   $("inventory-relations-more").addEventListener("click", () => loadInventoryRelations(true));
   $("inventory-relation-reload").addEventListener("click", reloadInventoryRelationSource);
   $("inventory-relation-form").addEventListener("submit", (event) => {
     event.preventDefault(); if (!isInventoryManager() || state.inventoryRelationBusy || state.inventoryRelationConflict) return;
-    const type = $("inventory-relation-type").value, picker = inventoryPickers.get("inventory-relation-picker"), user = !$("inventory-relation-assignee").disabled;
-    picker.choice.setCustomValidity(!user && !picker.selected ? t("Seleziona un dispositivo destinatario.") : "");
+    const type = $("inventory-relation-type").value, picker = inventoryPickers.get("inventory-relation-picker"), kind = type === "licensed_to" ? $("inventory-relation-recipient-kind").value : "device";
+    picker.choice.setCustomValidity(kind === "device" && !picker.selected ? t("Seleziona un dispositivo destinatario.") : "");
+    if (["person", "identity"].includes(kind) && !inventoryRecipientSelections.relation) { dialogError("inventory-relation-error", new Error(t("Seleziona un destinatario."))); return; }
     const inputs = ["assignee", "installed-version", "source-port", "target-port", "notes"];
     inputs.forEach((name) => { const input = $("inventory-relation-" + name); if (!input.disabled) { input.value = input.value.trim(); input.setCustomValidity(input.maxLength > 0 && new TextEncoder().encode(input.value).length > input.maxLength ? t("Accorcia il contenuto di questo campo.") : ""); } });
     if (!$("inventory-relation-form").reportValidity()) return;
     const fields = { relation_type: type, notes: $("inventory-relation-notes").value };
-    if (user) fields.assignee = $("inventory-relation-assignee").value; else fields.target_id = String(picker.selected.id);
+    if (kind === "legacy") fields.assignee = $("inventory-relation-assignee").value; else if (["person", "identity"].includes(kind)) fields[kind + "_id"] = String(inventoryRecipientSelections.relation.id); else fields.target_id = String(picker.selected.id);
     if (type === "licensed_to") fields.quantity = $("inventory-relation-quantity").value;
     if (type === "installed_on") fields.installed_version = $("inventory-relation-installed-version").value;
     if (type === "connected_to") { fields.source_port = $("inventory-relation-source-port").value; fields.target_port = $("inventory-relation-target-port").value; }
@@ -4444,6 +5649,8 @@
     const openBlockers = state.workBlockers.filter((item) => String(item.task_id) === String(task.id) && item.status !== "resolved").length;
     if (openBlockers) card.append(node("p", "work-card-meta", `${openBlockers} ${openBlockers === 1 ? t("blocco aperto") : t("blocchi aperti")}`));
     const actions = node("div", "work-card-actions");
+    const timeJob = state.jobs.find((job) => String(job.id) === String(state.workJobId));
+    if (timeJob && canLogTime(timeJob)) actions.append(action(t("Registra ore"), t("Registra ore per l’attività ") + task.title, () => openEntry(null, timeJob.id, task.id)));
     if (task.can_edit) {
       actions.append(action(t("Modifica"), t("Modifica l’attività ") + task.title, () => openWorkTask(task)));
       actions.append(action(t("+ Sottoattività"), t("Aggiungi una sottoattività a ") + task.title, () => openWorkTask(null, task.id)));
@@ -4905,6 +6112,7 @@
     event.preventDefault();
     if ($("entry-id").value && !requirePermission("edit_time_entries")) return;
     if (busyDialogs.has("entry-dialog")) return;
+    if (state.entryTaskLoading) { dialogError("entry-error", new Error(t("Attendi il caricamento delle attività, poi riprova."))); return; }
     $("entry-hours").setCustomValidity("");
     $("entry-hours").removeAttribute("aria-invalid");
     if (!$("entry-form").reportValidity()) return;
@@ -4918,12 +6126,15 @@
     if (!validDate($("entry-date").value)) { dialogError("entry-error", new Error(t("Scegli una giornata lavorativa valida."))); return; }
     const id = $("entry-id").value;
     const fields = { job_id: $("entry-job").value, date: $("entry-date").value, minutes, note: $("entry-note").value.trim() };
+    fields.task_id = $("entry-task").value;
+    if (id && state.editingTimeEntry?.revision !== undefined) fields.revision = state.editingTimeEntry.revision;
     $("entry-error").hidden = true;
     dialogBusy("entry-dialog", true, "entry-save", id ? t("Salva modifiche") : t("Salva ore"));
     try {
       await post("/api/time-entries" + (id ? "/" + encodeURIComponent(id) : ""), fields);
       state.auditReady = false;
       $("entry-dialog").close();
+      timeWorkflow.userId = ""; renderHoursTeam();
       state.selectedDate = fields.date;
       $("entry-date-filter").value = fields.date;
       selectTab("hours");
@@ -4957,6 +6168,10 @@
     }
   });
 
+  $("hours-team-user").addEventListener("change", () => { timeWorkflow.userId = $("hours-team-user").value; renderHoursTeam(); refreshEntries(); });
+  $("hours-team-retry").addEventListener("click", refreshHoursTeam);
+  $("access-groups-form").addEventListener("submit", saveAccessProfiles);
+  $("access-groups-retry").addEventListener("click", loadAccessProfiles);
   $("user-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!requirePermission("manage_users") || busyDialogs.has("user-dialog")) return;
@@ -5080,7 +6295,7 @@
   $("edit-group").addEventListener("click", () => { if (state.selectedGroup) openGroup(state.selectedGroup); });
   $("new-job-role").addEventListener("click", () => openJobRole());
   $("delete-group").addEventListener("click", () => {
-    if (!state.selectedGroup) return;
+    if (!requireGroupEditing() || !state.selectedGroup) return;
     const group = state.selectedGroup;
     confirmOrganization(t("Eliminare il gruppo {0}? È possibile eliminare solo gruppi senza membri, sottogruppi o abilitazioni alle commesse.", [group.name]), async () => {
       await api(`/api/groups/${encodeURIComponent(group.id)}`, { method: "DELETE" });
@@ -5094,7 +6309,7 @@
     $("organization-confirm").hidden = true;
   });
   $("organization-confirm-save").addEventListener("click", async () => {
-    if (!requirePermission("manage_groups") || state.organizationBusy || !state.organizationConfirm) return;
+    if (!requireGroupEditing() || state.organizationBusy || !state.organizationConfirm) return;
     const operation = state.organizationConfirm;
     $("organization-error").hidden = true;
     setOrganizationBusy(true);
@@ -5111,7 +6326,7 @@
   });
   $("group-member-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!requirePermission("manage_groups") || state.organizationBusy || !state.selectedGroup || !state.groupMembersReady || !$("group-member-form").reportValidity()) return;
+    if (!requireGroupEditing() || state.organizationBusy || !state.selectedGroup || !state.groupMembersReady || !$("group-member-form").reportValidity()) return;
     const groupId = state.selectedGroup.id;
     const userId = $("group-member-user").value;
     $("group-members-error").hidden = true;
@@ -5127,7 +6342,7 @@
   });
   $("group-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!requirePermission("manage_groups") || busyDialogs.has("group-dialog")) return;
+    if (!requireGroupEditing() || busyDialogs.has("group-dialog")) return;
     $("group-name").value = $("group-name").value.trim();
     if (!$("group-form").reportValidity()) return;
     const id = $("group-id").value;
@@ -5353,7 +6568,7 @@
   });
   $("labor-rate-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!isReportManager() || busyDialogs.has("labor-rate-dialog")) return;
+    if (!can("manage_labor_rates") || busyDialogs.has("labor-rate-dialog")) return;
     const editing = state.editingLaborRate;
     $("labor-rate-hourly").setCustomValidity("");
     $("labor-rate-to").setCustomValidity("");
@@ -5372,16 +6587,16 @@
     dialogBusy("labor-rate-dialog", true, "labor-rate-save", editing ? t("Salva modifiche") : t("Crea tariffa"));
     try {
       await post("/api/labor-rates" + (editing ? "/" + encodeURIComponent(editing.id) : ""), fields);
-      if (!isReportManager()) return;
+      if (!can("manage_labor_rates")) return;
       state.auditReady = false;
       $("labor-rate-dialog").close();
       showNotice(editing ? t("Tariffa aggiornata. Le stime sono state ricalcolate.") : t("Tariffa creata. Le ore nel periodo di validità sono ora valorizzate."));
       await Promise.all([refreshReports(), refreshLaborRates()]);
     } catch (error) {
-      if (isReportManager() && $("labor-rate-dialog").open) dialogError("labor-rate-error", error);
+      if (can("manage_labor_rates") && $("labor-rate-dialog").open) dialogError("labor-rate-error", error);
     } finally {
       dialogBusy("labor-rate-dialog", false, "labor-rate-save", editing ? t("Salva modifiche") : t("Crea tariffa"));
-      $("labor-rate-user").disabled = Boolean(editing) || !isReportManager();
+      $("labor-rate-user").disabled = Boolean(editing) || !can("manage_labor_rates");
     }
   });
 
@@ -5431,6 +6646,8 @@
   $("user-dialog").addEventListener("close", () => { $("user-form").reset(); $("user-password").value = ""; $("user-password").setCustomValidity(""); });
   $("user-password").addEventListener("input", () => $("user-password").setCustomValidity(""));
   $("entry-hours").addEventListener("input", () => { $("entry-hours").setCustomValidity(""); $("entry-hours").removeAttribute("aria-invalid"); });
+  $("entry-job").addEventListener("change", () => loadEntryTasks());
+  $("entry-task-retry").addEventListener("click", () => loadEntryTasks(state.entryTaskDesired || ""));
   ["new-job", "empty-new-job"].forEach((id) => $(id).addEventListener("click", () => { state.openEntryAfterJob = false; openJob(); }));
   ["new-entry", "panel-new-entry", "empty-new-entry"].forEach((id) => $(id).addEventListener("click", () => openEntry()));
   $("new-user").addEventListener("click", () => openUser());
@@ -5448,15 +6665,81 @@
   });
   $("job-search").addEventListener("input", renderJobs);
   $("job-filter").addEventListener("change", renderJobs);
+  $("jobs-show-archived").addEventListener("change", renderJobs);
+  $("my-work-refresh").addEventListener("click", refreshMyWork);
+  $("my-work-log").addEventListener("click", () => { state.selectedDate = localDate(new Date()); $("entry-date-filter").value = state.selectedDate; selectTab("hours"); openEntry(); });
+  $("my-work-assets").addEventListener("click", () => { $("inventory-search-form").reset(); $("inventory-mine").checked = true; state.inventoryAttention = ""; inventorySubjectFilter = null; selectTab("inventory"); refreshInventory(); });
+  $("my-work-corrections").addEventListener("click", () => { selectTab("hours"); $("time-corrections-title").tabIndex = -1; $("time-corrections-title").focus(); $("time-corrections-title").scrollIntoView({ block: "start" }); });
+  $("my-work-notifications").addEventListener("click", () => selectTab("notifications"));
+  $("job-overview-retry").addEventListener("click", loadJobOverview);
+  $("job-overview-dialog").addEventListener("close", () => { workspaceFlows.overviewRequest++; workspaceFlows.overviewJob = null; });
+  $("job-access-user").addEventListener("change", loadJobAccess);
+  $("job-access-retry").addEventListener("click", loadJobAccess);
+  $("job-access-dialog").addEventListener("close", () => { workspaceFlows.accessRequest++; workspaceFlows.accessJob = null; });
+  $("job-wizard-open").addEventListener("click", openJobWizard);
+  $("job-wizard-retry").addEventListener("click", loadJobWizardCatalogues);
+  $("job-wizard-template-apply").addEventListener("click", applyJobWizardTemplate);
+  $("job-wizard-user-add").addEventListener("click", () => addWizardTeam("user"));
+  $("job-wizard-group-add").addEventListener("click", () => addWizardTeam("group"));
+  $("job-wizard-task-add").addEventListener("click", addWizardTask);
+  $("job-wizard-next").addEventListener("click", () => { const wizard = workspaceFlows.wizard; if (wizard.ready && wizard.step < 3 && wizardValidateStep(wizard.step)) { wizard.step++; renderJobWizardStep(); $("job-wizard-step-" + wizard.step).querySelector("input,select,button")?.focus(); } });
+  $("job-wizard-back").addEventListener("click", () => { if (workspaceFlows.wizard.step > 0 && !workspaceFlows.wizard.createdId) { workspaceFlows.wizard.step--; renderJobWizardStep(); } });
+  $("job-wizard-form").addEventListener("submit", saveJobWizard);
+  $("job-wizard-dialog").addEventListener("close", () => { workspaceFlows.wizard.request++; });
+  $("work-schedules-refresh").addEventListener("click", refreshWorkSchedules);
+  $("work-schedules-user").addEventListener("change", refreshWorkSchedules);
+  $("work-schedule-add").addEventListener("click", () => openWorkSchedule("schedule"));
+  $("work-exception-add").addEventListener("click", () => openWorkSchedule("exception"));
+  $("work-holiday-add").addEventListener("click", () => openWorkSchedule("holiday"));
+  $("work-schedule-form").addEventListener("submit", saveWorkSchedule);
+  $("work-schedule-delete-form").addEventListener("submit", deleteWorkSchedule);
+  $("work-notifications-refresh").addEventListener("click", refreshWorkNotifications);
+  $("hours-view-day").addEventListener("click", () => { if (timeWorkflow.view !== "day") { timeWorkflow.view = "day"; updateTimeWorkflowControls(); refreshEntries(); } });
+  $("hours-view-week").addEventListener("click", () => { if (timeWorkflow.view !== "week") { timeWorkflow.view = "week"; updateTimeWorkflowControls(); refreshEntries(); } });
+  $("hours-batch-open").addEventListener("click", () => openHoursBatch());
+  $("hours-copy-week").addEventListener("click", copyPreviousHoursWeek);
+  $("hours-batch-add").addEventListener("click", () => { if (busyDialogs.has("hours-batch-dialog") || timeWorkflow.batchRows.length >= 100) return; timeWorkflow.batchRows.push({ job_id: "", date: state.selectedDate, minutes: 60, note: "", key: ++timeWorkflow.batchSequence }); renderHoursBatch(); $("hours-batch-rows").lastElementChild?.querySelector("select")?.focus(); });
+  $("hours-batch-form").addEventListener("submit", saveHoursBatch);
+  $("time-corrections-refresh").addEventListener("click", refreshTimeCorrections);
+  $("time-correction-form").addEventListener("submit", saveTimeCorrection);
+  $("time-correction-delete").addEventListener("change", () => { $("time-correction-fields").disabled = $("time-correction-delete").checked; });
+  $("time-correction-hours").addEventListener("input", () => $("time-correction-hours").setCustomValidity(""));
+  $("time-decision-form").addEventListener("submit", saveTimeDecision);
+  $("job-lifecycle-form").addEventListener("submit", saveJobLifecycle);
+  $("job-lifecycle-retry").addEventListener("click", loadJobLifecycle);
+  $("job-lifecycle-action").addEventListener("change", updateJobLifecycleHelp);
+  $("job-lifecycle-dialog").addEventListener("close", () => { timeWorkflow.lifecycleRequest++; timeWorkflow.lifecycle = null; timeWorkflow.lifecycleJob = null; });
   $("clear-filters").addEventListener("click", () => { $("job-search").value = ""; $("job-filter").value = ""; renderJobs(); $("job-search").focus(); });
   $("entry-date-filter").value = state.selectedDate;
   $("entry-date-filter").addEventListener("change", () => {
     if (validDate($("entry-date-filter").value)) setDate($("entry-date-filter").value);
     else $("entry-date-filter").value = state.selectedDate;
   });
-  $("previous-day").addEventListener("click", () => moveDay(-1));
-  $("next-day").addEventListener("click", () => moveDay(1));
+  $("previous-day").addEventListener("click", () => moveDay(timeWorkflow.view === "week" ? -7 : -1));
+  $("next-day").addEventListener("click", () => moveDay(timeWorkflow.view === "week" ? 7 : 1));
   $("go-today").addEventListener("click", () => setDate(localDate(new Date())));
+  $("calendar-ticket-job").addEventListener("change", renderCalendarTickets);
+  $("calendar-refresh").addEventListener("click", () => refreshCalendar(true));
+  $("calendar-connect").addEventListener("click", () => calendarAction("oauth/start"));
+  $("calendar-sync").addEventListener("click", () => calendarAction("sync"));
+  $("calendar-disconnect").addEventListener("click", () => $("calendar-disconnect-dialog").showModal());
+  $("calendar-disconnect-confirm").addEventListener("click", () => calendarAction("disconnect"));
+  $("calendar-selection").addEventListener("submit", (event) => { event.preventDefault(); if ($("calendar-choice").value) calendarAction("selection", { calendar_id: $("calendar-choice").value }); });
+  $("calendar-choice").addEventListener("change", renderCalendarStatus);
+  $("calendar-calendars-more").addEventListener("click", async () => { if (calendar.busy || !calendar.calendarCursor) return; calendar.busy = true; renderCalendarStatus(); try { await loadCalendarCatalog(calendar.request, true); } catch (error) { $("calendar-error").textContent = calendarError(error); $("calendar-error").hidden = false; } finally { calendar.busy = false; renderCalendarStatus(); } });
+  $("calendar-events-more").addEventListener("click", async () => { if (calendar.loading || !calendar.cursor) return; calendar.loading = true; $("calendar-events-more").disabled = true; try { await loadCalendarEvents(calendar.request, true); } catch (error) { $("calendar-error").textContent = calendarError(error); $("calendar-error").hidden = false; } finally { calendar.loading = false; $("calendar-events-more").disabled = false; } });
+  function changeCalendarWeek(days, selected = null) {
+    calendar.request++; calendar.loading = false; calendar.events = []; calendar.cursor = null;
+    const next = new Date(calendar.date + "T12:00:00"); next.setDate(next.getDate() + days);
+    calendar.date = selected || localDate(next); renderCalendarEvents(); refreshCalendar();
+  }
+  $("calendar-previous").addEventListener("click", () => changeCalendarWeek(-7));
+  $("calendar-next").addEventListener("click", () => changeCalendarWeek(7));
+  $("calendar-today").addEventListener("click", () => changeCalendarWeek(0, localDate(new Date())));
+  $("calendar-date").addEventListener("change", () => { if (validDate($("calendar-date").value)) changeCalendarWeek(0, $("calendar-date").value); });
+  $("ticket-calendar-consent-allow").addEventListener("click", async () => { if (!calendar.consentState || state.ticketConnecting) return; $("ticket-calendar-consent-allow").disabled = true; busyDialogs.add("ticket-calendar-consent"); try { await connectTicketSession(calendar.consentState, true); } finally { busyDialogs.delete("ticket-calendar-consent"); $("ticket-calendar-consent-allow").disabled = false; } });
+  $("ticket-calendar-consent").addEventListener("close", () => { calendar.consentState = null; if (location.hash.startsWith("#ticket-connect")) { history.replaceState(null, "", "#calendar"); state.routeHash = location.hash; } });
+  window.setInterval(() => { if (state.session?.authenticated && state.activeTab === "calendar" && calendar.status?.connected && !document.hidden && !calendar.loading && !calendar.busy) refreshCalendar(); }, 10000);
   $("notice-close").addEventListener("click", () => { $("notice").hidden = true; clearTimeout(noticeTimer); });
   $("retry-load").addEventListener("click", refreshAll);
   $("logout").addEventListener("click", async () => {
@@ -5468,7 +6751,7 @@
   const updateTabOrientation = () => document.querySelector(".app-navigation").setAttribute("aria-orientation", mobileNavigation.matches ? "horizontal" : "vertical");
   updateTabOrientation();
   mobileNavigation.addEventListener("change", updateTabOrientation);
-  window.setInterval(() => { if (state.session?.authenticated && !document.hidden) refreshNotifications(); }, 60000);
+  window.setInterval(() => { if (state.session?.authenticated && !document.hidden) { refreshNotifications(); refreshWorkNotifications(); } }, 60000);
 
   async function initialize() {
     try {
@@ -5479,8 +6762,15 @@
       try {
         const pending = JSON.parse(sessionStorage.getItem("punto.ticket.return") || "null");
         sessionStorage.removeItem("punto.ticket.return");
-        if (!location.hash && pending && Date.now() - pending.at < 600000 && (/^#ticket-connect\?state=[a-f0-9]{64}$/.test(pending.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(pending.hash))) history.replaceState(null, "", location.pathname + pending.hash);
+        if (!location.hash && pending && Date.now() - pending.at < 600000 && (/^#ticket-connect\?state=[a-f0-9]{64}(?:&calendar=1)?$/.test(pending.hash) || /^#(?:jobs\?job_id|inventory\?asset_id)=[1-9]\d*$/.test(pending.hash) || pending.hash === "#calendar")) history.replaceState(null, "", location.pathname + pending.hash);
       } catch { /* Il ripristino del collegamento è facoltativo. */ }
+      const calendarCallback = new URL(location.href);
+      if (calendarCallback.searchParams.has("calendar")) {
+        const success = calendarCallback.searchParams.get("calendar") === "connected";
+        calendarCallback.searchParams.delete("calendar"); calendarCallback.hash = "calendar";
+        history.replaceState(null, "", calendarCallback);
+        showNotice(success ? t("Google Calendar collegato. Scegli il calendario da sincronizzare.") : t("Collegamento Google non completato. Riprova dalla sezione Calendario."), !success);
+      }
       applyReportRoute();
       await refreshAll();
     } catch (error) {

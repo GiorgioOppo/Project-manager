@@ -2,7 +2,7 @@
 
 [Italiano](../../prod/guida-utente.md) | **English**
 
-This guide describes the **Operator** journey in the current interface. Administrative actions are in the [manager guide](guida-gestore.md). Bold names correspond to command labels.
+This guide describes the **Operator** journey in the current interface. For weekly time logs, corrections, task-linked hours and the personal view, see the [improved operational workflows](flussi-operativi.md). Administrative actions are in the [manager guide](guida-gestore.md). Bold names correspond to command labels.
 
 ## Sign in and out
 
@@ -22,7 +22,9 @@ Your name, email and profile appear at the top. Use **Sign out** when finished. 
 | --- | --- |
 | **Projects** | View projects you can access and their status |
 | **Tasks and blockers** | View the project board, update assigned tasks and report obstacles when authorized |
-| **Time log** | Enter and view your time by day |
+| **Time log** | Enter and view your time by day or week, copy the previous week and request corrections |
+| **My day** | Find assigned tasks, blockers and today’s hours |
+| **Schedules and absences** | View personal schedules, absences and holidays configured by the manager |
 | **Analysis** | Summarize personal hours over an interval, by project or by user |
 | **Notifications** | Read alerts addressed to your account |
 
@@ -40,7 +42,7 @@ On small screens, tables may scroll horizontally within their containers. Window
 
 The list shows only currently authorized projects and those shared by everyone. A project assigned with **Viewer** role can be viewed but not used for new entries. **Contributor**, or an equivalent manager-configured role, also allows logging hours.
 
-Hours shown in the project list are **your total hours** across all dates. For a period total, use Analysis. Project status alone does not determine whether hours can be logged: if company procedure requires a block, the manager must change grants.
+Hours shown in the project list are **your total hours** across all dates. For a period total, use Analysis. Status labels alone do not block hours; closing or archiving a project prevents new entries while preserving history.
 
 ## Follow tasks and obstacles
 
@@ -53,7 +55,7 @@ Hours shown in the project list are **your total hours** across all dates. For a
 
 Viewer allows viewing only. Losing authorization prevents updating a task even if you are still named as owner. The manager can reassign it. Task and blocker descriptions are shared with anyone who can read that project.
 
-Task, child-task and blocker statuses do not update one another: resolving a blocker does not automatically move the task. Hours are still logged against the project; **Work done / note** is free text and does not link the entry to a board card.
+Task, child-task and blocker statuses do not update one another: resolving a blocker does not automatically move the task. Hours belong to the project and can optionally link one of its tasks. **Work done / note** remains free text.
 
 If someone else has already saved a change, the app reports a conflict. Do not repeat saving the old version: use **Close and reload the updated version**, check current content and reapply still-needed edits. The closed draft is not retained. **Refresh** reloads the project's tasks and blockers.
 
@@ -97,9 +99,9 @@ Shared projects do not require a personal grant and remain available to users ad
 3. Press **Today** to return to the browser's current day.
 4. Read entries and the daily total.
 
-The log remains personal. If you lose authorization for a project, your saved entries remain viewable while the project exists. Permanent project deletion by the manager instead also removes all linked hours, tasks and blockers.
+The log starts with your own hours. Managers can select a member of their team to view their day and week read-only; they cannot directly edit other people’s rows. If you lose authorization for a project, your saved entries remain viewable while the project exists. Permanent project deletion by the manager instead also removes all linked hours, tasks and blockers.
 
-As Operator, you cannot edit or delete a saved entry. If there is an error, contact the manager with date, project, duration and requested correction. Do not add a second row to simulate a correction: it would increase the total. Correction requests and approval are still planned; the manager currently has no generic editor for other people's hours.
+As Operator, use **Request correction** on a personal entry to propose a correction or deletion with a reason. The request does not change hours until a manager other than its author approves it. The queue preserves the original, proposal, decision and conflicts. Do not add a second row to simulate a correction: it would increase the total. The manager has no generic editor for other people’s hours.
 
 ## Analyze your work
 
@@ -128,7 +130,7 @@ The latest 100 accessible notifications are shown. The counter indicates unread 
 Available checks are:
 
 - **Project does not exist**: an attempt to save hours against a nonexistent or deleted project was rejected; those hours were not saved.
-- **Missing daily hours**: a Monday–Friday day has fewer than 8 hours after the specified grace period. The rule does not yet consider public holidays, leave or part-time work.
+- **Missing daily hours**: a day has fewer minutes than expected after the specified grace period. The check considers individual schedules, holidays and personal exceptions; without configuration it uses 8 hours Monday–Friday.
 
 Reading does not automatically correct an entry or delete a notification. The message preserves the context detected when the check ran. If you later added hours, compare the notification with the updated log.
 
@@ -145,8 +147,8 @@ Reading does not automatically correct an entry or delete a notification. The me
 | Conflict editing tasks or blockers | Reload the updated version and compare it with your edits; the previous version is not overwritten |
 | Duration rejected | Use whole minutes, check format and the total already present that day |
 | Session ended | Sign in again; an unconfirmed draft is not a saved entry |
-| Error or delay while saving | Before repeating submission, check whether the row already appeared in the log; time entry does not yet have the general deduplication planned on the roadmap |
-| 8-hour alert during leave or public holidays | The current check uses a fixed threshold: report the context to the manager without entering work not performed |
+| Error or delay while saving | For a single entry, check the log before submitting again. Weekly multiple-entry saving retains a receipt to recognize repeated attempts for the same request |
+| Missing-hours alert during leave or public holidays | Check Schedules and absences and report missing configuration to the manager; do not enter work not performed |
 | Missing Calendar screen | Synchronization is provided through APIs, but the screen and event–project link remain to be implemented |
 
-Complete rules are in [Processes and rules](processi-e-regole.md). The [roadmap](roadmap.md) lists planned developments for a weekly grid, copying, corrections and calendar.
+Complete rules are in [Processes and rules](processi-e-regole.md). The [improved operational workflows](flussi-operativi.md) explain the weekly grid, copying the previous week, corrections and schedules. The [roadmap](roadmap.md) distinguishes extensions still planned.

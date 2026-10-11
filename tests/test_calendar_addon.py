@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import shutil
 import socket
 import socketserver
@@ -104,6 +105,7 @@ class FakeGoogle:
         self.drop_mutation_ack = False
         self.tokens = []
         self.primary_calendar_id = "primary@example.test"
+        self.additional_calendar_ids = set()
         fixture = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -137,7 +139,7 @@ class FakeGoogle:
                     return self.reply(200, {"id": fixture.primary_calendar_id, "primary": True, "accessRole": "owner"})
                 if record["path"].startswith("/calendar/v3/users/me/calendarList/"):
                     identifier = record["path"].rsplit("/", 1)[1]
-                    if identifier not in ("primary@example.test", "readonly@example.test"):
+                    if identifier not in ("primary@example.test", "readonly@example.test") and identifier not in fixture.additional_calendar_ids:
                         return self.reply(404, {"error": {"code": 404}})
                     return self.reply(200, {"id": identifier, "summary": "Calendario",
                                            "accessRole": "reader" if identifier.startswith("readonly") else "owner"})
@@ -249,6 +251,37 @@ class CalendarAddonTests(unittest.TestCase):
         subprocess.run(["make", "-C", str(ROOT / "calendar-addon")], check=True, capture_output=True, text=True)
         cls.certificates = tempfile.TemporaryDirectory(prefix="punto-calendar-certs-")
         cls.addClassCleanup(cls.certificates.cleanup)
+        # Produce real schema-one AES-GCM ciphertext, using the historical AAD.
+        helper = Path(cls.certificates.name) / "legacy_payload.c"
+        helper.write_text('#define main calendar_service_main\n#include "' + str(ROOT / "calendar-addon/src/calendar.c") + '"\n#undef main\n' + r'''
+int main(int argc, char **argv) {
+    if (argc != 4) return 2;
+    memset(config.encryption_key, 0xab, sizeof(config.encryption_key));
+    FILE *file = fopen(argv[1], "rb");
+    if (!file || fseek(file, 0, SEEK_END)) return 3;
+    long size = ftell(file);
+    if (size < 29 || size > RESPONSE_LIMIT || fseek(file, 0, SEEK_SET)) return 4;
+    void *input = malloc((size_t)size);
+    if (!input || fread(input, 1, (size_t)size, file) != (size_t)size) return 5;
+    fclose(file);
+    char *plain = unseal(1, argv[2], input, (int)size);
+    free(input);
+    if (!plain) return 6;
+    int length = 0;
+    char *output = seal(1, argv[3], plain, &length);
+    OPENSSL_cleanse(plain, strlen(plain)); free(plain);
+    if (!output) return 7;
+    file = fopen(argv[1], "wb");
+    bool ok = file && fwrite(output, 1, (size_t)length, file) == (size_t)length;
+    if (file) fclose(file);
+    free(output);
+    return ok ? 0 : 8;
+}
+''', encoding="utf-8")
+        cls.legacy_helper = Path(cls.certificates.name) / "legacy-payload"
+        flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "json-c", "openssl"], text=True))
+        subprocess.run(["cc", "-D_POSIX_C_SOURCE=200809L", "-std=c11", str(helper), "-o", str(cls.legacy_helper),
+                        *flags, "-lcurl", "-lsqlite3", "-pthread"], check=True, capture_output=True, text=True)
         cls.cert, cls.key = create_certificate(cls.certificates.name, "calendar")
         cls.other_ca, _ = create_certificate(cls.certificates.name, "other-ca")
         cls.wrong_cert, cls.wrong_key = create_certificate(cls.certificates.name, "wrong-name", "wrong-calendar.invalid")
@@ -554,6 +587,206 @@ class CalendarAddonTests(unittest.TestCase):
         self.assertEqual(deletes[0]["if_match"], '"etag-written"')
         self.assertNotIn(identifier, [row["id"] for row in self.cached_events()])
 
+    def test_exact_cached_event_lookup_is_private_and_does_not_contact_provider(self):
+        self.start()
+        self.connect()
+        self.google.events[0]["extendedProperties"] = {"private": {"hidden": "private-provider-property"}}
+        self.synchronize()
+        self.authorize(uid=2, code="second-user", binding=OTHER_BINDING)
+        self.select(uid=2)
+        before = len(self.google.requests)
+        status, value = self.user("GET", "event?event_id=remote-event")
+        self.assertEqual(status, 200, value)
+        self.assertEqual(value["calendar_id"], "primary@example.test")
+        self.assertEqual(value["event"]["id"], "remote-event")
+        self.assertEqual(value["event"]["etag"], '"etag-1"')
+        self.assertNotIn("extendedProperties", value["event"])
+        self.assertEqual(self.user("GET", "event?event_id=remote-event", uid=2)[0], 404)
+        self.assertEqual(self.user("GET", "event?event_id=missing")[0], 404)
+        self.assertEqual(len(self.google.requests), before, "Exact cache reads must not perform provider requests")
+
+    def test_exact_change_lookup_preserves_ids_and_state_across_replay_and_restart(self):
+        self.start()
+        self.connect()
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        first = {"idempotency_key": "ticket:42:create-first", "event": json.dumps(payload)}
+        status, queued = self.user("POST", "events/create", first)
+        self.assertEqual(status, 202, queued)
+        self.assertEqual(queued["calendar_id"], "primary@example.test")
+        self.assertTrue(queued["event_id"])
+        self.user("POST", "events/create", {"idempotency_key": "ticket:43:create-second", "event": json.dumps(dict(payload, summary="Secondo"))})
+        self.synchronize()
+        lookup = "change?" + urlencode({"idempotency_key": first["idempotency_key"]})
+        status, exact = self.user("GET", lookup)
+        self.assertEqual(status, 200, exact)
+        self.assertEqual((exact["id"], exact["event_id"], exact["idempotency_key"]),
+                         (queued["id"], queued["event_id"], first["idempotency_key"]))
+        self.assertEqual(exact["state"], "applied")
+        self.assertEqual(exact["calendar_id"], "primary@example.test")
+        self.assertEqual(self.user("GET", lookup, uid=2)[0], 404)
+        self.assertEqual(self.user("GET", "change?idempotency_key=missing-key")[0], 404)
+        self.stop()
+        self.start()
+        self.assertEqual(self.user("GET", lookup)[1], exact)
+        status, replay = self.user("POST", "events/create", first)
+        self.assertEqual(status, 200, replay)
+        self.assertEqual(replay["event_id"], queued["event_id"])
+        self.assertEqual(replay["calendar_id"], "primary@example.test")
+        self.synchronize()
+        self.assertEqual(len([item for item in self.google.mutations if item["method"] == "POST"]), 2)
+
+    def test_exact_lookup_queries_reject_identity_duplicates_and_invalid_references(self):
+        self.start()
+        before = len(self.google.requests)
+        for query in ("event", "event?event_id=", "event?event_id=a&event_id=b", "event?event_id=a&user_id=2",
+                      "event?event_id=bad%2Fid", "event?event_id=a&", "change", "change?idempotency_key=short",
+                      "change?idempotency_key=valid-key&%69dempotency_key=other-key",
+                      "change?idempotency_key=valid-key&user_id=2", "change?idempotency_key=bad%2Fkey"):
+            with self.subTest(query=query):
+                self.assertEqual(self.user("GET", query)[0], 400)
+        self.assertEqual(len(self.google.requests), before)
+
+    def test_operation_calendar_identity_survives_calendar_reselection(self):
+        self.start()
+        self.connect()
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        fields = {"idempotency_key": "ticket:42:original-calendar", "event": json.dumps(payload)}
+        queued = self.user("POST", "events/create", fields)[1]
+        self.synchronize()
+        self.google.additional_calendar_ids.add("alternate@example.test")
+        status, selected = self.user("POST", "selection", {"calendar_id": "alternate@example.test"})
+        self.assertEqual(status, 200, selected)
+        self.assertEqual(self.user("GET", "status")[1]["calendar_id"], "alternate@example.test")
+        query = "change?" + urlencode({"idempotency_key": fields["idempotency_key"]})
+        exact = self.user("GET", query)[1]
+        self.assertEqual(exact["calendar_id"], "primary@example.test")
+        self.assertEqual(exact["event_id"], queued["event_id"])
+        replay = self.user("POST", "events/create", fields)[1]
+        self.assertEqual(replay["calendar_id"], "primary@example.test")
+        self.assertEqual(len([item for item in self.google.mutations if item["method"] == "POST"]), 1)
+
+    def test_connection_identity_survives_restart_reauthorization_and_selection_but_changes_after_disconnect(self):
+        self.start()
+        self.assertIsNone(self.user("GET", "status")[1]["connection_id"])
+        self.connect()
+        connection = self.user("GET", "status")[1]["connection_id"]
+        self.assertRegex(connection, r"\A[0-9a-f]{64}\Z")
+        self.authorize()
+        self.assertEqual(self.user("GET", "status")[1]["connection_id"], connection)
+        self.select()
+        self.assertEqual(self.user("GET", "status")[1]["connection_id"], connection)
+        self.stop()
+        self.start()
+        self.assertEqual(self.user("GET", "status")[1]["connection_id"], connection)
+        self.assertEqual(self.user("POST", "disconnect", {})[0], 200)
+        self.assertIsNone(self.user("GET", "status")[1]["connection_id"])
+        self.connect()
+        replacement = self.user("GET", "status")[1]["connection_id"]
+        self.assertRegex(replacement, r"\A[0-9a-f]{64}\Z")
+        self.assertNotEqual(replacement, connection)
+
+    def test_schema_one_ledger_migration_preserves_rows_and_only_backfills_pending_targets(self):
+        self.start()
+        self.connect()
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        states = ("queued", "unknown", "applied", "conflict", "failed")
+        for state in states:
+            self.assertEqual(self.user("POST", "events/create", {"idempotency_key": "legacy-key-" + state,
+                                                                 "event": json.dumps(dict(payload, summary=state))})[0], 202)
+        self.synchronize()
+        self.stop()
+        with closing(sqlite3.connect(self.db)) as database:
+            for state in states:
+                database.execute("UPDATE changes SET state=?,next_attempt=? WHERE idempotency_key=?",
+                                 (state, int(time.time()) + 86400, "legacy-key-" + state))
+            for state in ("queued", "unknown"):
+                key = "legacy-key-" + state
+                payload_file = self.path / (state + ".ciphertext")
+                payload_file.write_bytes(database.execute("SELECT payload FROM changes WHERE idempotency_key=?", (key,)).fetchone()[0])
+                purpose = "change-v2:" + key + ":" + hashlib.sha256(b"primary@example.test").hexdigest()
+                subprocess.run([str(self.legacy_helper), str(payload_file), purpose, "change:" + key], check=True)
+                database.execute("UPDATE changes SET payload=? WHERE idempotency_key=?", (payload_file.read_bytes(), key))
+            # Rebuild the actual schema-one table, rather than resetting only its version.
+            database.executescript("""
+                CREATE TABLE legacy_changes(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES accounts(user_id) ON DELETE CASCADE,idempotency_key TEXT NOT NULL,payload_hash TEXT NOT NULL,operation TEXT NOT NULL,event_id TEXT NOT NULL,etag TEXT NOT NULL,payload BLOB NOT NULL,state TEXT NOT NULL CHECK(state IN ('queued','applied','conflict','failed','unknown')),response BLOB,error TEXT NOT NULL DEFAULT '',attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,UNIQUE(user_id,idempotency_key));
+                INSERT INTO legacy_changes SELECT id,user_id,idempotency_key,payload_hash,operation,event_id,etag,payload,state,response,error,attempts,next_attempt,created FROM changes;
+                DROP TABLE changes;
+                ALTER TABLE legacy_changes RENAME TO changes;
+                CREATE INDEX changes_ready ON changes(user_id,state,next_attempt,id);
+                PRAGMA user_version=1;
+            """)
+            database.execute("ALTER TABLE accounts DROP COLUMN connection_id")
+            original_accounts = database.execute("SELECT * FROM accounts ORDER BY user_id").fetchall()
+            original_changes = database.execute("SELECT * FROM changes ORDER BY id").fetchall()
+            original_events = database.execute("SELECT * FROM events ORDER BY user_id,event_id").fetchall()
+            database.commit()
+        connection = None
+        for _restart in range(2):
+            self.start()
+            current_connection = self.user("GET", "status")[1]["connection_id"]
+            self.assertRegex(current_connection, r"\A[0-9a-f]{64}\Z")
+            if connection is not None:
+                self.assertEqual(current_connection, connection)
+            connection = current_connection
+            for state in states:
+                status, value = self.user("GET", "change?idempotency_key=legacy-key-" + state)
+                self.assertEqual(status, 200, value)
+                self.assertEqual(value["state"], state)
+                self.assertEqual(value["calendar_id"], "primary@example.test" if state in ("queued", "unknown") else "")
+            self.stop()
+            with closing(sqlite3.connect(self.db)) as database:
+                self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 2)
+                self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
+                self.assertEqual(database.execute("SELECT user_id,token_blob,calendar_id,sync_token,last_sync,last_error,reauth_required,next_poll,sync_running,provider_id,generation FROM accounts ORDER BY user_id").fetchall(), original_accounts)
+                migrated = database.execute("SELECT id,user_id,idempotency_key,payload_hash,operation,event_id,etag,payload,state,response,error,attempts,next_attempt,created FROM changes ORDER BY id").fetchall()
+                self.assertEqual(migrated, original_changes,
+                                 "Schema migration must preserve ciphertext with an unauthenticated legacy calendar")
+                self.assertEqual(database.execute("SELECT * FROM events ORDER BY user_id,event_id").fetchall(), original_events)
+        with closing(sqlite3.connect(self.db)) as database:
+            database.execute("UPDATE changes SET next_attempt=0 WHERE state IN ('queued','unknown')")
+            database.commit()
+        before = len(self.google.mutations)
+        self.start()
+        self.synchronize()
+        for state in ("queued", "unknown"):
+            status, value = self.user("GET", "change?idempotency_key=legacy-key-" + state)
+            self.assertEqual(status, 200, value)
+            self.assertEqual(value["state"], "failed", value)
+            self.assertEqual(value["error"], "queue_integrity_failed", value)
+        self.assertEqual(len(self.google.mutations), before,
+                         "Legacy changes without an authenticated calendar reached the provider")
+
+    def test_guarded_mutations_reject_changed_connection_or_calendar_before_enqueue_or_replay(self):
+        self.start()
+        self.connect()
+        current = self.user("GET", "status")[1]
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        fields = {"idempotency_key": "guarded-create-key", "event": json.dumps(payload),
+                  "expected_connection_id": current["connection_id"], "expected_calendar_id": current["calendar_id"]}
+        status, queued = self.user("POST", "events/create", fields)
+        self.assertEqual(status, 202, queued)
+        self.assertEqual(self.user("POST", "events/create", fields)[0], 200)
+        self.synchronize()
+        self.google.additional_calendar_ids.add("replacement@example.test")
+        self.assertEqual(self.user("POST", "selection", {"calendar_id": "replacement@example.test"})[0], 200)
+        self.assertEqual(self.user("GET", "status")[1]["connection_id"], current["connection_id"])
+        before = len(self.google.mutations)
+        for changes in ({}, {"idempotency_key": "guarded-new-key"}):
+            status, value = self.user("POST", "events/create", {**fields, **changes})
+            self.assertEqual(status, 409, value)
+            self.assertEqual(value["error"], "calendar_target_changed")
+        self.assertEqual(self.user("GET", "change?idempotency_key=guarded-new-key")[0], 404)
+        self.assertEqual(self.user("POST", "disconnect", {})[0], 200)
+        self.connect()
+        self.assertNotEqual(self.user("GET", "status")[1]["connection_id"], current["connection_id"])
+        self.assertEqual(self.user("POST", "events/create", fields)[0], 409)
+        self.assertEqual(self.user("GET", "change?idempotency_key=guarded-create-key")[0], 404)
+        for guard, value in (("expected_connection_id", ""), ("expected_connection_id", "z" * 64),
+                             ("expected_calendar_id", "")):
+            self.assertEqual(self.user("POST", "events/create", {**fields, guard: value})[0], 400)
+        self.assertEqual(len(self.google.mutations), before)
+
     def test_etag_conflict_is_reported_without_overwriting_google(self):
         self.start()
         self.connect()
@@ -570,6 +803,173 @@ class CalendarAddonTests(unittest.TestCase):
         self.synchronize()
         self.assertEqual(len(self.google.mutations), attempts, "A terminal ETag conflict was retried")
         self.assertEqual(self.google.events[0]["summary"], "Evento privato caffè")
+
+    def test_tampered_queue_metadata_fails_before_delivery_or_reconciliation(self):
+        self.start(CALENDAR_HTTP_TIMEOUT="10")
+        self.connect()
+        # Hold the sole worker after its initial flush so queued rows can be
+        # changed deterministically before any delivery or reconciliation.
+        self.google.events_started = threading.Event()
+        self.google.events_release = threading.Event()
+        self.assertEqual(self.user("POST", "sync", {})[0], 202)
+        self.assertTrue(self.google.events_started.wait(8))
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        for state in ("queued", "unknown"):
+            for operation in ("create", "update", "delete"):
+                for column, replacement in (("operation", "update" if operation == "delete" else "delete"),
+                                            ("event_id", "altered-target"), ("etag", '"altered-etag"')):
+                    key = "tampered-%s-%s-%s" % (state, operation, column)
+                    fields = {"idempotency_key": key}
+                    if operation != "create":
+                        fields.update(event_id="remote-event", etag='"etag-1"')
+                    if operation != "delete":
+                        fields["event"] = json.dumps(payload)
+                    status, value = self.user("POST", "events/" + operation, fields)
+                    self.assertEqual(status, 202, value)
+                    with closing(sqlite3.connect(self.db)) as database:
+                        database.execute("UPDATE changes SET " + column + "=?,state=? WHERE idempotency_key=?",
+                                         (replacement, state, key))
+                        database.commit()
+            # Reproduce the full audit exploit: rewrite a create into a delete
+            # of an existing event while retaining its authentic ciphertext.
+            key = "tampered-compound-" + state
+            self.assertEqual(self.user("POST", "events/create", {
+                "idempotency_key": key, "event": json.dumps(payload)})[0], 202)
+            with closing(sqlite3.connect(self.db)) as database:
+                database.execute("UPDATE changes SET operation='delete',event_id='remote-event',"
+                                 "etag='\"etag-1\"',state=? WHERE idempotency_key=?", (state, key))
+                database.commit()
+        self.google.events_release.set()
+        self.synchronize()
+        changes = self.user("GET", "changes")[1]["items"]
+        self.assertEqual(len(changes), 20)
+        for change in changes:
+            with self.subTest(key=change["idempotency_key"]):
+                self.assertEqual(change["state"], "failed", change)
+                self.assertEqual(change["error"], "queue_integrity_failed", change)
+                self.assertEqual(change["attempts"], 0, change)
+        self.assertEqual(self.google.mutations, [], "Tampered queue metadata reached Google")
+        self.assertFalse(any("/events/" in row["path"] for row in self.google.requests),
+                         "Tampered metadata was used for reconciliation")
+        self.assertEqual([row["id"] for row in self.google.events], ["remote-event"])
+
+    def test_tampered_queue_calendar_binding_fails_before_delivery_or_reconciliation(self):
+        self.start(CALENDAR_HTTP_TIMEOUT="10")
+        self.connect()
+        self.google.events_started = threading.Event()
+        self.google.events_release = threading.Event()
+        self.assertEqual(self.user("POST", "sync", {})[0], 202)
+        self.assertTrue(self.google.events_started.wait(8))
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        for state in ("queued", "unknown"):
+            for operation in ("create", "update", "delete"):
+                key = "calendar-tamper-%s-%s" % (state, operation)
+                fields = {"idempotency_key": key}
+                if operation != "create":
+                    fields.update(event_id="remote-event", etag='"etag-1"')
+                if operation != "delete":
+                    fields["event"] = json.dumps(payload)
+                self.assertEqual(self.user("POST", "events/" + operation, fields)[0], 202)
+                with closing(sqlite3.connect(self.db)) as database:
+                    database.execute("UPDATE changes SET state=? WHERE idempotency_key=?", (state, key))
+                    database.commit()
+            key = "account-only-tamper-" + state
+            self.assertEqual(self.user("POST", "events/delete", {
+                "idempotency_key": key, "event_id": "remote-event", "etag": '"etag-1"'})[0], 202)
+            with closing(sqlite3.connect(self.db)) as database:
+                database.execute("UPDATE changes SET state=? WHERE idempotency_key=?", (state, key))
+                database.commit()
+        with closing(sqlite3.connect(self.db)) as database:
+            # Retarget both plaintext copies: comparing these columns alone
+            # cannot authenticate the calendar originally chosen at enqueue.
+            database.execute("UPDATE accounts SET calendar_id='altered-calendar@example.test'")
+            database.execute("UPDATE changes SET calendar_id='altered-calendar@example.test' "
+                             "WHERE idempotency_key LIKE 'calendar-tamper-%'")
+            database.commit()
+        self.google.events_release.set()
+        self.synchronize()
+        changes = self.user("GET", "changes")[1]["items"]
+        self.assertEqual(len(changes), 8)
+        for change in changes:
+            with self.subTest(key=change["idempotency_key"]):
+                self.assertEqual(change["state"], "failed", change)
+                expected_error = ("calendar_target_changed" if change["idempotency_key"].startswith("account-only-")
+                                  else "queue_integrity_failed")
+                self.assertEqual(change["error"], expected_error, change)
+                self.assertEqual(change["attempts"], 0, change)
+        self.assertEqual(self.google.mutations, [])
+        self.assertFalse(any("/events/" in row["path"] for row in self.google.requests),
+                         "An altered calendar was used for reconciliation")
+        self.assertEqual([row["id"] for row in self.google.events], ["remote-event"])
+
+    def test_legacy_queue_without_authenticated_calendar_binding_fails_closed(self):
+        self.start(CALENDAR_HTTP_TIMEOUT="10")
+        self.connect()
+        self.google.events_started = threading.Event()
+        self.google.events_release = threading.Event()
+        self.assertEqual(self.user("POST", "sync", {})[0], 202)
+        self.assertTrue(self.google.events_started.wait(8))
+        # Genuine v1 AES-256-GCM delete envelopes: the fixture key is ab * 32,
+        # nonce 42 * 12, and AAD is punto-calendar:v1:1:change:<key>.
+        legacy = {
+            "queued": "AUJCQkJCQkJCQkJCQuMSfYaEqs/fCC0mRPiENPt143gunUyWINkQBPyiP2I1bxbTQZQ/dNuPisR9bTKEA3PRGUwOqxcIV+HQIkG5FZlZmR/BIuGSjEgjoivHQLqOreQJjVgb5ZUhHimt3JNz",
+            "unknown": "AUJCQkJCQkJCQkJCQup0xckQ53jGIHpfEEXRi7Z143gunUyWINkQBPyiP2I1bxbTQZQ/dNuPisR9bTKEA3PRGUwOqxcIV+HQIkG5FZlZmR/BIuGSjEgjoivHQLqOreQJjVgb5ZUhHimt3JNz",
+        }
+        for state, encoded in legacy.items():
+            key = "legacy-change-" + state
+            self.assertEqual(self.user("POST", "events/delete", {
+                "idempotency_key": key, "event_id": "remote-event", "etag": '"etag-1"'})[0], 202)
+            with closing(sqlite3.connect(self.db)) as database:
+                database.execute("UPDATE changes SET payload=?,state=? WHERE idempotency_key=?",
+                                 (base64.b64decode(encoded), state, key))
+                database.commit()
+        self.google.events_release.set()
+        self.synchronize()
+        changes = self.user("GET", "changes")[1]["items"]
+        self.assertEqual(len(changes), 2)
+        for change in changes:
+            self.assertEqual(change["state"], "failed", change)
+            self.assertEqual(change["error"], "queue_integrity_failed", change)
+            self.assertEqual(change["attempts"], 0, change)
+        self.assertEqual(self.google.mutations, [])
+        self.assertFalse(any("/events/" in row["path"] for row in self.google.requests))
+        self.assertEqual([row["id"] for row in self.google.events], ["remote-event"])
+
+    def test_authentic_unknown_queue_operations_reconcile_and_deliver(self):
+        self.start(CALENDAR_HTTP_TIMEOUT="10")
+        self.google.events.append(event("remote-delete"))
+        self.connect()
+        self.google.events_started = threading.Event()
+        self.google.events_release = threading.Event()
+        self.assertEqual(self.user("POST", "sync", {})[0], 202)
+        self.assertTrue(self.google.events_started.wait(8))
+        payload = {name: value for name, value in event().items() if name not in ("id", "etag")}
+        identifiers = set()
+        for operation, identifier in (("create", ""), ("update", "remote-event"), ("delete", "remote-delete")):
+            fields = {"idempotency_key": "authentic-unknown-" + operation}
+            if operation != "create":
+                fields.update(event_id=identifier, etag='"etag-1"')
+            if operation != "delete":
+                fields["event"] = json.dumps(payload)
+            status, value = self.user("POST", "events/" + operation, fields)
+            self.assertEqual(status, 202, value)
+            identifiers.add(value["event_id"])
+        with closing(sqlite3.connect(self.db)) as database:
+            database.execute("UPDATE changes SET state='unknown'")
+            database.commit()
+        self.google.events_release.set()
+        self.synchronize()
+        changes = self.user("GET", "changes")[1]["items"]
+        self.assertEqual(len(changes), 3)
+        self.assertTrue(all(change["state"] == "applied" for change in changes), changes)
+        self.assertEqual([row["method"] for row in self.google.mutations], ["POST", "PATCH", "DELETE"])
+        for mutation, identifier in zip(self.google.mutations[1:], ("remote-event", "remote-delete")):
+            self.assertTrue(mutation["path"].endswith("/events/" + identifier), mutation)
+            self.assertEqual(mutation["if_match"], '"etag-1"')
+        reconciled = {row["path"].rsplit("/", 1)[1] for row in self.google.requests
+                      if row["method"] == "GET" and "/events/" in row["path"]}
+        self.assertEqual(reconciled, identifiers)
+        self.assertNotIn("remote-delete", [row["id"] for row in self.google.events])
 
     def test_readonly_calendar_and_arbitrary_event_fields_are_rejected(self):
         self.start()

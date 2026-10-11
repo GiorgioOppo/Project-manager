@@ -7,4 +7,5 @@ void punto_client_close(void);
 bool punto_client_configured(void);
 const char *punto_client_origin(void);
 int punto_client_get(const char *grant, const char *endpoint, const char *query, json_object **result);
+int punto_client_post(const char *grant,const char *endpoint,const char *form,json_object **result);
 #endif

@@ -26,11 +26,12 @@ def build_native_check(directory):
     if compiler is None:
         raise unittest.SkipTest("C compiler unavailable")
     binary = Path(directory) / "alerts-check"
-    json_flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", "json-c"], text=True).split()
+    json_flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", "json-c", "openssl"], text=True).split()
     subprocess.run([compiler, "-D_POSIX_C_SOURCE=200809L", "-std=c11", "-Wall", "-Wextra",
                     "-Wpedantic", "-Werror", "-I", str(roles.ROOT / "src"),
                     str(roles.ROOT / "src/alerts.c"), str(roles.ROOT / "src/storage.c"),
                     str(roles.ROOT / "src/workspace.c"), str(roles.ROOT / "src/organization.c"),
+                    str(roles.ROOT / "src/access_control.c"),
                     str(roles.ROOT / "src/mail_client.c"),
                     str(roles.ROOT / "src/inventory_client.c"),
                     str(roles.ROOT / "tests/alerts_native_check.c"), "-lsqlite3", "-lcurl", *json_flags, "-o", str(binary)],
@@ -117,8 +118,23 @@ class AlertIntegrationTests(unittest.TestCase):
         self.assertIs(type(data["unread_count"]), int)
         return data
 
-    def worker(self, email=roles.WORKER_EMAIL):
+    def share_team(self, user_id):
+        if not hasattr(self, "team_id"):
+            status, data, _ = self.api("POST", "/api/groups", {"name": "Squadra alert"}, cookie=self.manager_cookie)
+            self.assertEqual(status, 201, data)
+            self.team_id = data["id"]
+            manager_id = self.users()[0]["id"]
+            status, data, _ = self.api("POST", "/api/groups/%d/members" % self.team_id,
+                                       {"user_id": manager_id}, cookie=self.manager_cookie)
+            self.assertEqual(status, 201, data)
+        status, data, _ = self.api("POST", "/api/groups/%d/members" % self.team_id,
+                                   {"user_id": user_id}, cookie=self.manager_cookie)
+        self.assertEqual(status, 201, data)
+
+    def worker(self, email=roles.WORKER_EMAIL, *, shared_team=True):
         user_id = self.create_user(email=email)
+        if shared_team:
+            self.share_team(user_id)
         return user_id, self.login(email, roles.WORKER_PASSWORD)
 
     def record_invalid_attempt(self, cookie, job_id=999999):
@@ -284,7 +300,7 @@ class AlertIntegrationTests(unittest.TestCase):
         subject_id, subject = self.worker()
         disabled_id = self.create_user(email="disabled-recipient@punto.local", role="manager")
         rule_id = self.create_rule(recipient_user_ids="%d,%d" % (manager_id, disabled_id),
-                                   recipient_emails="first@example.test,second@example.test")
+                                   recipient_emails=roles.MANAGER_EMAIL + "," + roles.WORKER_EMAIL)
         status, data, _ = self.edit_user(disabled_id, name="Disabilitato", role="manager", active="0")
         self.assertEqual(status, 200, data)
         self.record_invalid_attempt(subject)
@@ -292,12 +308,54 @@ class AlertIntegrationTests(unittest.TestCase):
         self.assertEqual((result["notifications_created"], result["emails_queued"]), (1, 2))
         with closing(sqlite3.connect(self.db_path)) as db:
             rows = db.execute("SELECT email,subject_user_id,status FROM alert_email_outbox ORDER BY email").fetchall()
-            self.assertEqual(rows, [("first@example.test", subject_id, "pending_configuration"),
-                                    ("second@example.test", subject_id, "pending_configuration")])
+            self.assertEqual(rows, [(roles.MANAGER_EMAIL, subject_id, "pending_configuration"),
+                                    (roles.WORKER_EMAIL, subject_id, "pending_configuration")])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM alert_notifications WHERE recipient_id=?",
                                         (disabled_id,)).fetchone(), (0,))
         again = self.run_rule(rule_id)
         self.assertEqual((again["notifications_created"], again["emails_queued"]), (0, 0))
+
+    def test_hours_alerts_do_not_generate_payloads_for_outside_subjects_or_recipients(self):
+        manager_id = self.users()[0]["id"]
+        inside_id, inside = self.worker()
+        outside_id, outside = self.worker("outside-alert@example.test", shared_team=False)
+        other_manager = self.create_user(email="outside-alert-manager@example.test", role="manager")
+        rule = self.create_rule(recipient_user_ids=",".join(map(str, (manager_id, inside_id, outside_id, other_manager))),
+                                recipient_emails=",".join((roles.MANAGER_EMAIL, roles.WORKER_EMAIL,
+                                                           "outside-alert@example.test", "external@example.test")))
+        self.record_invalid_attempt(inside)
+        self.record_invalid_attempt(outside, job_id=999998)
+        result = self.run_rule(rule)
+        self.assertEqual((result["notifications_created"], result["emails_queued"]), (2, 2))
+        self.assertEqual({item["subject_user_id"] for item in self.notifications()["notifications"]}, {inside_id})
+        self.assertEqual(self.notifications(outside), {"notifications": [], "unread_count": 0})
+        with closing(sqlite3.connect(self.db_path)) as db:
+            self.assertEqual(db.execute("SELECT DISTINCT subject_user_id FROM alert_notifications").fetchall(), [(inside_id,)])
+            self.assertEqual(db.execute("SELECT email,subject_user_id FROM alert_email_outbox ORDER BY email").fetchall(),
+                             [(roles.MANAGER_EMAIL, inside_id), (roles.WORKER_EMAIL, inside_id)])
+
+    def test_team_change_hides_stale_hours_payloads_counts_and_guessed_read_ids(self):
+        manager_id = self.users()[0]["id"]
+        inside_id, inside = self.worker()
+        removed_id, removed = self.worker("removed-alert@example.test")
+        rule = self.create_rule(recipient_user_ids=str(manager_id))
+        self.record_invalid_attempt(inside)
+        self.record_invalid_attempt(removed)
+        self.run_rule(rule)
+        removed_note = next(item for item in self.notifications()["notifications"] if item["subject_user_id"] == removed_id)
+        status, data, _ = self.api("DELETE", "/api/groups/%d/members/%d" % (self.team_id, removed_id), cookie=self.manager_cookie)
+        self.assertEqual(status, 200, data)
+        with closing(sqlite3.connect(self.db_path)) as db:
+            for number in range(105):
+                db.execute("INSERT INTO alert_notifications(rule_id,recipient_id,subject_user_id,event_key,title,message,created_at) "
+                           "VALUES(?,?,?,?,?,?,?)", (rule, manager_id, removed_id, "stale-private:%d" % number,
+                                                     "Private hidden", "HIDDEN PERSONAL HOURS", "2026-10-11T08:00:00Z"))
+            db.commit()
+        notes = self.notifications()
+        self.assertEqual(notes["unread_count"], 1)
+        self.assertEqual([item["subject_user_id"] for item in notes["notifications"]], [inside_id])
+        self.assertNotIn("HIDDEN", str(notes))
+        self.assert_error(404, "POST", "/api/notifications/%d/read" % removed_note["id"], {}, cookie=self.manager_cookie)
 
     def test_rule_creation_audit_failure_rolls_back_recipients_and_rule(self):
         with closing(sqlite3.connect(self.db_path)) as db:
@@ -314,7 +372,7 @@ class AlertIntegrationTests(unittest.TestCase):
 
     def test_run_audit_failure_rolls_back_notifications_outbox_cursor_and_schedule(self):
         user_id, worker = self.worker()
-        rule_id = self.create_rule(recipient_user_ids=str(user_id), recipient_emails="pending@example.test")
+        rule_id = self.create_rule(recipient_user_ids=str(user_id), recipient_emails=roles.WORKER_EMAIL)
         self.record_invalid_attempt(worker)
         with closing(sqlite3.connect(self.db_path)) as db:
             before = {table: db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall()
@@ -461,7 +519,7 @@ class AlertIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (6,7,8,9,10)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (6,7,8,9,10,12,13)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=5")
             db.commit()
@@ -470,13 +528,13 @@ class AlertIntegrationTests(unittest.TestCase):
             old_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()
         self.restart_and_login()
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
             for table, rows in old.items():
                 self.assertEqual(db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             for table in ALERT_TABLES:
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM "' + table + '"').fetchone(), (0,), table)
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (6,7,8,9,10)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (6,7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=6").fetchone(), (1,))
             final_audit = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()

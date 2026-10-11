@@ -22,11 +22,15 @@ The log uses the catalog of existing projects available to the user. Adding a ne
 
 ### Does a “Completed” or “Cancelled” project prevent further hours?
 
-Status describes the project, but does not by itself block entries. Current checks concern existence and authorization. To limit operators, the manager must manage roles, expiration or revocation, also considering groups and shared-project status. Managers retain global project access.
+Status describes the project, but does not by itself block entries. To prevent new hours for everyone, including managers, close or archive with a reason: this preserves data and history. Reopening requires a reason. Roles, dates and revocations still control individual access; access explanation also shows alternative direct, group or shared paths.
 
 ### Do General, Training, Meetings and Internal activities appear on every new installation?
 
 They are the shared catalog adopted for the project, configurable by managers. They are not a mandatory automatic software seed: a new installation must create the desired projects and enable their Shared project checkbox. Active accounts created later can use existing shared projects.
+
+### I am a Manager: why can’t I see Contracts or Labor cost?
+
+Profiles are separate. In **Users → Profiles**, a manager assigns Sales for creating/editing suppliers and contracts and uploading PDFs; Finance for viewing them and reading financial aggregates and rates. Finance is read-only; editing rates also requires Manager. Assignment applies to Keycloak identities too and does not derive from organizational groups. No manager automatically receives Sales or Finance.
 
 ## Tasks and blockers
 
@@ -60,7 +64,7 @@ Another change updated the same item. The app prevents overwriting it with a dra
 
 ### Can I log hours against a specific task or receive alerts about its due date?
 
-These links remain to be developed. Hours belong to the project, and the **Work done / note** field is descriptive. Board deadlines, assignments and statuses do not produce automatic emails or notifications. Dependencies, Gantt and workload planning remain on the roadmap.
+Hours belong to the project and can optionally link one of its tasks; **Work done / note** remains descriptive. Assignments and deadlines generate personal operational notices subject to access checks, without automatic email delivery. Completing a task does not generate hours. Dependencies, Gantt and workload planning remain on the roadmap.
 
 ### What happens to blockers if I delete a task?
 
@@ -74,11 +78,11 @@ In the hours field you can use `0:30` or `1:30`, or the corresponding decimal fo
 
 ### Can I correct hours already entered?
 
-A manager can edit or delete their own entries. An operator can add and view entries; a correction request and approval workflow is planned. The manager does not have an ordinary way to edit rows belonging to another user. For operational anomalies, contact the manager without duplicating an entry in an attempt to correct it.
+A manager can edit or delete their own entries. An operator can use **Request correction** to propose an edit or deletion with a reason. Hours change only after approval by a manager other than the request’s author; the original, proposal, decision and conflicts remain viewable. The manager has no generic editor for other people’s hours. Do not duplicate an entry to try to correct it.
 
 ### Can the manager see my hours?
 
-They can view aggregates in analyses by period, project and user. The detailed Time log remains personal, and analyses do not show activity notes. The manager also has access to Change history: audit events can contain before/after operation details. Analysis and audit permissions are therefore separate.
+Only if you belong to their team: the manager themselves, members of their organizational groups and their subgroups. They can read aggregates and day/week details read-only; they cannot directly edit your rows. Corrections, History and time alerts follow the same current scope. A manager without groups, or when company groups are unavailable, sees only themselves. Finance does not grant access to colleagues’ personal entries.
 
 ### If I lose project access, do I lose my personal history?
 
@@ -98,17 +102,17 @@ No valid rate exists for the user and entry date. Hours remain marked as unprice
 
 ### Does an analysis link grant access to data?
 
-The URL preserves view and filters. Whoever opens it must still sign in and have the necessary permissions. An operator remains limited to personal entries; financial views are restricted to managers.
+The URL preserves view and filters. Whoever opens it must still sign in and have the necessary permissions. An operator remains limited to personal entries; managers remain within their own team, and financial views require Finance, with aggregates and no person filter.
 
 ## Alerts, documents and integrations
 
-### When does an alert appear for a day with fewer than eight hours?
+### When does an alert appear for a day with fewer hours than expected?
 
-The day must be Monday–Friday, and 48 actual hours must have elapsed from its end in the Europe/Rome time zone. The anomaly is detected at the rule's next daily check, or with Run now once the grace period has elapsed. For example, Monday ends on Tuesday at 00:00 and becomes eligible for checking on Thursday at 00:00.
+The day must have expected minutes greater than zero and a total below that expectation; 48 actual hours must have elapsed from its end in the Europe/Rome time zone. The anomaly is detected at the rule's next daily check, or with Run now once the grace period has elapsed. For example, Monday ends on Tuesday at 00:00 and becomes eligible for checking on Thursday at 00:00.
 
 ### Does the check consider leave, public holidays and part-time work?
 
-The current criterion is fixed: eight hours for each Monday–Friday day. There is no calendar of holidays, absences or individual schedules yet. Those exceptions are planned on the roadmap and must not be assumed when reading alerts.
+Yes. In **Schedules and absences**, managers configure weekly schedules with effective dates, holidays and personal exceptions. For each day, the personal exception takes precedence over a holiday, followed by the latest effective schedule. A full absence expects zero minutes; without configuration the default is eight hours Monday–Friday and zero Saturday–Sunday. Existing alerts preserve the context detected when checked.
 
 ### Does “Nonexistent project” mean hours were saved without a project?
 
@@ -124,11 +128,11 @@ Monitoring begins when the rule is created and when the user enters its monitori
 
 ### If I disable a rule, do prepared emails stop too?
 
-Disabling suspends automatic checks but does not delete the existing email queue. When SMTP is active, pending sends can be processed if the owner is still an active manager and the address remains among recipients. Delivery already started is not cancelled. Before enabling the provider, the technical contact must therefore also check the preexisting queue.
+Disabling suspends automatic checks but does not delete the existing email queue. When SMTP is active, pending sends can be processed if the owner is still an active manager and the address remains among recipients. For time alerts, the address must also belong to an active account authorized to read the subject, who must still be visible to the rule owner. Delivery already started is not cancelled. Before enabling the provider, the technical contact must therefore also check the preexisting queue.
 
 ### Why does an operator recipient not receive alerts about other people?
 
-Internal notifications respect the recipient's scope. An operator receives only anomalies about their own work; a manager recipient can receive those of monitored users. Selecting someone as a recipient does not grant the Manager profile.
+Internal notifications respect the recipient's scope. An operator receives only anomalies about their own work; a manager recipient can receive those of their own team. The rule owner must also be allowed to read the subject’s hours; revocation hides previously produced notices and their unread count. Selecting someone as a recipient does not grant the Manager profile.
 
 ### Does uploading a PDF replace the previous one?
 

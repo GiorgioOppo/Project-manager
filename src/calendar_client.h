@@ -16,7 +16,9 @@ typedef enum {
     CALENDAR_EVENT_DELETE,
     CALENDAR_SYNC,
     CALENDAR_DISCONNECT,
-    CALENDAR_CHANGES
+    CALENDAR_CHANGES,
+    CALENDAR_EVENT,
+    CALENDAR_CHANGE
 } CalendarOperation;
 
 typedef struct { int status; char *body; } CalendarResponse;

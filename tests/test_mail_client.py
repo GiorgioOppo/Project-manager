@@ -279,6 +279,7 @@ class MailOutboxIntegrationTests(unittest.TestCase):
     rule_fields = alerts.AlertIntegrationTests.rule_fields
     create_rule = alerts.AlertIntegrationTests.create_rule
     run_rule = alerts.AlertIntegrationTests.run_rule
+    share_team = alerts.AlertIntegrationTests.share_team
     worker = alerts.AlertIntegrationTests.worker
     record_invalid_attempt = alerts.AlertIntegrationTests.record_invalid_attempt
 
@@ -301,7 +302,8 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             "MAIL_API_CA_FILE": str(self.certificate), "MAIL_API_NAMESPACE": "outbox-test-v1"}
         with patch.dict(os.environ, self.mail_environment):
             roles.RoleIntegrationTests.setUp(self)
-        user_id, worker = self.worker()
+        # Time alerts may email only an active account authorized for the subject.
+        user_id, worker = self.worker(email="recipient@example.test")
         self.rule_id = self.create_rule(recipient_user_ids=str(user_id), recipient_emails="recipient@example.test")
         self.record_invalid_attempt(worker)
         self.assertEqual(self.run_rule(self.rule_id)["emails_queued"], 1)
@@ -423,7 +425,7 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (7,8,9,10)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (7,8,9,10,12,13)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=6")
             db.commit()
@@ -444,12 +446,12 @@ class MailOutboxIntegrationTests(unittest.TestCase):
             self.start_server()
         self.stop_server()
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
             for table, rows in old.items():
                 self.assertEqual(db.execute('SELECT ' + projections.get(table, '*') + ' FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(db.execute("SELECT seq FROM sqlite_sequence WHERE name='alert_email_outbox'").fetchone(), (77,))
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE NOT(action='system.migration' "
-                                        "AND entity_id IN (7,8,9,10)) ORDER BY id").fetchall(), old_audit)
+                                        "AND entity_id IN (7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE action='system.migration' "
                                         "AND entity_id=7").fetchone(), (1,))
             db.execute("UPDATE alert_email_outbox SET status='retrying'")

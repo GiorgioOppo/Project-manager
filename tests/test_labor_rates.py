@@ -175,7 +175,7 @@ class LaborRateIntegrationTests(unittest.TestCase):
         self.assertEqual(self.rates()[0]["user_id"], user_id)
         self.assertEqual(len(self.events()), 1, "Rejected writes must not generate successful audit events")
 
-    def test_rates_and_labor_reports_are_manager_only(self):
+    def test_unprofiled_workers_cannot_read_rates_and_labor_reports(self):
         user_id = self.create_user()
         worker = self.login(roles.WORKER_EMAIL, roles.WORKER_PASSWORD)
         rate_id = self.create_rate(user_id)
@@ -192,41 +192,38 @@ class LaborRateIntegrationTests(unittest.TestCase):
         self.seed_labor()
         report = self.labor_report()
         self.assert_summary(report, 74, 8, 2, 4)
-        self.assertEqual(report["scope"], "all")
+        self.assertEqual(report["scope"], "financial")
         self.assertEqual({key: report["summary"][key] for key in (
             "estimated_cost_cents", "priced_minutes", "unpriced_minutes")},
             {"estimated_cost_cents": 18, "priced_minutes": 67, "unpriced_minutes": 7})
         self.assertIs(type(report["summary"]["estimated_cost_cents"]), int)
-        rows = {(row["user_id"], row["job_id"]): row for row in report["rows"]}
-        expected = (("A", "L1", 10, 4, 5, 5, 14), ("A", "L2", 1, 1, 1, 0, 3),
-                    ("B", "L1", 1, 1, 1, 0, 1), ("ZERO", "L2", 60, 1, 60, 0, 0),
-                    ("MISSING", "L2", 2, 1, 0, 2, None))
+        rows = {row["job_id"]: row for row in report["rows"]}
+        expected = (("L1", 11, 5, 6, 5, 15), ("L2", 63, 3, 61, 2, 3))
         self.assertEqual(len(rows), len(expected))
-        for user, job, minutes, entries, priced, unpriced, cost in expected:
-            row = rows[(self.labor_users[user], self.labor_jobs[job])]
+        for job, minutes, entries, priced, unpriced, cost in expected:
+            row = rows[self.labor_jobs[job]]
             self.assertEqual((row["minutes"], row["entry_count"], row["priced_minutes"],
                               row["unpriced_minutes"], row["cost_cents"]),
                              (minutes, entries, priced, unpriced, cost))
-            self.assertEqual((row["name"], row["email"], row["code"], row["job_name"]),
-                             ("Tecnico " + user, "labor-%s@example.test" % user.lower(),
-                              job, "Commessa " + job))
+            self.assertEqual((row["code"], row["job_name"]), (job, "Commessa " + job))
+            self.assertFalse({"user_id", "name", "email"}.intersection(row))
 
-    def test_labor_filters_combine_user_job_and_dates_without_narrowing_options(self):
+    def test_labor_filters_allow_job_and_dates_and_reject_individual_users(self):
         self.seed_labor()
         baseline = self.labor_report()
-        filtered = self.labor_report(user_id=self.labor_users["A"], job_id=self.labor_jobs["L1"])
-        self.assert_summary(filtered, 10, 4, 1, 1)
-        self.assertEqual(filtered["summary"]["estimated_cost_cents"], 14)
+        filtered = self.labor_report(job_id=self.labor_jobs["L1"])
+        self.assert_summary(filtered, 11, 5, 1, 2)
+        self.assertEqual(filtered["summary"]["estimated_cost_cents"], 15)
         self.assertEqual(filtered["options"], baseline["options"])
         day = self.report("labor_cost", start="2026-10-09", end="2026-10-09",
-                          user_id=self.labor_users["A"], job_id=self.labor_jobs["L1"])
-        self.assert_summary(day, 2, 2, 1, 1)
-        self.assertEqual(day["rows"][0]["cost_cents"], 4,
-                         "Two separately rounded one-minute entries cost four cents, not three")
-        missing = self.labor_report(user_id=self.labor_users["MISSING"])
-        self.assert_summary(missing, 2, 1, 1, 1)
-        self.assertIsNone(missing["rows"][0]["cost_cents"])
-        self.assertEqual((missing["summary"]["estimated_cost_cents"], missing["summary"]["unpriced_minutes"]), (0, 2))
+                          job_id=self.labor_jobs["L1"])
+        self.assert_summary(day, 3, 3, 1, 2)
+        self.assertEqual(day["rows"][0]["cost_cents"], 5,
+                         "Two separately rounded A entries cost four cents plus one cent for B")
+        query = urlencode({"view": "labor_cost", "from": "2026-10-09", "to": "2026-10-11",
+                           "user_id": self.labor_users["MISSING"]})
+        self.assert_error(403, "GET", "/api/reports?" + query, cookie=self.manager_cookie)
+        self.assertEqual(baseline["options"]["users"], [])
         empty = self.report("labor_cost", start="2026-12-01", end="2026-12-01")
         self.assert_summary(empty, 0, 0, 0, 0)
         self.assertEqual(empty["rows"], [])
@@ -243,10 +240,9 @@ class LaborRateIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         report = self.labor_report()
         self.assertEqual(report["summary"]["estimated_cost_cents"], 34)
-        changed = next(row for row in report["rows"] if row["user_id"] == self.labor_users["A"]
-                       and row["job_id"] == self.labor_jobs["L1"])
-        self.assertEqual(changed["cost_cents"], 30)
-        self.assertEqual((changed["priced_minutes"], changed["unpriced_minutes"]), (5, 5))
+        changed = next(row for row in report["rows"] if row["job_id"] == self.labor_jobs["L1"])
+        self.assertEqual(changed["cost_cents"], 31)
+        self.assertEqual((changed["priced_minutes"], changed["unpriced_minutes"]), (6, 5))
         with closing(sqlite3.connect(self.db_path)) as db:
             self.assertEqual(db.execute("SELECT * FROM time_entries ORDER BY id").fetchall(), entries)
 
@@ -294,7 +290,7 @@ class LaborRateIntegrationTests(unittest.TestCase):
             trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
                                  "AND name='audit_events_no_delete'").fetchone()[0]
             db.execute("DROP TRIGGER audit_events_no_delete")
-            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (4,5,6,7,8,9,10)")
+            db.execute("DELETE FROM audit_events WHERE action='system.migration' AND entity_id IN (4,5,6,7,8,9,10,12,13)")
             db.execute(trigger)
             db.execute("PRAGMA user_version=3")
             db.commit()
@@ -306,11 +302,11 @@ class LaborRateIntegrationTests(unittest.TestCase):
         self.start_server()
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
             for table, rows in snapshot.items():
                 self.assertEqual(db.execute('SELECT * FROM "' + table + '" ORDER BY rowid').fetchall(), rows, table)
             self.assertEqual(db.execute("SELECT * FROM audit_events WHERE "
-                                        "NOT(action='system.migration' AND entity_id IN (4,5,6,7,8,9,10)) ORDER BY id").fetchall(), old_audit)
+                                        "NOT(action='system.migration' AND entity_id IN (4,5,6,7,8,9,10,12,13)) ORDER BY id").fetchall(), old_audit)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE "
                                         "action='system.migration' AND entity_id=4").fetchone(), (1,))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit_events WHERE "

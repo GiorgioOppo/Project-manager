@@ -4,7 +4,7 @@
 
 La documentazione descrive la web app per commesse e registrazione delle ore, i servizi che la eseguono e i processi di lavoro. È organizzata in **`tehnical/`** per chi sviluppa o amministra il sistema e **`prod/`** per chi lo configura e lo utilizza. Il nome della cartella `tehnical` è mantenuto come richiesto dal progetto.
 
-**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo 10, 25 tabelle MySQL, 11 servizi Docker (12 con Ticket) e 8 reti. La modalità nativa usa 23 tabelle funzionali SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Il [README principale](../README.it.md) conserva le istruzioni generali di avvio.
+**Riferimento:** codice del workspace all’11 ottobre 2026, schema applicativo **13**. La modalità nativa usa SQLite e documenti locali; la modalità Docker usa MySQL e MongoDB GridFS. Schema e policy correnti sono descritti nel [catalogo API](tehnical/api-app.md) e nei [flussi operativi](prod/flussi-operativi.md); i conteggi dei collaudi precedenti restano evidenza storica. Il [README principale](../README.it.md) conserva le istruzioni generali di avvio.
 
 ## Percorsi di lettura
 
@@ -41,7 +41,7 @@ Gli esempi usano dati fittizi. Le procedure di collaudo descrivono cosa verifica
 | Implementato e utilizzabile | Codice, API e interfaccia disponibili, salvo configurazione ordinaria dell’installazione | Commesse, attività/sottoattività, Kanban, blocchi, ore, utenti, gruppi, contratti/PDF, analisi, tariffe, notifiche interne, asset inventory |
 | Implementato, provider da configurare | Servizio e API presenti; l’integrazione reale richiede credenziali e configurazione esterna | Invio email SMTP e collegamento Google OAuth |
 | Disponibile tramite API | Funzionalità utilizzabile dal bridge applicativo; una schermata dedicata non è ancora presente | Sincronizzazione Google Calendar e gestione eventi |
-| Pianificato / parziale | Requisito o progetto di rilascio; eventuali parti esistenti sono indicate nella roadmap | Registro settimanale, approvazioni, finanza completa, più società/valute, collegamento eventi–commesse–ore |
+| Pianificato / parziale | Requisito o progetto di rilascio; eventuali parti esistenti sono indicate nella roadmap | Approvazione generale dei consuntivi, finanza completa, più società/valute, collegamento eventi–commesse–ore |
 | Evidenza storica | Risultati di verifiche eseguite in una fase precedente, con il relativo perimetro | Collaudo UI dello schema 3 |
 
 I piani descrivono anche tabelle e API future: la loro presenza in un documento di pianificazione non implica che esistano nel software. Lo [schema implementato](tehnical/modello-dati.md) e il [catalogo API corrente](tehnical/api-app.md) identificano le risorse effettive.
@@ -104,7 +104,7 @@ docs/
 └── commesse/          # Evidenze del catalogo comune
 ```
 
-Le immagini esistenti mantengono i propri percorsi. I manuali locali dei servizi restano disponibili in [addon/README.md](../addon/README.md) e [calendar-addon/README.md](../calendar-addon/README.md) e [inventory-addon/README.md](../inventory-addon/README.md).
+Le immagini esistenti mantengono i propri percorsi. I manuali locali dei servizi restano disponibili in [addon/README.it.md](../addon/README.it.md) e [calendar-addon/README.it.md](../calendar-addon/README.it.md) e [inventory-addon/README.it.md](../inventory-addon/README.it.md).
 
 ## Criteri di manutenzione
 

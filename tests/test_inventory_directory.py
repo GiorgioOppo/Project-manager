@@ -319,7 +319,7 @@ class InventoryDirectoryTests(unittest.TestCase):
         self.link(identity, person)
         self.stop()
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(database.execute("SELECT snapshot FROM asset_history WHERE id=77").fetchone()[0], snapshot)
             self.assertEqual(database.execute("SELECT preview_id FROM inventory_import_previews").fetchone()[0], "a" * 32)
             self.assertEqual(database.execute("PRAGMA integrity_check").fetchone()[0], "ok")
@@ -345,7 +345,7 @@ class InventoryDirectoryTests(unittest.TestCase):
         self.start()
         self.assertEqual(self.request("GET", "/v1/people")[0], 200)
         with closing(sqlite3.connect(self.db)) as database:
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone()[0], 6)
             self.assertEqual(database.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_methods_routes_and_single_details_reject_ambiguous_requests(self):

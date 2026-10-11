@@ -217,7 +217,7 @@ class AssignmentIntegrationTests(unittest.TestCase):
         for extra in ({"user_id": self.users()[0]["id"]}, {"owner": roles.MANAGER_EMAIL}):
             self.assert_error(400, "POST", "/api/time-entries",
                               self.time_fields(job_id, **extra), cookie=worker)
-        self.assert_error(400, "GET", "/api/time-entries?date=2026-10-10&user_id=" + str(user_id),
+        self.assert_error(403, "GET", "/api/time-entries?date=2026-10-10&user_id=" + str(self.users()[0]["id"]),
                           cookie=worker)
         self.assertEqual(self.day(worker)["entries"], [])
 
@@ -242,6 +242,11 @@ class AssignmentIntegrationTests(unittest.TestCase):
     def test_audit_records_actor_before_after_and_every_mutation_family(self):
         manager_id = self.users()[0]["id"]
         user_id, worker = self.worker()
+        status, group, _ = self.api("POST", "/api/groups", {"name": "Squadra audit"}, cookie=self.manager_cookie)
+        self.assertEqual(status, 201, group)
+        for member in (manager_id, user_id):
+            status, data, _ = self.api("POST", f"/api/groups/{group['id']}/members", {"user_id": member}, cookie=self.manager_cookie)
+            self.assertEqual(status, 201, data)
         job_id = self.create_job()
         self.assign(job_id, user_id)
         entry_id = self.create_time(worker, job_id, minutes=45)
@@ -403,6 +408,8 @@ class AssignmentIntegrationTests(unittest.TestCase):
             for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
                 if table not in ("jobs", "sqlite_sequence"):
                     db.execute('DROP TABLE "' + table.replace('"', '""') + '"')
+            for column in ("time_closed", "archived", "lifecycle_revision"):
+                db.execute("ALTER TABLE jobs DROP COLUMN " + column)
             db.execute("CREATE TABLE time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,"
                        "job_id INTEGER NOT NULL REFERENCES jobs(id),owner TEXT NOT NULL,date TEXT NOT NULL,"
                        "minutes INTEGER NOT NULL CHECK(minutes BETWEEN 1 AND 1440),note TEXT NOT NULL DEFAULT '')")
@@ -419,7 +426,7 @@ class AssignmentIntegrationTests(unittest.TestCase):
         manager_id = self.users()[0]["id"]
         self.assertEqual(self.day(self.manager_cookie)["total_minutes"], 75)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
             self.assertEqual(db.execute("SELECT owner,user_id FROM time_entries WHERE id=?", (entry_id,)).fetchone(),
                              ("MaNaGeR@PuNtO.LoCaL", manager_id))
             self.assertEqual(db.execute("SELECT user_id FROM time_entries WHERE id=?", (legacy_id,)).fetchone(), (None,))
@@ -433,14 +440,14 @@ class AssignmentIntegrationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT owner,user_id FROM time_entries WHERE id=?", (legacy_id,)).fetchone(),
                              ("FuTuRe@punto.local", future_id))
         before_events = self.events("limit=100")
-        self.assertEqual(sum(event["action"] == "system.migration" for event in before_events), 10)
+        self.assertEqual(sum(event["action"] == "system.migration" for event in before_events), 12)
         self.stop_server()
         self.start_server(password="Replacement-only!2026")
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         self.assertEqual(self.events("limit=100"), before_events)
         self.assertEqual(self.day(self.login("future@punto.local", roles.WORKER_PASSWORD))["total_minutes"], 35)
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM time_entries").fetchone(), (3,))
 
     def test_upgrade_preserves_existing_accounts_and_claims_only_unowned_history(self):
@@ -459,6 +466,8 @@ class AssignmentIntegrationTests(unittest.TestCase):
             for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
                 if table not in ("jobs", "users", "sqlite_sequence"):
                     db.execute('DROP TABLE "' + table.replace('"', '""') + '"')
+            for column in ("time_closed", "archived", "lifecycle_revision"):
+                db.execute("ALTER TABLE jobs DROP COLUMN " + column)
             db.execute("CREATE TABLE time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,"
                        "job_id INTEGER NOT NULL REFERENCES jobs(id),owner TEXT NOT NULL,date TEXT NOT NULL,"
                        "minutes INTEGER NOT NULL CHECK(minutes BETWEEN 1 AND 1440),note TEXT NOT NULL DEFAULT '')")

@@ -2,7 +2,7 @@
 
 **Italiano** | [English](../en/prod/roadmap.md)
 
-Questa pagina aggiorna la lettura dei piani rispetto alla base applicativa documentata il **11 ottobre 2026**, schema **10**. Il [piano delle venti funzionalità](roadmap-20-funzionalita.md) e il [piano finanziario](piano-modulo-finanziario.md) conservano il disegno di dettaglio originario, redatto quando la base era lo schema 3. I numeri di schema, i conteggi e le descrizioni di «base attuale» presenti in quei piani sono riferimenti storici, non lo stato corrente.
+Questa pagina aggiorna la lettura dei piani rispetto alla base applicativa documentata il **11 ottobre 2026**, schema **12**. Il [piano delle venti funzionalità](roadmap-20-funzionalita.md) e il [piano finanziario](piano-modulo-finanziario.md) conservano il disegno di dettaglio originario, redatto quando la base era lo schema 3. I numeri di schema, i conteggi e le descrizioni di «base attuale» presenti in quei piani sono riferimenti storici, non lo stato corrente.
 
 Gli stati usati qui sono:
 
@@ -12,6 +12,8 @@ Gli stati usati qui sono:
 
 La presenza di una tabella, di un componente simile o di un addon non chiude da sola una funzionalità di prodotto. Per la disponibilità operativa corrente vedere la [panoramica](panoramica.md).
 
+
+Per i percorsi consegnati in schema 12 consulta i [flussi operativi migliorati](flussi-operativi.md). La matrice globale, la copia della sola giornata e il rilevamento dei duplicati rimangono estensioni distinte.
 ## Base già disponibile
 
 Sono implementati login, profili Gestore/Operatore, commesse e stati, accessi diretti e per gruppi gerarchici, ruoli operativi, commesse comuni, registro ore personale, fornitori, contratti/PDF e storico. Si sono aggiunte cinque viste di Analisi, tariffe di costo EUR, cancellazione definitiva delle commesse con ore collegate, alert giornalieri e notifiche. La prima consegna del modulo Attività aggiunge attività e sottoattività, Kanban e registro dei blocchi; la cancellazione della commessa comprende ora anche questi elementi.
@@ -26,22 +28,22 @@ Questo percorso si aggiunge alle venti migliorie originarie senza sostituirne la
 
 | Funzione proposta | Stato corrente | Evoluzione ancora da realizzare |
 | --- | --- | --- |
-| Attività e sottoattività | Implementato per organizzazione e avanzamento | Collegamento delle ore alla singola attività e checklist separate |
+| Attività e sottoattività | Implementato per organizzazione, avanzamento e ore collegate | Checklist separate |
 | Bacheca Kanban | Implementato | Ulteriori preferenze di vista e automazioni solo se definite in un rilascio successivo |
 | Registro rischi e blocchi | Parziale | Blocchi implementati; rischi futuri con probabilità e misure preventive da sviluppare |
 | Dipendenze e cronoprogramma | Pianificato | Relazioni temporali, impatto dei ritardi e Gantt |
-| Carico di lavoro del team | Pianificato | Ore pianificate, disponibilità individuali, assenze e confronto con la capacità |
+| Carico di lavoro del team | Pianificato | Stime di lavoro e confronto del carico con orari individuali e assenze già configurabili |
 | Discussioni e decisioni | Pianificato | Commenti, menzioni e decisioni motivate con visibilità per commessa |
 | Richieste di variazione | Pianificato | Valutazione e approvazione dell’impatto su lavoro, scadenze e budget |
 | Consegne e accettazione | Pianificato | Versioni, revisione, osservazioni e approvazione dei risultati |
 | Portale cliente | Pianificato | Accesso esterno limitato a contenuti e richieste esplicitamente condivisi |
-| Panoramica di tutte le commesse | Parziale | Analisi delle ore già presenti; riepilogo trasversale di attività, scadenze e blocchi da sviluppare |
+| Panoramica di tutte le commesse | Parziale | Vista personale trasversale e riepilogo commessa implementati; portafoglio complessivo da sviluppare |
 | Timer personale | Pianificato | Avvio/pausa, proposta da confermare e controllo delle sovrapposizioni |
-| Chiusura guidata della commessa | Pianificato | Checklist finale, blocco delle nuove registrazioni e riapertura motivata |
+| Chiusura guidata della commessa | Implementato | Riepilogo lavoro aperto, blocco nuove ore, archivio e riapertura motivata |
 
-La bacheca attuale usa scelte di stato con conferma, accessibili da tastiera. Stato di attività, genitori, figli e blocchi rimangono indipendenti; non sono presenti avanzamento percentuale calcolato, approvazioni formali o notifiche automatiche per assegnazioni e scadenze. Le revisioni proteggono le modifiche concorrenti di attività e blocchi, senza estendere automaticamente quel meccanismo a tutte le API storiche.
+La bacheca attuale usa scelte di stato con conferma, accessibili da tastiera. Stato di attività, genitori, figli e blocchi rimangono indipendenti; non sono presenti avanzamento percentuale calcolato o approvazioni formali delle attività. Sono disponibili notifiche operative per assegnazioni e scadenze. Le revisioni proteggono le modifiche concorrenti di attività e blocchi, senza estendere automaticamente quel meccanismo a tutte le API storiche.
 
-I prossimi passi consigliati sono pianificazione del carico e dipendenze, dopo aver definito stime di lavoro, orari individuali e assenze. Il collegamento ore–attività richiederà un aggiornamento esplicito del registro e delle analisi; la nota testuale corrente non realizza quel collegamento.
+I prossimi passi consigliati sono pianificazione del carico e dipendenze, dopo aver definito stime di lavoro e confronto con la capacità; orari individuali e assenze sono già configurabili. Il collegamento ore–attività è disponibile come riferimento facoltativo nel registro e nel riepilogo commessa; la nota rimane descrittiva.
 
 ## Le venti migliorie operative
 
@@ -49,11 +51,11 @@ La numerazione rimane quella del piano originario per rendere confrontabili prio
 
 | N. | Funzionalità | Stato corrente | Da completare per chiuderla |
 | --- | --- | --- | --- |
-| 1 | Registro ore settimanale a griglia | Pianificato | Vista di sette giorni, celle con dettaglio delle righe, nuovi inserimenti multipli atomici e totali coerenti con il registro |
-| 2 | Copia giornata o settimana precedente | Pianificato | Anteprima, selezione della destinazione, copia facoltativa delle note e nuova verifica dei permessi al salvataggio |
+| 1 | Registro ore settimanale a griglia | Implementato | Sette giorni, dettaglio delle righe, inserimenti multipli atomici e totali coerenti |
+| 2 | Copia giornata o settimana precedente | Parziale | Copia settimana precedente implementata con anteprima editabile; copia di una singola giornata ancora da sviluppare |
 | 3 | Commesse preferite e recenti | Pianificato | Preferenze personali persistenti e ordinamento del selettore, sempre subordinati agli accessi correnti |
-| 4 | Richiesta di correzione delle ore | Pianificato | Richiesta motivata dell’operatore, revisore autorizzato, approvazione/rifiuto, revisioni e conflitti |
-| 5 | Controlli sulle anomalie del registro | Parziale | Esistono ore mancanti a soglia fissa e tentativi su commesse inesistenti; mancano orari individuali, festività, eccezioni e avvisi sui possibili duplicati |
+| 4 | Richiesta di correzione delle ore | Implementato | Richiesta motivata, approvazione/rifiuto/annullamento, storico e conflitti |
+| 5 | Controlli sulle anomalie del registro | Parziale | Orari individuali versionati, assenze e festività implementati; avvisi sui possibili duplicati da sviluppare |
 | 6 | Viste personali salvate | Parziale | I filtri delle analisi sono già nell’URL; mancano viste nominate, preferenze di colonne/ordinamento e persistenza per account |
 | 7 | Ricerca globale | Pianificato | Un’unica ricerca tra risorse autorizzate; le ricerche locali di Commesse, Fornitori e Contratti esistono già |
 | 8 | Comandi rapidi da tastiera | Pianificato | Barra Ctrl/Cmd+K con catalogo delle azioni e successiva ricerca dei record; restano disponibili i normali controlli da tastiera della UI |
@@ -61,8 +63,8 @@ La numerazione rimane quella del piano originario per rendere confrontabili prio
 | 10 | App installabile con bozze offline | Pianificato | Installazione PWA, bozze personali con conservazione esplicita e conferma online, idempotenza e gestione del cambio account |
 | 11 | Importazione guidata da CSV | Pianificato | Mappatura colonne, anteprima, errori per riga, conferma e successivo onboarding degli utenti senza password nel CSV |
 | 12 | Operazioni su più elementi | Pianificato | Selezione multipla, anteprima di stati/abilitazioni/revoche e conferma con controllo delle revisioni |
-| 13 | Creazione guidata e modelli di commessa | Pianificato | Percorso unico con dati, contratto, gruppi e controlli, più modelli riutilizzabili privi di autorizzazioni implicite |
-| 14 | Matrice degli accessi effettivi | Pianificato | Spiegazione unificata dei percorsi diretti/ereditati, ruoli e date; il motore che applica gli accessi è già implementato |
+| 13 | Creazione guidata e modelli di commessa | Implementato | Dati, contratto, squadra, attività e riepilogo; conferma atomica e modelli espliciti |
+| 14 | Matrice degli accessi effettivi | Parziale | Spiegazione per persona e commessa implementata con fonti dirette/ereditate e date; matrice globale da sviluppare |
 | 15 | Responsabili di area con deleghe limitate | Pianificato | Amministrazione circoscritta per gruppi/risorse, senza attribuire i poteri globali dell’attuale Gestore |
 | 16 | Rilevamento dei duplicati | Parziale | Codici univoci e hash PDF già presenti; mancano confronto assistito, avvisi per partita IVA/contenuto e decisione motivata |
 | 17 | Versioni e integrazioni contrattuali | Pianificato | Revisioni pubblicate immutabili e collegamento esplicito della commessa alla versione; più PDF sul contratto non equivalgono a questo flusso |

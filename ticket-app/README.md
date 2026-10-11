@@ -1,37 +1,41 @@
-# Punto Ticket — gestione ticket in C
+# Punto Ticket — ticket management in C
 
-L’interfaccia supporta italiano, inglese, cinese semplificato, spagnolo, francese e tedesco. Il selettore Lingua è disponibile prima e dopo l’accesso; la scelta resta nel browser e segue i collegamenti verso Punto. I cataloghi condivisi si aggiornano con `python3 scripts/sync_locales.py` dalla radice del progetto.
+**English** | [Italiano](README.it.md)
 
-Il servizio Compose si chiama `tickets` e la sua immagine locale è `punto/tickets:${PUNTO_IMAGE_TAG:-local}`. Per aggiornare un’installazione con i nomi precedenti seguire la [guida nomenclatura Docker](../docs/tehnical/nomi-servizi-e-immagini.md); directory, volumi e alias di rete conservano i nomi già previsti.
+The interface supports Italian, English, Simplified Chinese, Spanish, French and German. The Language selector is available before and after sign-in; the choice remains in the browser and follows links to Punto. Shared catalogs are updated with `python3 scripts/sync_locales.py` from the project root.
 
-App web autonoma in italiano, affiancata a Punto. Server HTTP in C11, archivio SQLite dedicato, interfaccia HTML/CSS/JavaScript senza npm. Account, sessioni e ticket hanno un archivio dedicato. Il collegamento facoltativo a Punto permette di associare commesse e asset ai ticket, rispettando i permessi della sessione Punto collegata. Il login può usare Keycloak in comune con le altre app, associando esplicitamente l’identità aziendale a un account Ticket locale attivo.
+The Compose service is named `tickets` and its local image is `punto/tickets:${PUNTO_IMAGE_TAG:-local}`. To update an installation using the previous names, follow the [Docker naming guide](../docs/en/tehnical/nomi-servizi-e-immagini.md); directories, volumes and network aliases retain their existing names.
 
-## Funzioni
+Standalone web app alongside Punto. HTTP server in C11, dedicated SQLite store, HTML/CSS/JavaScript interface without npm. Accounts, sessions and tickets have dedicated storage. The optional Punto connection allows projects and assets to be associated with tickets, respecting the connected Punto session's permissions. Sign-in can use Keycloak shared with the other apps, explicitly associating the company identity with an active local Ticket account.
 
-- Apertura ticket con descrizione, richiedente, priorità, assegnatario e scadenza.
-- Stati **Aperto**, **In lavorazione**, **In attesa**, **Risolto**, **Chiuso**, con possibilità di riapertura.
-- Priorità **Bassa**, **Normale**, **Alta**, **Urgente**.
-- Bacheca per stato ed elenco paginato, con ricerca e filtri combinabili.
-- Code rapide **Da lavorare**, **I miei**, **Non assegnati**, **Scaduti** e **In scadenza** nei prossimi sette giorni.
-- Ordinamento per ultimo aggiornamento, priorità o scadenza; date e avvisi leggibili anche su mobile.
-- Preferenze di vista e filtri conservate per account nel browser, senza salvare il testo delle ricerche.
-- Collegamenti diretti ai ticket e azione **Prendi in carico** per assegnarsi una richiesta e avviarne la lavorazione.
-- Commenti e storico delle modifiche, conservati insieme ai ticket.
-- Riferimenti a commesse e asset reali, filtri dedicati e collegamenti in entrambe le direzioni.
-- Gestori e operatori con account personali. Il gestore gestisce gli account Ticket; i ticket collegati seguono le abilitazioni della sessione Punto, anche per l’amministratore Ticket.
-- Controllo della revisione: una modifica concorrente restituisce un conflitto e richiede di ricaricare il ticket.
+## Features
 
-Il richiedente è un campo descrittivo, non un account esterno. Questa versione è una coda interna: non include portale clienti, allegati, notifiche email o SLA. I ticket si chiudono senza cancellare lo storico. Il collegamento ai cataloghi usa una delega di lettura della sessione Punto; l'accesso aziendale OIDC resta una configurazione separata.
+- Ticket creation with description, requester, priority, assignee and due date.
+- **Open**, **In progress**, **Pending**, **Resolved**, **Closed** statuses, with reopening supported.
+- **Low**, **Normal**, **High**, **Urgent** priorities.
+- Board, list and weekly intervention agenda, with search and combinable filters.
+- Scheduling with start, end and time zone, separate from the ticket's due date.
+- Explicit synchronization of interventions with the personal Google calendar connected to Punto, with a persistent queue and conflict checking.
+- Quick queues: **To do**, **Mine**, **Unassigned**, **Overdue** and **Due soon** within the next seven days.
+- Sorting by last update, priority or due date; dates and alerts readable on mobile too.
+- View and filter preferences retained per account in the browser, without saving search text.
+- Direct ticket links and a **Take ownership** action to assign yourself a request and start working on it.
+- Comments and change history retained alongside tickets.
+- References to real projects and assets, dedicated filters and links in both directions.
+- Managers and operators with personal accounts. The manager manages Ticket accounts; linked tickets follow the Punto session's access grants, including for the Ticket administrator.
+- Revision checking: a concurrent change returns a conflict and requires the ticket to be reloaded.
 
-La bacheca iniziale mostra il lavoro aperto nelle colonne **Aperto**, **In corso** e **In attesa**. La coda **Tutti** include anche risolti e chiusi. Ogni colonna carica venti ticket e permette di mostrarne altri; i conteggi includono tutti i risultati dei filtri, anche quelli ancora da caricare. Aprire una scheda per modificare stato, priorità, assegnatario e scadenza. I contatori delle code rappresentano tutti i ticket accessibili alla sessione, mentre il totale della vista e quelli delle colonne seguono i filtri selezionati.
+The requester is a descriptive field, not an external account. This version is an internal queue: it does not include a customer portal, attachments, email notifications or SLAs. Tickets are closed without deleting history. The catalog connection uses a read-only delegation from the Punto session; company OIDC sign-in remains a separate configuration.
 
-Le code operative escludono risolti e chiusi. **Scaduti** contiene le scadenze precedenti a oggi; **In scadenza** comprende oggi e i sette giorni successivi. L’interfaccia usa la data di **Europe/Rome**. I link ai ticket richiedono comunque un account autenticato.
+The initial board shows open work in the **Open**, **In progress** and **Pending** columns. The **All** queue also includes resolved and closed tickets. Each column loads twenty tickets and allows more to be shown; counts include all filtered results, including those not yet loaded. Open a card to edit status, priority, assignee and due date. Queue counters represent all tickets accessible to the session, while the view total and column counts follow the selected filters.
 
-## Avvio nativo
+Operational queues exclude resolved and closed tickets. **Overdue** contains due dates before today; **Due soon** includes today and the following seven days. The interface uses the date in **Europe/Rome**. Ticket links still require an authenticated account.
 
-Dipendenze: compilatore C11, `make`, `pkg-config`, SQLite, OpenSSL, json-c e libcurl. Su macOS possono essere installate con `brew install pkg-config openssl@3 json-c sqlite curl`; su Debian con `apt install build-essential pkg-config libssl-dev libsqlite3-dev libjson-c-dev libcurl4-openssl-dev`.
+## Native startup
 
-Dalla radice del repository:
+Dependencies: C11 compiler, `make`, `pkg-config`, SQLite, OpenSSL, json-c and libcurl. On macOS they can be installed with `brew install pkg-config openssl@3 json-c sqlite curl`; on Debian with `apt install build-essential pkg-config libssl-dev libsqlite3-dev libjson-c-dev libcurl4-openssl-dev`.
+
+From the repository root:
 
 ```sh
 make tickets
@@ -43,164 +47,185 @@ export TICKETS_PASSWORD
 ./build/punto-tickets
 ```
 
-Il comando `read` mostrato è per zsh, la shell predefinita di macOS. In bash usare `read -rs -p 'Password iniziale: ' TICKETS_PASSWORD` e poi `export TICKETS_PASSWORD`.
+The `read` command shown is for zsh, the default macOS shell. In bash, use `read -rs -p 'Password iniziale: ' TICKETS_PASSWORD` and then `export TICKETS_PASSWORD`.
 
-Aprire [http://localhost:8083](http://localhost:8083) e accedere con le credenziali scelte. Il server ascolta sul loopback; `Ctrl+C` lo arresta. Il database predefinito è `ticket-app/data/tickets.db` quando si avvia dalla cartella `ticket-app`. Per il primo avvio servono email e password di almeno 12 caratteri; su un database già inizializzato queste variabili non cambiano gli account. Le password si aggiornano dalla gestione utenti.
+Open [http://localhost:8083](http://localhost:8083) and sign in with the credentials you chose. The server listens on loopback; `Ctrl+C` stops it. The default database is `ticket-app/data/tickets.db` when started from the `ticket-app` directory. Initial startup requires an email and a password of at least 12 characters; on an already initialized database, these variables do not change accounts. Passwords are updated through user management.
 
-Per avviare nuovamente dalla radice:
+To start again from the root:
 
 ```sh
 make run-tickets
 ```
 
-## Docker indipendente
+## Standalone Docker
 
 ```sh
 cp ticket-app/.env.example ticket-app/.env
 ```
 
-Compilare `TICKETS_EMAIL` e `TICKETS_PASSWORD` nel file locale, quindi:
+Fill in `TICKETS_EMAIL` and `TICKETS_PASSWORD` in the local file, then:
 
 ```sh
 docker compose --env-file ticket-app/.env -f ticket-app/compose.yaml up --build -d
 docker compose --env-file ticket-app/.env -f ticket-app/compose.yaml ps
 ```
 
-Aprire [http://localhost:8083](http://localhost:8083). La porta è pubblicata soltanto su `127.0.0.1`. Il volume `tickets_data` conserva SQLite; l'app gira con UID/GID `10006`, filesystem in sola lettura e nessuna dipendenza dai database di Punto. La modalità autonoma usa una rete bridge standard per consentire la pubblicazione della porta locale; il container può raggiungere la rete esterna. L'overlay affiancato a Punto usa invece la rete privata interna dello stack.
+Open [http://localhost:8083](http://localhost:8083). The port is published only on `127.0.0.1`. The `tickets_data` volume retains SQLite; the app runs with UID/GID `10006`, a read-only filesystem and no dependency on Punto's databases. Standalone mode uses a standard bridge network to allow publication of the local port; the container can reach the external network. The overlay alongside Punto instead uses the stack's internal private network.
 
-`TICKETS_HOST_PORT` cambia la porta host: aggiornare anche `TICKETS_PUBLIC_ORIGIN`, per esempio `http://localhost:8183`. L'origine è esatta, senza slash finale. Quando è impostata, usare nel browser il nome configurato.
+`TICKETS_HOST_PORT` changes the host port: also update `TICKETS_PUBLIC_ORIGIN`, for example `http://localhost:8183`. The origin is exact, without a trailing slash. When set, use the configured name in the browser.
 
-## Affiancamento allo stack Punto e Nginx Proxy Manager
+## Running alongside the Punto stack and Nginx Proxy Manager
 
-L'overlay facoltativo [compose.tickets.yaml](../compose.tickets.yaml) aggiunge il servizio `tickets` alla rete privata già usata da NPM, all'indirizzo `172.30.20.11:8083`, senza pubblicare porte host e senza collegarlo alle reti dei database. Lo stack Punto deve essere già configurato e avviato secondo il [README principale](../README.md).
+The optional [compose.tickets.yaml](../compose.tickets.yaml) overlay adds the `tickets` service to the private network already used by NPM, at `172.30.20.11:8083`, without publishing host ports or connecting it to database networks. The Punto stack must already be configured and running according to the [main README](../README.md).
 
-1. Preparare `ticket-app/.env` come sopra e impostare `TICKETS_PUBLIC_ORIGIN` all'origine pubblica dedicata, ad esempio `https://ticket.tuaazienda.it`.
-2. Avviare soltanto il nuovo servizio dalla radice del repository:
+1. Prepare `ticket-app/.env` as above and set `TICKETS_PUBLIC_ORIGIN` to the dedicated public origin, for example `https://ticket.tuaazienda.it`.
+2. Start only the new service from the repository root:
 
    ```sh
    docker compose --env-file .env.docker --env-file ticket-app/.env \
      -f compose.yaml -f compose.tickets.yaml up --build -d tickets
    ```
 
-3. In Nginx Proxy Manager creare un **Proxy Host** per il nome scelto: schema `http`, destinazione `ticket-app` (alias del servizio `tickets`), porta `8083`. Conservare l'header Host del browser, come nella configurazione standard di NPM. Configurare il certificato per il dominio e l'inoltro HTTPS coerente con l'origine scelta.
-4. Aprire l'origine configurata. Per consultare lo stato usare gli stessi file Compose con `ps tickets`.
+3. In Nginx Proxy Manager, create a **Proxy Host** for the chosen name: scheme `http`, destination `ticket-app` (an alias of the `tickets` service), port `8083`. Preserve the browser's Host header, as in the standard NPM configuration. Configure the domain certificate and HTTPS forwarding consistently with the chosen origin.
+4. Open the configured origin. To check status, use the same Compose files with `ps tickets`.
 
-Per configurare più indirizzi, sessioni separate e regole NPM ripetibili, vedere
-la [guida alla pubblicazione di Ticket](../docs/tehnical/ticket-reverse-proxy.md).
-`TICKETS_ADDITIONAL_ORIGINS` ammette fino a tre origini aggiuntive esatte, separate
-da virgole senza spazi. Ogni Host deve avere un solo schema; gli ingressi HTTP
-di un sito HTTPS vengono reindirizzati da Nginx. Il login aziendale rimane
-disponibile soltanto sull'origine della redirect URI OIDC configurata.
+To configure multiple addresses, separate sessions and repeatable NPM rules, see
+the [Ticket publishing guide](../docs/en/tehnical/ticket-reverse-proxy.md).
+`TICKETS_ADDITIONAL_ORIGINS` allows up to three additional exact origins, separated
+by commas without spaces. Each Host must have only one scheme; HTTP ingress
+for an HTTPS site is redirected by Nginx. Company sign-in remains
+available only on the origin of the configured OIDC redirect URI.
 
-I due file Compose descrivono modalità alternative. Quella indipendente e quella affiancata usano nomi di progetto e volumi effettivi potenzialmente diversi: non passare dall'una all'altra aspettandosi un'importazione automatica. Per spostare dati, arrestare l'app sorgente ed eseguire un backup e ripristino esplicito dell'archivio.
+The two Compose files describe alternative modes. The standalone mode and the mode alongside Punto use potentially different project names and actual volumes: do not switch between them expecting an automatic import. To move data, stop the source app and explicitly back up and restore the store.
 
-## Collegamento a commesse e asset
+## Connecting to projects and assets
 
-Configurare su Punto `TICKETS_APP_ORIGIN` con l’origine pubblica di Ticket e su Ticket `TICKETS_PUNTO_ORIGIN` con quella di Punto, senza slash finale. In produzione entrambe devono essere HTTPS. L’overlay `compose.tickets.yaml` passa la prima variabile a Punto e le variabili del connettore a Ticket. Con NPM sulla rete privata impostare anche `TICKETS_PUNTO_RESOLVE_IP=172.30.20.2`: il client raggiunge NPM direttamente mantenendo Host, SNI e verifica del certificato del dominio pubblico. Le CA pubbliche sono già installate nell’immagine. Per una CA privata montare il PEM in sola lettura con un override Compose e impostare `TICKETS_PUNTO_CA_FILE` nel servizio Ticket.
+Set `TICKETS_APP_ORIGIN` on Punto to Ticket's public origin and `TICKETS_PUNTO_ORIGIN` on Ticket to Punto's, without a trailing slash. Both must use HTTPS in production. The `compose.tickets.yaml` overlay passes the first variable to Punto and the connector variables to Ticket. With NPM on the private network, also set `TICKETS_PUNTO_RESOLVE_IP=172.30.20.2`: the client reaches NPM directly while preserving Host, SNI and verification of the public domain's certificate. Public CAs are already installed in the image. For a private CA, mount the PEM read-only with a Compose override and set `TICKETS_PUNTO_CA_FILE` in the Ticket service.
 
-Dopo la modifica ricompilare e ricreare **entrambi** i servizi, usando gli stessi file e segreti dello stack:
+After the change, rebuild and recreate **both** services, using the stack's same files and secrets:
 
 ```sh
 docker compose --env-file .env.docker --env-file ticket-app/.env \
   -f compose.yaml -f compose.tickets.yaml up --build -d app tickets
 ```
 
-Per una prova nativa: Punto su `http://127.0.0.1:8080` con `TICKETS_APP_ORIGIN=http://127.0.0.1:8083`; Ticket con `TICKETS_PUNTO_ORIGIN=http://127.0.0.1:8080`. HTTP è ammesso soltanto per origini loopback. Non usare `127.0.0.1` per collegare due container.
+For a native test: Punto at `http://127.0.0.1:8080` with `TICKETS_APP_ORIGIN=http://127.0.0.1:8083`; Ticket with `TICKETS_PUNTO_ORIGIN=http://127.0.0.1:8080`. HTTP is allowed only for loopback origins. Do not use `127.0.0.1` to connect two containers.
 
-1. Accedere a Ticket e premere **Collega Punto**. Il browser apre Punto e, se necessario, richiede l’accesso.
-2. Tornando a Ticket, il riquadro mostra il nome dell’account Punto collegato. Il modulo ticket permette di cercare e scegliere una commessa e/o un asset. Non viene creata una relazione di proprietà fra commessa e asset.
-3. **Ticket** e **+ Ticket** nella riga commessa, oppure **Ticket collegati** e **Nuovo ticket** nella scheda asset, aprono la coda filtrata o un modulo già contestualizzato. Nel dettaglio del ticket i riferimenti riportano alla commessa o all’asset.
+1. Sign in to Ticket and press **Connect Punto**. The browser opens Punto and requests sign-in if needed.
+2. On returning to Ticket, the panel shows the connected Punto account's name. The ticket form lets you search for and select a project and/or asset. No ownership relationship is created between the project and asset.
+3. **Ticket** and **+ Ticket** in the project row, or **Linked tickets** and **New ticket** in the asset record, open the filtered queue or a form with the context already set. In ticket details, references link back to the project or asset.
 
-Senza una sessione Punto collegata sono visibili soltanto i ticket senza riferimenti. Con il collegamento attivo sono visibili i ticket degli asset e delle commesse consultabili dall’account Punto. I permessi vengono verificati sul server a ogni richiesta, anche per dettagli, commenti, modifiche e contatori. Non si associano account per email o ID. La delega è di sola lettura, dura al massimo otto ore, resta in memoria ed è revocata da logout/scadenza della sessione Punto o dal riavvio di uno dei servizi; ripetere **Collega Punto**. **Scollega** la rimuove dalla sessione Ticket corrente.
+Without a connected Punto session, only tickets without references are visible. With the connection active, tickets for assets and projects viewable by the Punto account are visible. Permissions are checked on the server on every request, including details, comments, changes and counters. Accounts are not associated by email or ID. The delegation is read-only, lasts at most eight hours, remains in memory and is revoked by Punto session logout/expiry or by either service restarting; repeat **Connect Punto**. **Disconnect** removes it from the current Ticket session.
 
-Il server risolve ID e nomi dai cataloghi di Punto, attraverso le sue API di lettura; non accede ai database principali e non riceve il token privato dell’inventario. Codice e nome vengono conservati nel ticket come riferimenti storici. Modificare altri campi non sostituisce questi riferimenti. In caso di indisponibilità di Punto la lettura dei ticket collegati fallisce senza ampliare l’accesso; i ticket non collegati restano utilizzabili. Un asset non disponibile non impedisce di conservare un collegamento già salvato.
+The server resolves IDs and names from Punto's catalogs through its read APIs; it does not access the main databases or receive the inventory's private token. Codes and names are retained in the ticket as historical references. Editing other fields does not replace these references. If Punto is unavailable, reading linked tickets fails without broadening access; unlinked tickets remain usable. An unavailable asset does not prevent retaining a previously saved link.
 
-La migrazione SQLite dalla versione 1 alla 2 aggiunge riferimenti nullable e indici in una transazione; i ticket esistenti restano senza collegamenti. Effettuare il backup descritto sotto prima dell’aggiornamento. Il ripristino di una versione precedente dell’eseguibile richiede anche il ripristino del relativo database.
+SQLite migration from version 1 to 2 adds nullable references and indexes in a transaction; existing tickets remain unlinked. Perform the backup described below before upgrading. Restoring an earlier executable version also requires restoring its corresponding database.
 
-## Configurazione
+## Agenda, projects and Google Calendar
 
-| Variabile | Predefinito nativo | Uso |
+In ticket details, set **Intervention start** and **Intervention end** and save. The due date remains a separate date: it indicates when the request must be resolved, while the intervention occupies an interval in the agenda. Times are saved as UTC timestamps and displayed in the time zone specified by the form; check the time zone before confirming.
+
+The **Agenda** view shows the week and allows navigation with **Today**, previous and next. It retains the status, priority, assignee, project and asset filters and applies the board's permissions. It automatically loads all available pages, including very busy weeks. Interventions remain usable without Google. From Punto's project row, **Agenda** opens that project's interventions directly; from the **Calendar** section, you can select the project and open the Ticket agenda.
+
+For Google:
+
+1. The administrator configures the Calendar service and OAuth client according to the [Calendar manual](../calendar-addon/README.md). The example configuration leaves Google disabled; no Google secrets are required in the Ticket app.
+2. In Punto, open **Calendar**, choose **Connect Google Calendar** and complete consent in your Google account. Select a writable calendar with **Use this calendar**. **Sync now** requests a refresh; the screen shows the last completion and pending operations.
+3. In the ticket, choose **Connect calendar** and authorize the calendar delegation for the current session in Punto. The regular **Connect Punto** retains read-only catalog access.
+4. Save the intervention and choose the Google synchronization action in the ticket. The server composes the event with the ticket and project references. **Pending** means the operation is queued, not that Google has already applied it. Refresh status to check the outcome.
+
+The calendar belongs to the connected Punto account, even when the ticket is assigned to someone else. Other operators can view the internal intervention if authorized for the project; the manager role does not grant access to another user's Google calendar. The connection retains owner, calendar, event and operation: changing account or calendar does not automatically move an existing event.
+
+Local changes require another explicit synchronization. Changes made directly in Google do not automatically overwrite the internal intervention: refresh status and resolve any differences in the ticket. An ETag conflict prevents overwriting an event modified elsewhere. On a timeout, the server retains the same operation to check its outcome without inventing a new creation. Removal from Google retains the link until deletion is confirmed; internal scheduling is managed separately.
+
+Punto lists personal Google events, with pagination and separate recurring series; it does not automatically expand every occurrence. The integration does not generate worked hours, invitations or participant notifications. Before disconnecting Google, resolve pending operations: disconnecting deletes the local cache and queue, while events already created may remain in Google.
+
+The update migrates SQLite to version 3, preserving existing tickets and references and adding scheduling and synchronization metadata. Back up before upgrading. Session delegations remain temporary and are not included in the backup; Punto must be reconnected after a restart. The Calendar volume and its encryption key require a separate backup from the Ticket store.
+
+## Configuration
+
+| Variable | Native default | Use |
 | --- | --- | --- |
-| `TICKETS_BIND` | `127.0.0.1` | Indirizzo IP numerico di ascolto |
-| `TICKETS_PORT` | `8083` | Porta HTTP interna |
-| `TICKETS_PUBLIC_DIR` | `public` | Cartella dell'interfaccia, relativa alla directory di avvio |
-| `TICKETS_DB_PATH` | `data/tickets.db` | Database dedicato; la directory viene creata se necessario |
-| `TICKETS_PUBLIC_ORIGIN` | Origini loopback sulla porta configurata | Origine HTTP/HTTPS esatta autorizzata, senza percorso |
-| `TICKETS_EMAIL` | Nessuno | Email del primo gestore |
-| `TICKETS_PASSWORD` | Nessuno | Password del primo gestore, almeno 12 caratteri |
-| `TICKETS_NAME` | `Gestore` | Nome del primo gestore |
-| `TICKETS_PUNTO_ORIGIN` | Disabilitato | Origine HTTPS di Punto; HTTP ammesso solo sul loopback |
-| `TICKETS_PUNTO_RESOLVE_IP` | Risoluzione DNS | IPv4 fissa facoltativa per raggiungere l’origine HTTPS, mantenendo la verifica TLS |
-| `TICKETS_PUNTO_CA_FILE` | CA di sistema | CA PEM privata facoltativa, leggibile dal processo |
-| `AUTH_MODE` | `local` | `local`, `hybrid` (locale + Keycloak), `oidc` (solo Keycloak) |
-| `OIDC_ISSUER_URL` | Nessuno | Issuer pubblico esatto del realm Keycloak, ad esempio `https://auth.example.it/realms/punto` |
-| `OIDC_BACKCHANNEL_URL` | Issuer pubblico | URL del realm raggiungibile dal server per token e chiavi; deve corrispondere allo stesso realm |
-| `OIDC_CLIENT_ID` | Nessuno | Client OIDC dedicato a Ticket |
-| `OIDC_CLIENT_SECRET_FILE` | Nessuno | File del secret del client, leggibile dal processo Ticket |
-| `OIDC_REDIRECT_URI` | Nessuno | URL pubblico esatto di `/auth/callback` su Ticket |
-| `OIDC_BINDINGS_FILE` | Nessuno | File JSON che associa i subject Keycloak a email locali Ticket |
-| `OIDC_CA_FILE` | CA di sistema | CA PEM per le connessioni HTTPS al provider |
-| `OIDC_ALLOW_HTTP` | `0` | Abilita HTTP esplicitamente solo per prove locali |
+| `TICKETS_BIND` | `127.0.0.1` | Numeric listening IP address |
+| `TICKETS_PORT` | `8083` | Internal HTTP port |
+| `TICKETS_PUBLIC_DIR` | `public` | Interface directory, relative to the startup directory |
+| `TICKETS_DB_PATH` | `data/tickets.db` | Dedicated database; the directory is created if needed |
+| `TICKETS_PUBLIC_ORIGIN` | Loopback origins on the configured port | Exact authorized HTTP/HTTPS origin, without a path |
+| `TICKETS_EMAIL` | None | First manager's email |
+| `TICKETS_PASSWORD` | None | First manager's password, at least 12 characters |
+| `TICKETS_NAME` | `Gestore` | First manager's name |
+| `TICKETS_PUNTO_ORIGIN` | Disabled | Punto's HTTPS origin; HTTP allowed only on loopback |
+| `TICKETS_PUNTO_RESOLVE_IP` | DNS resolution | Optional fixed IPv4 to reach the HTTPS origin while retaining TLS verification |
+| `TICKETS_PUNTO_CA_FILE` | System CAs | Optional private PEM CA, readable by the process |
+| `AUTH_MODE` | `local` | `local`, `hybrid` (local + Keycloak), `oidc` (Keycloak only) |
+| `OIDC_ISSUER_URL` | None | Exact public issuer for the Keycloak realm, for example `https://auth.example.it/realms/punto` |
+| `OIDC_BACKCHANNEL_URL` | Public issuer | Realm URL reachable by the server for tokens and keys; must correspond to the same realm |
+| `OIDC_CLIENT_ID` | None | OIDC client dedicated to Ticket |
+| `OIDC_CLIENT_SECRET_FILE` | None | Client secret file, readable by the Ticket process |
+| `OIDC_REDIRECT_URI` | None | Exact public URL of `/auth/callback` on Ticket |
+| `OIDC_BINDINGS_FILE` | None | JSON file associating Keycloak subjects with local Ticket emails |
+| `OIDC_CA_FILE` | System CAs | PEM CA for HTTPS connections to the provider |
+| `OIDC_ALLOW_HTTP` | `0` | Explicitly enables HTTP only for local tests |
 
-Le password sono conservate come derivazioni PBKDF2 con sale casuale. Le sessioni risiedono in memoria e scadono dopo otto ore; quelle create tramite Keycloak hanno anche il limite di durata del token verificato. Un riavvio richiede un nuovo accesso. Il browser riceve cookie HttpOnly e SameSite=Strict; con origine HTTPS viene aggiunto Secure. Le scritture richiedono il token CSRF restituito dalla sessione. Il server controlla Host e Origin, usa query preparate e registra ticket e storico nella stessa transazione.
+Passwords are stored as PBKDF2 derivations with a random salt. Sessions reside in memory and expire after eight hours; those created through Keycloak are also limited by the verified token's lifetime. A restart requires signing in again. The browser receives HttpOnly and SameSite=Strict cookies; Secure is added for HTTPS origins. Writes require the CSRF token returned by the session. The server checks Host and Origin, uses prepared queries and records tickets and history in the same transaction.
 
-In `hybrid` e `oidc` il browser apre il login Keycloak e torna al callback con un codice monouso; token e secret restano sul server. La transazione usa state, nonce, PKCE e un cookie temporaneo HttpOnly SameSite=Lax. Il modulo condiviso verifica il token e risolve il subject tramite il file di associazioni; Ticket richiede poi che l’account locale sia attivo. I ruoli `admin`/`agent` rimangono quelli dell’archivio Ticket. L’email dichiarata nel token non crea o collega account automaticamente. Una configurazione incompleta impedisce l’avvio prima dell’apertura del database.
+In `hybrid` and `oidc`, the browser opens Keycloak sign-in and returns to the callback with a single-use code; tokens and secrets remain on the server. The transaction uses state, nonce, PKCE and a temporary HttpOnly SameSite=Lax cookie. The shared module verifies the token and resolves the subject through the bindings file; Ticket then requires the local account to be active. The `admin`/`agent` roles remain those in the Ticket store. The email declared in the token does not automatically create or link accounts. Incomplete configuration prevents startup before the database is opened.
 
-Il file `OIDC_BINDINGS_FILE` contiene un oggetto JSON, per esempio `{"subject-keycloak-del-gestore":"gestore@example.test"}`. Usare il valore `sub` stabile dell’utente nel realm configurato, non il nome utente o l’email Keycloak. Il file è specifico dell’app: la stessa identità può essere associata a un account diverso in Punto. Conservare e montare in sola lettura sia questo file sia il secret del client; una modifica viene applicata riavviando Ticket.
+The `OIDC_BINDINGS_FILE` file contains a JSON object, for example `{"subject-keycloak-del-gestore":"gestore@example.test"}`. Use the user's stable `sub` value in the configured realm, not their Keycloak username or email. The file is app-specific: the same identity can be associated with a different account in Punto. Retain and mount both this file and the client secret read-only; a change is applied by restarting Ticket.
 
-Per Docker multi app usare gli overlay Keycloak e la configurazione `KEYCLOAK_*` generata da `scripts/configure_keycloak.py`. L’overlay Ticket usa il backchannel TLS `https://keycloak:8443/realms/punto` e monta `/run/punto-auth/client-secret`, `/run/punto-auth/bindings.json` e `/run/punto-auth/ca.crt`. Le variabili della tabella sono quelle lette dal processo; per un avvio nativo esportarle con percorsi assoluti dell’host. Il Compose Ticket indipendente mantiene il login locale.
+For multi-app Docker, use the Keycloak overlays and the `KEYCLOAK_*` configuration generated by `scripts/configure_keycloak.py`. The Ticket overlay uses the TLS backchannel `https://keycloak:8443/realms/punto` and mounts `/run/punto-auth/client-secret`, `/run/punto-auth/bindings.json` and `/run/punto-auth/ca.crt`. The variables in the table are those read by the process; for native startup, export them with absolute host paths. Standalone Ticket Compose retains local sign-in.
 
-Il primo account e gli altri utenti si preparano come prima, senza cambiare gli ID o importare credenziali da Punto. In `oidc` il form locale è nascosto e `POST /api/login` restituisce `403`; le password locali conservate nell’archivio non sono utilizzabili finché questa modalità resta attiva. Il pulsante **Esci** chiude soltanto la sessione Ticket: la sessione Keycloak e le altre app restano attive, quindi un nuovo accesso aziendale può essere immediato.
+Prepare the first account and other users as before, without changing IDs or importing credentials from Punto. In `oidc`, the local form is hidden and `POST /api/login` returns `403`; local passwords retained in the store cannot be used while this mode remains active. The **Sign out** button closes only the Ticket session: the Keycloak session and other apps remain active, so another company sign-in can be immediate.
 
-Il server nativo parla HTTP. Il TLS pubblico viene terminato dal reverse proxy. Per l'esposizione remota configurare un'origine HTTPS dedicata e il relativo proxy.
+The native server speaks HTTP. Public TLS is terminated by the reverse proxy. For remote exposure, configure a dedicated HTTPS origin and its proxy.
 
 ## API
 
-Le API restituiscono JSON. Gli errori hanno forma `{"ok":false,"error":"messaggio"}`. Login e creazione usano `POST`; gli aggiornamenti `PUT`. Per le mutazioni autenticate inviare `Content-Type: application/json`, il cookie di sessione e `X-CSRF-Token`.
+APIs return JSON. Errors have the form `{"ok":false,"error":"messaggio"}`. Sign-in and creation use `POST`; updates use `PUT`. For authenticated mutations, send `Content-Type: application/json`, the session cookie and `X-CSRF-Token`.
 
-| Metodo e percorso | Contenuto / risultato |
+| Method and path | Content / result |
 | --- | --- |
-| `GET /healthz` | Salute del servizio, senza autenticazione |
-| `GET /api/auth/config` | `{sso,local}`; modalità di accesso pubbliche, senza secret |
-| `GET /auth/login` | Avvia l’accesso aziendale con redirect HTTP `303` e cookie temporaneo |
-| `GET /auth/callback` | Verifica il codice OIDC, crea una sessione Ticket e redirige a `/` |
-| `POST /api/login` | `{email,password}` → `{ok,user,csrf_token}` e cookie; `403` in modalità `oidc` |
-| `GET /api/session` | Utente e token CSRF; `401` senza sessione |
-| `POST /api/logout` | Termina la sessione corrente |
-| `GET /api/users` | `{items}`; gli operatori vedono gli account attivi |
-| `POST /api/users` | Solo gestori: `{name,email,password,role}` → `{user}` |
-| `PUT /api/users/:id` | Solo gestori: campi `name`, `role`, `active`, `password` opzionali |
-| `GET /api/integrations/punto/status` | `{configured,connected,user_name,expires_at,origin}` della sessione corrente |
-| `POST /api/integrations/punto/start` | `{}` → `{state,url}` per aprire Punto |
-| `POST /api/integrations/punto/connect` | `{state,grant}` → stato; richiede lo state pendente della stessa sessione |
-| `POST /api/integrations/punto/disconnect` | `{}` → stato scollegato |
-| `GET /api/integrations/punto/jobs` | Catalogo commesse abilitate; `search`, `limit`, `offset` |
-| `GET /api/integrations/punto/assets` | Catalogo asset; `q`, `limit`, `after_id` |
-| `GET /api/integrations/punto/validate` | `job_id` e/o `asset_id` → `{job,asset}` canonici |
-| `GET /api/tickets` | `{items,total,stats,queues,reference_date}`; parametri `search`, `status`, `priority`, `assignee_id`, `job_id`, `asset_id`, `queue`, `sort`, `today`, `limit`, `offset` |
+| `GET /healthz` | Service health, without authentication |
+| `GET /api/auth/config` | `{sso,local}`; public sign-in modes, without secrets |
+| `GET /auth/login` | Starts company sign-in with HTTP `303` redirect and temporary cookie |
+| `GET /auth/callback` | Verifies the OIDC code, creates a Ticket session and redirects to `/` |
+| `POST /api/login` | `{email,password}` → `{ok,user,csrf_token}` and cookie; `403` in `oidc` mode |
+| `GET /api/session` | User and CSRF token; `401` without a session |
+| `POST /api/logout` | Ends the current session |
+| `GET /api/users` | `{items}`; operators see active accounts |
+| `POST /api/users` | Managers only: `{name,email,password,role}` → `{user}` |
+| `PUT /api/users/:id` | Managers only: optional `name`, `role`, `active`, `password` fields |
+| `GET /api/integrations/punto/status` | `{configured,connected,user_name,expires_at,origin}` for the current session |
+| `POST /api/integrations/punto/start` | `{}` → `{state,url}` to open Punto |
+| `POST /api/integrations/punto/connect` | `{state,grant}` → status; requires the pending state from the same session |
+| `POST /api/integrations/punto/disconnect` | `{}` → disconnected status |
+| `GET /api/integrations/punto/jobs` | Catalog of authorized projects; `search`, `limit`, `offset` |
+| `GET /api/integrations/punto/assets` | Asset catalog; `q`, `limit`, `after_id` |
+| `GET /api/integrations/punto/validate` | `job_id` and/or `asset_id` → canonical `{job,asset}` |
+| `GET /api/tickets` | `{items,total,stats,queues,reference_date}`; parameters `search`, `status`, `priority`, `assignee_id`, `job_id`, `asset_id`, `queue`, `sort`, `today`, `limit`, `offset` |
 | `POST /api/tickets` | `{title,description,requester,priority,assignee_id,due_date,job_id,asset_id}` → `{ticket}` |
 | `GET /api/tickets/:id` | `{ticket,comments,history}` |
-| `PUT /api/tickets/:id` | Campi del ticket, `status` opzionale e `revision` obbligatoria → `{ticket}` |
+| `PUT /api/tickets/:id` | Ticket fields, optional `status` and required `revision` → `{ticket}` |
 | `POST /api/tickets/:id/comments` | `{body}` → `{comment}` |
 
-Ruoli: `admin`, `agent`. Stati: `open`, `in_progress`, `waiting`, `resolved`, `closed`. Priorità: `low`, `normal`, `high`, `urgent`. La scadenza è una data valida `YYYY-MM-DD` oppure `null`; l'assegnatario è l'ID di un account attivo oppure `null`. Il filtro `assignee_id=unassigned` seleziona i ticket non assegnati. I contatori `stats` e `queues` si riferiscono a tutti i ticket visibili all’account, indipendentemente dai filtri. La revisione protegge gli aggiornamenti del ticket; un commento aggiorna la data dell’ultima attività senza modificare la revisione.
+Roles: `admin`, `agent`. Statuses: `open`, `in_progress`, `waiting`, `resolved`, `closed`. Priorities: `low`, `normal`, `high`, `urgent`. The due date is a valid `YYYY-MM-DD` date or `null`; the assignee is an active account's ID or `null`. The `assignee_id=unassigned` filter selects unassigned tickets. The `stats` and `queues` counters refer to all tickets visible to the account, regardless of filters. The revision protects ticket updates; a comment updates the last activity date without changing the revision.
 
-`job_id` e `asset_id` sono ID interi positivi oppure `null` nelle scritture; nei filtri sono ID positivi. I nomi non sono accettati dal browser: il server aggiunge `job_code`, `job_name`, `asset_tag`, `asset_name` dai cataloghi. La ricerca comprende questi riferimenti. Un aggiornamento che omette gli ID conserva i riferimenti esistenti; `null` li rimuove. Le risposte dei cataloghi contengono soltanto ID, codice/tag, nome, stato e tipologia dell’asset; nessuna credenziale dell’inventario.
+`job_id` and `asset_id` are positive integer IDs or `null` in writes; in filters they are positive IDs. Names are not accepted from the browser: the server adds `job_code`, `job_name`, `asset_tag`, `asset_name` from the catalogs. Search includes these references. An update omitting IDs retains existing references; `null` removes them. Catalog responses contain only ID, code/tag, name, status and asset type; no inventory credentials.
 
-Punto espone `POST /api/integrations/tickets/grant` alla sua sessione autenticata, con form `state` di 64 caratteri esadecimali minuscoli e verifica di origine. Le letture `/api/integrations/tickets/{scope,jobs,assets,validate}` richiedono la delega opaca Bearer, mai un ID utente scelto dal client. Nessuna di queste API modifica commesse o asset.
+Punto exposes `POST /api/integrations/tickets/grant` to its authenticated session, with a 64-character lowercase hexadecimal `state` form field and origin verification. Reads at `/api/integrations/tickets/{scope,jobs,assets,validate}` require the opaque Bearer delegation, never a user ID chosen by the client. None of these APIs modifies projects or assets.
 
-`queue` accetta `all` (predefinito), `active`, `mine`, `unassigned`, `overdue` e `due_soon`. Tutte le code eccetto `all` includono solo gli stati attivi. `mine` usa l’utente della sessione. I filtri si combinano con AND. `today` è una data valida `YYYY-MM-DD`: il browser invia quella italiana; se omessa, l’API usa il giorno UTC e lo restituisce in `reference_date`. `due_soon` include gli estremi da `today` a `today + 7 giorni`.
+`queue` accepts `all` (default), `active`, `mine`, `unassigned`, `overdue` and `due_soon`. All queues except `all` include only active statuses. `mine` uses the session's user. Filters combine with AND. `today` is a valid `YYYY-MM-DD` date: the browser sends the date in Italy; if omitted, the API uses the UTC day and returns it in `reference_date`. `due_soon` includes both endpoints from `today` to `today + 7 days`.
 
-`sort` accetta `updated` (predefinito, più recenti prima), `priority` (urgente, alta, normale, bassa, poi scadenza) e `due` (scadenze più vicine, poi priorità). Le scadenze assenti vengono dopo quelle presenti; aggiornamento e ID decrescenti risolvono le parità. `limit` va da 1 a 100, `offset` da 0 a 1.000.000. Parametri sconosciuti, duplicati o non validi restituiscono `400`.
+`sort` accepts `updated` (default, newest first), `priority` (urgent, high, normal, low, then due date) and `due` (nearest due dates, then priority). Missing due dates follow present ones; descending update time and ID break ties. `limit` ranges from 1 to 100, `offset` from 0 to 1,000,000. Unknown, duplicate or invalid parameters return `400`.
 
-## Verifica e backup
+## Verification and backup
 
 ```sh
 make test-tickets
 ```
 
-I test compilano i server e usano database temporanei, credenziali sintetiche e porte loopback, senza scrivere nei dati di Punto. Coprono workflow, permessi, commenti, storico, revisioni, persistenza, code operative, scadenze, ordinamento, controlli HTTP, migrazione dello schema e collegamenti ai cataloghi con revoca dei permessi e indisponibilità delle sorgenti.
+Tests compile the servers and use temporary databases, synthetic credentials and loopback ports, without writing to Punto's data. They cover workflows, permissions, comments, history, revisions, persistence, operational queues, due dates, sorting, HTTP checks, schema migration and catalog connections with permission revocation and source unavailability.
 
-La suite `tests/test_tickets_oidc.py` usa un provider OIDC locale con vere firme RSA; non richiede un Keycloak esterno. Verifica collegamento esplicito agli account, ruoli locali, CSRF, durata e revoca della sessione, riuso dei callback, modalità `oidc`, account disattivati, subject sconosciuti e firme non valide.
+The `tests/test_tickets_oidc.py` suite uses a local OIDC provider with real RSA signatures; it requires no external Keycloak. It checks explicit account linking, local roles, CSRF, session duration and revocation, callback reuse, `oidc` mode, disabled accounts, unknown subjects and invalid signatures.
 
-Per il backup più semplice arrestare soltanto `tickets`, copiare l'intera directory dati o il volume dedicato, quindi riavviarlo. Per backup a caldo usare l'API SQLite Backup o il comando `.backup` di SQLite: copiare il solo file `.db` mentre il processo scrive può perdere dati presenti nel WAL. Conservare il backup in una posizione protetta perché contiene i ticket, i commenti e gli account.
+For the simplest backup, stop only `tickets`, copy the entire data directory or dedicated volume, then restart it. For hot backups, use the SQLite Backup API or SQLite's `.backup` command: copying only the `.db` file while the process writes can lose data in the WAL. Retain backups in a protected location because they contain tickets, comments and accounts.

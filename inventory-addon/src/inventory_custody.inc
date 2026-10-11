@@ -1,4 +1,47 @@
 /* Structured assignments and append-only custody/verification records. */
+/* Schema 6 keeps legacy application users while allowing real people without a login. */
+static bool custody_people_migrate(void) {
+    sqlite3_int64 sequence=0;
+    sqlite3_stmt *s=prepare("SELECT seq FROM sqlite_sequence WHERE name='asset_custody'");
+    if (!s) return false;
+    int result=sqlite3_step(s);
+    if (result==SQLITE_ROW) sequence=sqlite3_column_int64(s,0);
+    sqlite3_finalize(s);
+    if (result!=SQLITE_ROW && result!=SQLITE_DONE) return false;
+    /* Preserve also indexes added by an installation, not only the standard ones. */
+    json_object *indexes=json_object_new_array();
+    s=prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='asset_custody' AND sql IS NOT NULL ORDER BY name");
+    if (!s) { json_object_put(indexes); return false; }
+    while ((result=sqlite3_step(s))==SQLITE_ROW)
+        json_object_array_add(indexes,json_object_new_string((const char *)sqlite3_column_text(s,0)));
+    sqlite3_finalize(s);
+    if (result!=SQLITE_DONE) { json_object_put(indexes); return false; }
+    bool ok=execute(
+        "ALTER TABLE asset_context ADD COLUMN assignee_person_id INTEGER REFERENCES inventory_people(id) CHECK(assignee_person_id>0);"
+        "ALTER TABLE asset_context ADD COLUMN assignee_person_name TEXT NOT NULL DEFAULT '';"
+        "CREATE INDEX asset_context_person ON asset_context(assignee_person_id,asset_id);"
+        "CREATE TABLE asset_custody_next(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER NOT NULL REFERENCES assets(id),"
+        "user_id INTEGER CHECK(user_id>0),user_name TEXT NOT NULL DEFAULT '',checkout_on TEXT NOT NULL,due_on TEXT NOT NULL DEFAULT '',"
+        "condition_out TEXT NOT NULL,notes_out TEXT NOT NULL DEFAULT '',actor_id INTEGER NOT NULL CHECK(actor_id>0),created_at TEXT NOT NULL,"
+        "site_id INTEGER REFERENCES inventory_places(id),site_name TEXT NOT NULL DEFAULT '',department_id INTEGER REFERENCES inventory_places(id),department_name TEXT NOT NULL DEFAULT '',"
+        "location_id INTEGER REFERENCES inventory_places(id),location_name TEXT NOT NULL DEFAULT '',active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),"
+        "returned_on TEXT,condition_in TEXT,notes_in TEXT,returned_actor_id INTEGER,returned_at TEXT,"
+        "person_id INTEGER REFERENCES inventory_people(id) CHECK(person_id>0),person_name TEXT NOT NULL DEFAULT '',"
+        "CHECK((user_id IS NOT NULL AND person_id IS NULL AND person_name='') OR (user_id IS NULL AND person_id IS NOT NULL AND user_name='')));"
+        "INSERT INTO asset_custody_next(id,asset_id,user_id,user_name,checkout_on,due_on,condition_out,notes_out,actor_id,created_at,site_id,site_name,department_id,department_name,location_id,location_name,active,returned_on,condition_in,notes_in,returned_actor_id,returned_at) "
+        "SELECT id,asset_id,user_id,user_name,checkout_on,due_on,condition_out,notes_out,actor_id,created_at,site_id,site_name,department_id,department_name,location_id,location_name,active,returned_on,condition_in,notes_in,returned_actor_id,returned_at FROM asset_custody;"
+        "DROP TABLE asset_custody;ALTER TABLE asset_custody_next RENAME TO asset_custody;");
+    for (size_t i=0;ok && i<json_object_array_length(indexes);i++)
+        ok=execute(json_object_get_string(json_object_array_get_idx(indexes,i)));
+    json_object_put(indexes);
+    if (ok) ok=execute("CREATE INDEX asset_custody_person ON asset_custody(person_id,active,id);");
+    if (ok) {
+        s=prepare("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='asset_custody'");
+        ok=s && sqlite3_bind_int64(s,1,sequence)==SQLITE_OK && sqlite3_step(s)==SQLITE_DONE;
+        sqlite3_finalize(s);
+    }
+    return ok;
+}
 static void column_id(json_object *o, const char *key, sqlite3_stmt *s, int column) {
     if (sqlite3_column_type(s,column)==SQLITE_NULL) json_object_object_add(o,key,NULL);
     else addint(o,key,sqlite3_column_int64(s,column));
@@ -12,22 +55,23 @@ static bool optional_id(const Form *form, const char *key, sqlite3_int64 *id) {
 }
 static json_object *context_row(sqlite3_stmt *s) {
     json_object *o=json_object_new_object();
-    const char *ids[]={"assignee_user_id","site_id","department_id","location_id"};
-    const char *labels[]={"assignee_user_name","site_name","department_name","location_name"};
-    for (int i=0;i<4;i++) { column_id(o,ids[i],s,i*2); addstr(o,labels[i],(const char *)sqlite3_column_text(s,i*2+1)); }
+    const char *ids[]={"assignee_user_id","site_id","department_id","location_id","assignee_person_id"};
+    const char *labels[]={"assignee_user_name","site_name","department_name","location_name","assignee_person_name"};
+    for (int i=0;i<5;i++) { column_id(o,ids[i],s,i*2); addstr(o,labels[i],(const char *)sqlite3_column_text(s,i*2+1)); }
     return o;
 }
 static json_object *empty_context(void) {
     json_object *o=json_object_new_object();
-    const char *ids[]={"assignee_user_id","site_id","department_id","location_id"};
-    const char *labels[]={"assignee_user_name","site_name","department_name","location_name"};
-    for (int i=0;i<4;i++) { json_object_object_add(o,ids[i],NULL); addstr(o,labels[i],""); }
+    const char *ids[]={"assignee_user_id","site_id","department_id","location_id","assignee_person_id"};
+    const char *labels[]={"assignee_user_name","site_name","department_name","location_name","assignee_person_name"};
+    for (int i=0;i<5;i++) { json_object_object_add(o,ids[i],NULL); addstr(o,labels[i],""); }
     return o;
 }
-#define CUSTODY_COLUMNS "id,user_id,user_name,checkout_on,due_on,condition_out,notes_out,actor_id,created_at,site_id,site_name,department_id,department_name,location_id,location_name,active,returned_on,condition_in,notes_in,returned_actor_id,returned_at"
+#define CUSTODY_COLUMNS "id,user_id,user_name,checkout_on,due_on,condition_out,notes_out,actor_id,created_at,site_id,site_name,department_id,department_name,location_id,location_name,active,returned_on,condition_in,notes_in,returned_actor_id,returned_at,person_id,person_name"
 static json_object *custody_row(sqlite3_stmt *s) {
     json_object *o=json_object_new_object();
-    addint(o,"id",sqlite3_column_int64(s,0)); addint(o,"user_id",sqlite3_column_int64(s,1));
+    addint(o,"id",sqlite3_column_int64(s,0)); column_id(o,"user_id",s,1);
+    column_id(o,"person_id",s,21); addstr(o,"person_name",(const char *)sqlite3_column_text(s,22));
     const char *keys[]={"user_name","checkout_on","due_on","condition_out","notes","created_at"};
     const int columns[]={2,3,4,5,6,8};
     for (int i=0;i<6;i++) addstr(o,keys[i],(const char *)sqlite3_column_text(s,columns[i]));
@@ -69,7 +113,7 @@ static bool enrich_query(json_object *asset, const char *key, const char *sql, j
     return result==SQLITE_ROW || result==SQLITE_DONE;
 }
 static bool custody_enrich(json_object *asset) {
-    return enrich_query(asset,"context","SELECT assignee_user_id,assignee_user_name,site_id,site_name,department_id,department_name,location_id,location_name FROM asset_context WHERE asset_id=?",context_row) &&
+    return enrich_query(asset,"context","SELECT assignee_user_id,assignee_user_name,site_id,site_name,department_id,department_name,location_id,location_name,assignee_person_id,assignee_person_name FROM asset_context WHERE asset_id=?",context_row) &&
         enrich_query(asset,"custody","SELECT " CUSTODY_COLUMNS " FROM asset_custody WHERE asset_id=? AND active=1",custody_row) &&
         enrich_query(asset,"last_verification","SELECT " VERIFICATION_COLUMNS " FROM asset_verifications WHERE asset_id=? ORDER BY verified_on DESC,id DESC LIMIT 1",verification_row);
 }
@@ -82,16 +126,19 @@ static void display_name(char result[161], const char *name) {
     if (size>160) { size=160; while (size && ((unsigned char)name[size]&0xc0)==0x80) size--; }
     memcpy(result,name,size); result[size]=0;
 }
+static const char *context_assignee_name(json_object *context) {
+    return jint(context,"assignee_person_id") ? jstr(context,"assignee_person_name") : jstr(context,"assignee_user_name");
+}
 static bool custody_asset_compatible(json_object *old, const char *type, const char *const *values) {
     json_object *context=NULL,*custody=NULL;
     json_object_object_get_ex(old,"context",&context); json_object_object_get_ex(old,"custody",&custody);
     if (!context && !custody) return true;
-    bool assigned=jint(context,"assignee_user_id")!=0;
+    bool assigned=jint(context,"assignee_user_id") || jint(context,"assignee_person_id");
     bool placed=jint(context,"site_id") || jint(context,"department_id") || jint(context,"location_id");
     if (!assigned && !placed && !custody) return true;
     if (!tangible(type) || (custody && strcmp(type,jstr(old,"asset_type")))) return false;
     char user[161],location[161];
-    display_name(user,jstr(context,"assignee_user_name"));
+    display_name(user,context_assignee_name(context));
     display_name(location,*jstr(context,"location_name") ? jstr(context,"location_name") : jstr(context,"site_name"));
     if ((assigned || custody) && strcmp(values[8],user)) return false;
     if (placed && strcmp(values[7],location)) return false;
@@ -200,12 +247,12 @@ fail:
 static bool good_condition(const char *value) { return !strcmp(value,"good") || !strcmp(value,"fair") || !strcmp(value,"damaged"); }
 static bool effective_date(const char *value, const char *today) { return *value && valid_date(value) && strcmp(value,today)<=0; }
 static bool context_write(sqlite3_int64 asset_id, json_object *context) {
-    sqlite3_stmt *s=prepare("INSERT INTO asset_context(asset_id,assignee_user_id,assignee_user_name,site_id,site_name,department_id,department_name,location_id,location_name) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET assignee_user_id=excluded.assignee_user_id,assignee_user_name=excluded.assignee_user_name,site_id=excluded.site_id,site_name=excluded.site_name,department_id=excluded.department_id,department_name=excluded.department_name,location_id=excluded.location_id,location_name=excluded.location_name");
+    sqlite3_stmt *s=prepare("INSERT INTO asset_context(asset_id,assignee_user_id,assignee_user_name,site_id,site_name,department_id,department_name,location_id,location_name,assignee_person_id,assignee_person_name) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET assignee_user_id=excluded.assignee_user_id,assignee_user_name=excluded.assignee_user_name,site_id=excluded.site_id,site_name=excluded.site_name,department_id=excluded.department_id,department_name=excluded.department_name,location_id=excluded.location_id,location_name=excluded.location_name,assignee_person_id=excluded.assignee_person_id,assignee_person_name=excluded.assignee_person_name");
     if (!s) return false;
     sqlite3_bind_int64(s,1,asset_id);
-    const char *ids[]={"assignee_user_id","site_id","department_id","location_id"};
-    const char *labels[]={"assignee_user_name","site_name","department_name","location_name"};
-    for (int i=0;i<4;i++) { bind_id(s,i*2+2,jint(context,ids[i])); sqlite3_bind_text(s,i*2+3,jstr(context,labels[i]),-1,SQLITE_TRANSIENT); }
+    const char *ids[]={"assignee_user_id","site_id","department_id","location_id","assignee_person_id"};
+    const char *labels[]={"assignee_user_name","site_name","department_name","location_name","assignee_person_name"};
+    for (int i=0;i<5;i++) { bind_id(s,i*2+2,jint(context,ids[i])); sqlite3_bind_text(s,i*2+3,jstr(context,labels[i]),-1,SQLITE_TRANSIENT); }
     bool ok=sqlite3_step(s)==SQLITE_DONE; sqlite3_finalize(s); return ok;
 }
 static json_object *validated_context(Form *form, json_object *old, bool *db_error) {
@@ -213,12 +260,19 @@ static json_object *validated_context(Form *form, json_object *old, bool *db_err
     const char *keys[]={"assignee_user_id","site_id","department_id","location_id"};
     const char *labels[]={"assignee_user_name","site_name","department_name","location_name"};
     for (int i=0;i<4;i++) if (!optional_id(form,keys[i],&ids[i])) return NULL;
+    sqlite3_int64 person_id=0;
+    if (!optional_id(form,"assignee_person_id",&person_id) || (person_id && ids[0])) return NULL;
     const char *user=field(form,"assignee_user_name");
     if (strlen(user)>480 || !utf8_text(user,false) || (ids[0] ? !nonblank(user) : *user!=0)) return NULL;
-    json_object *context=empty_context(),*places[3]={NULL,NULL,NULL};
+    json_object *context=empty_context(),*places[3]={NULL,NULL,NULL},*person=NULL;
     if (ids[0]) addint(context,keys[0],ids[0]);
     addstr(context,labels[0],user);
     bool valid=true;
+    if (person_id) {
+        person=directory_load(false,person_id,db_error);
+        if (!person || (!directory_active(person) && jint(old,"assignee_person_id")!=person_id)) valid=false;
+        else { addint(context,"assignee_person_id",person_id); addstr(context,"assignee_person_name",jstr(person,"display_name")); }
+    }
     for (int i=0;i<3;i++) if (ids[i+1]) {
         places[i]=load_place(ids[i+1],db_error);
         const char *kind=i==0 ? "site" : i==1 ? "department" : "location";
@@ -229,18 +283,19 @@ static json_object *validated_context(Form *form, json_object *old, bool *db_err
     if (places[1] && jint(places[1],"parent_id") && jint(places[1],"parent_id")!=ids[1]) valid=false;
     if (places[2] && jint(places[2],"parent_id")!=ids[1]) valid=false;
     for (int i=0;i<3;i++) if (places[i]) json_object_put(places[i]);
+    if (person) json_object_put(person);
     if (!valid || *db_error) { json_object_put(context); return NULL; }
     return context;
 }
 static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Form *form, int *status) {
-    static const char *const context_fields[]={"version","actor_id","assignee_user_id","assignee_user_name","site_id","department_id","location_id"};
-    static const char *const checkout_fields[]={"version","actor_id","user_id","user_name","checkout_on","due_on","condition_out","notes"};
+    static const char *const context_fields[]={"version","actor_id","assignee_user_id","assignee_user_name","site_id","department_id","location_id","assignee_person_id"};
+    static const char *const checkout_fields[]={"version","actor_id","user_id","user_name","checkout_on","due_on","condition_out","notes","person_id"};
     static const char *const checkin_fields[]={"version","actor_id","returned_on","condition_in","notes","status"};
     static const char *const verify_fields[]={"version","actor_id","verified_on","condition","observed_location_id","notes"};
     bool is_context=!strcmp(operation,"context"),is_out=!strcmp(operation,"checkout"),is_in=!strcmp(operation,"checkin");
     const char *const *allowed=is_context ? context_fields : is_out ? checkout_fields : is_in ? checkin_fields : verify_fields;
-    size_t count=is_context ? 7 : is_out ? 8 : 6;
-    sqlite3_int64 actor,version,user_id=0,observed_id=0;
+    size_t count=is_context ? 8 : is_out ? 9 : 6;
+    sqlite3_int64 actor,version,user_id=0,person_id=0,observed_id=0;
     char today[11];
     const char *notes=field(form,"notes"),*user_name=field(form,"user_name"),*due=field(form,"due_on");
     const char *effective=field(form,is_out ? "checkout_on" : is_in ? "returned_on" : "verified_on");
@@ -249,13 +304,14 @@ static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Fo
     if (!only_fields(form,allowed,count) || !integer(field(form,"actor_id"),1,INT64_MAX,&actor) ||
         !integer(field(form,"version"),1,INT64_MAX-1,&version) || !business_date(today) ||
         (!is_context && (strlen(notes)>2000 || !utf8_text(notes,true) || !effective_date(effective,today) || !good_condition(condition))) ||
-        (is_out && (!integer(field(form,"user_id"),1,INT64_MAX,&user_id) || !nonblank(user_name) || strlen(user_name)>480 || !utf8_text(user_name,false) || !valid_date(due) || (*due && strcmp(due,effective)<0))) ||
+        (is_out && (!optional_id(form,"user_id",&user_id) || !optional_id(form,"person_id",&person_id) || (user_id!=0)==(person_id!=0) ||
+            (user_id ? !nonblank(user_name) : *user_name!=0) || strlen(user_name)>480 || !utf8_text(user_name,false) || !valid_date(due) || (*due && strcmp(due,effective)<0))) ||
         (is_in && strcmp(return_status,"available") && strcmp(return_status,"maintenance")) ||
         (!is_context && !is_out && !is_in && !optional_id(form,"observed_location_id",&observed_id)))
         return failure(status,400,"Dati, condizione, date o versione non validi.");
     if (!execute("BEGIN IMMEDIATE")) return failure(status,503,"Archivio inventario temporaneamente occupato.");
     bool error=false; int code=500; const char *message="Operazione inventario non riuscita.";
-    json_object *old=load_asset(id,&error),*asset=NULL,*context=NULL,*observed=NULL,*record=NULL,*change=NULL,*active=NULL,*old_context=NULL;
+    json_object *old=load_asset(id,&error),*asset=NULL,*context=NULL,*observed=NULL,*record=NULL,*change=NULL,*active=NULL,*old_context=NULL,*person=NULL;
     if (!old) { code=error ? 500 : 404; message="Bene non trovato."; goto fail; }
     if (jint(old,"version")!=version) { code=409; message="Il bene è stato modificato: ricaricare i dati."; goto fail; }
     if (!tangible(jstr(old,"asset_type"))) { code=400; message="L'operazione richiede un bene fisico o un dispositivo."; goto fail; }
@@ -263,9 +319,9 @@ static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Fo
     const char *new_status=jstr(old,"status");
     if (is_context) {
         context=validated_context(form,old_context,&error);
-        if (!context) { code=error ? 500 : 400; message="Utente o luoghi non validi oppure appartenenti a sedi diverse."; goto fail; }
-        if (active && jint(context,"assignee_user_id")!=jint(active,"user_id")) { code=409; message="Restituire il bene prima di cambiare assegnatario."; goto fail; }
-        if (jint(context,"assignee_user_id")) {
+        if (!context) { code=error ? 500 : 400; message="Persona, utente o luoghi non validi oppure appartenenti a sedi diverse."; goto fail; }
+        if (active && (jint(context,"assignee_user_id")!=jint(active,"user_id") || jint(context,"assignee_person_id")!=jint(active,"person_id"))) { code=409; message="Restituire il bene prima di cambiare assegnatario."; goto fail; }
+        if (jint(context,"assignee_user_id") || jint(context,"assignee_person_id")) {
             if (strcmp(new_status,"available") && strcmp(new_status,"assigned")) { code=409; message="Il bene non è disponibile per l'assegnazione."; goto fail; }
             new_status="assigned";
         } else if (!strcmp(new_status,"assigned")) new_status="available";
@@ -276,14 +332,22 @@ static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Fo
         if (!context) goto fail;
     }
     if (is_out) {
-        bool same_assignment=!strcmp(new_status,"assigned") && jint(context,"assignee_user_id")==user_id;
-        if (active || (strcmp(new_status,"available") && !same_assignment)) { code=409; message="Il bene deve essere disponibile o già assegnato allo stesso utente, senza una consegna aperta."; goto fail; }
-        addint(context,"assignee_user_id",user_id); addstr(context,"assignee_user_name",user_name); new_status="assigned";
+        if (person_id) {
+            person=directory_load(false,person_id,&error);
+            if (!directory_active(person)) { code=error ? 500 : 400; message="La consegna richiede una persona attiva."; goto fail; }
+        }
+        bool same_assignment=!strcmp(new_status,"assigned") && jint(context,"assignee_user_id")==user_id && jint(context,"assignee_person_id")==person_id;
+        if (active || (strcmp(new_status,"available") && !same_assignment)) { code=409; message="Il bene deve essere disponibile o già assegnato allo stesso destinatario, senza una consegna aperta."; goto fail; }
+        if (user_id) addint(context,"assignee_user_id",user_id); else json_object_object_add(context,"assignee_user_id",NULL);
+        addstr(context,"assignee_user_name",user_name);
+        if (person_id) addint(context,"assignee_person_id",person_id); else json_object_object_add(context,"assignee_person_id",NULL);
+        addstr(context,"assignee_person_name",jstr(person,"display_name")); new_status="assigned";
     }
     if (is_in) {
         if (!active) { code=409; message="Il bene non ha una consegna aperta."; goto fail; }
         if (strcmp(effective,jstr(active,"checkout_on"))<0) { code=400; message="La restituzione non può precedere la consegna."; goto fail; }
-        json_object_object_add(context,"assignee_user_id",NULL); addstr(context,"assignee_user_name",""); new_status=return_status;
+        json_object_object_add(context,"assignee_user_id",NULL); addstr(context,"assignee_user_name","");
+        json_object_object_add(context,"assignee_person_id",NULL); addstr(context,"assignee_person_name",""); new_status=return_status;
     }
     if (!is_context && !is_out && !is_in && observed_id) {
         observed=load_place(observed_id,&error);
@@ -295,9 +359,10 @@ static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Fo
     sqlite3_int64 record_id=0;
     sqlite3_stmt *s=NULL;
     if (is_out) {
-        s=prepare("INSERT INTO asset_custody(asset_id,user_id,user_name,checkout_on,due_on,condition_out,notes_out,actor_id,created_at,site_id,site_name,department_id,department_name,location_id,location_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+        s=prepare("INSERT INTO asset_custody(asset_id,user_id,user_name,checkout_on,due_on,condition_out,notes_out,actor_id,created_at,site_id,site_name,department_id,department_name,location_id,location_name,person_id,person_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         if (!s) goto fail;
-        sqlite3_bind_int64(s,1,id); sqlite3_bind_int64(s,2,user_id); sqlite3_bind_text(s,3,user_name,-1,SQLITE_TRANSIENT);
+        sqlite3_bind_int64(s,1,id); bind_id(s,2,user_id); sqlite3_bind_text(s,3,user_name,-1,SQLITE_TRANSIENT);
+        bind_id(s,16,person_id); sqlite3_bind_text(s,17,jstr(person,"display_name"),-1,SQLITE_TRANSIENT);
         sqlite3_bind_text(s,4,effective,-1,SQLITE_TRANSIENT); sqlite3_bind_text(s,5,due,-1,SQLITE_TRANSIENT); sqlite3_bind_text(s,6,condition,-1,SQLITE_TRANSIENT);
         sqlite3_bind_text(s,7,notes,-1,SQLITE_TRANSIENT); sqlite3_bind_int64(s,8,actor); sqlite3_bind_text(s,9,timestamp,-1,SQLITE_TRANSIENT);
         const char *ids[]={"site_id","department_id","location_id"},*labels[]={"site_name","department_name","location_name"};
@@ -326,7 +391,7 @@ static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Fo
     bool context_changed=is_context || is_out || is_in;
     if (context_changed && !context_write(id,context)) goto fail;
     char user_display[161],location_display[161];
-    display_name(user_display,jstr(context,"assignee_user_name"));
+    display_name(user_display,context_assignee_name(context));
     display_name(location_display,*jstr(context,"location_name") ? jstr(context,"location_name") : jstr(context,"site_name"));
     if ((is_out || is_in) && !jint(context,"site_id") && !jint(context,"location_id")) display_name(location_display,jstr(old,"location"));
     s=prepare(context_changed ? "UPDATE assets SET status=?,assignee=?,location=?,actor_id=?,version=version+1,updated_at=? WHERE id=? AND version=?" :
@@ -350,7 +415,7 @@ static json_object *custody_mutation(sqlite3_int64 id, const char *operation, Fo
     if (!history_write(id,"updated",actor,version+1,timestamp,asset,change) || !execute("COMMIT")) {
         message="Storico inventario non salvato; operazione annullata."; goto fail;
     }
-    json_object_put(old); json_object_put(context); if (observed) json_object_put(observed); json_object_put(change);
+    json_object_put(old); json_object_put(context); if (observed) json_object_put(observed); if (person) json_object_put(person); json_object_put(change);
     json_object *o=ok_json(); json_object_object_add(o,"asset",asset);
     if (record) json_object_object_add(o,is_out || is_in ? "custody" : "verification",record);
     *status=is_out || (!is_context && !is_in) ? 201 : 200; return o;
@@ -359,6 +424,7 @@ fail:
     if (observed) json_object_put(observed);
     if (record) json_object_put(record);
     if (change) json_object_put(change);
+    if (person) json_object_put(person);
     return failure(status,code,message);
 }
 static json_object *custody_history(sqlite3_int64 id, bool verification, const char *query, int *status) {

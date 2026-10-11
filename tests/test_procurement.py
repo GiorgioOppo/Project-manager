@@ -14,7 +14,13 @@ import test_roles as roles
 
 
 class ProcurementIntegrationTests(unittest.TestCase):
-    setUp = roles.RoleIntegrationTests.setUp
+    def setUp(self):
+        roles.RoleIntegrationTests.setUp(self)
+        status, session, _ = self.api("GET", "/api/session", cookie=self.manager_cookie)
+        self.assertEqual(status, 200, session)
+        status, data, _ = self.api("POST", "/api/users/%d/access-groups" % session["user_id"],
+                                   {"groups": json.dumps(["sales"])}, cookie=self.manager_cookie)
+        self.assertEqual(status, 200, data)
     def start_server(self, email=roles.MANAGER_EMAIL, password=roles.MANAGER_PASSWORD):
         previous = os.environ.get("DOC_FILES_DIR")
         os.environ["DOC_FILES_DIR"] = str(Path(self.fixture.name).resolve() / "documents")
@@ -112,7 +118,7 @@ class ProcurementIntegrationTests(unittest.TestCase):
         self.manager_cookie = self.login(roles.MANAGER_EMAIL, roles.MANAGER_PASSWORD)
         self.assertEqual(self.records("contracts"), [contract])
         with closing(sqlite3.connect(self.db_path)) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (10,))
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone(), (13,))
 
     def test_duplicate_codes_case_insensitive_and_invalid_form_fields(self):
         supplier_id = self.supplier()
@@ -200,7 +206,8 @@ class ProcurementIntegrationTests(unittest.TestCase):
         self.assign_job(data["id"], user_id)
         status, data, _ = self.api("GET", "/api/jobs", cookie=worker)
         self.assertEqual(status, 200, data)
-        self.assertEqual(data["jobs"][0]["contract_id"], contract_id)
+        for key in ("contract_id", "contract_title", "contract_code", "supplier_name", "value_cents"):
+            self.assertNotIn(key, data["jobs"][0])
         status, payload, _ = self.upload(contract_id, b"%PDF-1.7\nprivate")
         self.assertEqual(status, 201, payload)
         document_id = json.loads(payload)["id"]

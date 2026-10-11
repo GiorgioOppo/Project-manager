@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "db.h"
+#include "access_control.h"
 #include "../auth/oidc.h"
 
 #include "workspace.h"
@@ -24,6 +25,8 @@ void accounts_close(void);
 int accounts_authenticate(const char *email, const char *password, Account *out);
 /* Active account: 1; missing/inactive: 0; database or row error: -1. */
 int accounts_lookup(DbInt id, Account *out);
+/* Resolve live functional permissions on the account database connection. */
+int accounts_access_policy(DbInt id, AccessPolicy *out);
 /* Only for a trusted, explicitly configured external identity binding. */
 int accounts_lookup_email(const char *email, Account *out);
 /* Verified provider identity: 1 resolved, 0 identity/email conflict, -1 failure.
