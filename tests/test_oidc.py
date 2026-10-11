@@ -222,6 +222,41 @@ class OIDCProtocolTests(unittest.TestCase):
             self.assertEqual(sent["client_secret"], [self.provider.secret])
             self.assertRegex(sent["code_verifier"][0], r"\A[A-Za-z0-9_-]{43}\Z")
 
+    def test_logout_uses_public_issuer_and_fixed_callback_origin_without_tokens(self):
+        for redirect, expected in (
+            ("https://app.example/auth/callback", "https://app.example/"),
+            ("https://app.example:9443/auth/callback", "https://app.example:9443/"),
+            ("http://[::1]:8080/auth/callback", "http://[::1]:8080/"),
+        ):
+            with self.subTest(redirect=redirect), self.driver({
+                "OIDC_ISSUER_URL": "https://auth.example/realms/punto",
+                "OIDC_BACKCHANNEL_URL": "http://keycloak:8080/realms/punto",
+                "OIDC_REDIRECT_URI": redirect,
+                "OIDC_CLIENT_ID": "punto.app-1",
+            }) as driver:
+                result = driver.command("logout", redirect_uri="https://attacker.example/",
+                                        client_id="another-client")
+                self.assertEqual(result["status"], 200)
+                url = urlsplit(result["location"])
+                self.assertEqual((url.scheme, url.netloc, url.path),
+                                 ("https", "auth.example", "/realms/punto/protocol/openid-connect/logout"))
+                self.assertEqual(parse_qs(url.query), {
+                    "client_id": ["punto.app-1"], "post_logout_redirect_uri": [expected],
+                })
+                self.assertNotIn(self.provider.secret, result["location"])
+                self.assertNotIn("keycloak:8080", result["location"])
+                self.assertNotIn("attacker.example", result["location"])
+
+    def test_logout_is_available_after_failed_login_but_disabled_in_local_mode(self):
+        with self.driver() as driver:
+            location, cookie = self.start(driver)
+            query = urlencode({"state": parse_qs(urlsplit(location).query)["state"][0],
+                               "error": "access_denied"})
+            self.assertEqual(driver.command("callback", query=query, cookie=cookie)["status"], 401)
+            self.assertEqual(driver.command("logout")["status"], 200)
+        with self.driver(environment={}) as driver:
+            self.assertEqual(driver.command("logout"), {"location": "", "status": 404})
+
     def test_unknown_subject_is_denied_even_with_matching_email_or_administrator_claim(self):
         with self.driver() as driver:
             location, cookie = self.start(driver)

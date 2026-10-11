@@ -50,6 +50,10 @@ int main(void) {
                 status = oidc_start(location, cookie);
                 json_object_object_add(response, "location", json_object_new_string(location));
                 json_object_object_add(response, "cookie", json_object_new_string(cookie));
+            } else if (op && !strcmp(op, "logout")) {
+                char location[8192];
+                status = oidc_logout(location);
+                json_object_object_add(response, "location", json_object_new_string(location));
             } else if (op && !strcmp(op, "management")) {
                 struct json_object *email = NULL;
                 json_object_object_get_ex(command, "email", &email);

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f6f2">
+    <meta name="referrer" content="no-referrer">
+    <title data-i18n>Accesso aziendale non riuscito · punto</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/i18n.css">
+    <link rel="stylesheet" href="/auth-error.css">
+    <script src="/i18n.js" defer></script>
+    <script src="/auth-error.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell auth-error-shell">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="punto, pagina di accesso" data-i18n-attrs="aria-label">
+          <svg class="brand-mark" width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="1" y="1" width="11" height="11" rx="3.5" fill="currentColor"/><rect x="17" y="1" width="11" height="11" rx="3.5" fill="currentColor"/><rect x="1" y="17" width="11" height="11" rx="3.5" fill="currentColor"/><circle cx="22.5" cy="22.5" r="5.5" fill="#ee654b"/></svg>
+          <span>punto<span class="brand-period">.</span></span>
+        </a>
+        <label class="language-control" for="language-select"><span id="language-label" data-i18n>Lingua</span><select id="language-select" name="language" aria-label="Lingua" data-i18n-attrs="aria-label"><option value="it">Italiano</option><option value="en">English</option><option value="zh">简体中文</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option></select></label>
+      </header>
+      <main class="auth-error-main">
+        <section class="auth-error-card" aria-labelledby="auth-error-title" aria-describedby="auth-error-description">
+          <div class="auth-error-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 7v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></svg></div>
+          <h1 id="auth-error-title" data-i18n>Accesso aziendale non riuscito</h1>
+          <p id="auth-error-description" data-i18n>La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.</p>
+          <p data-i18n>Esci dall’account aziendale per scegliere un altro account, poi riprova.</p>
+          <div class="auth-error-logout">
+            <button id="sso-error-logout" class="primary-button" type="button" disabled><span data-i18n>Esci dall’account aziendale</span></button>
+            <p id="sso-error-status" class="auth-error-status" role="status" aria-live="polite" hidden></p>
+            <noscript><p data-i18n>Abilita JavaScript per uscire dall’account aziendale.</p></noscript>
+          </div>
+          <a id="auth-error-back" class="auth-error-back" href="/" data-i18n>Torna alla pagina di accesso</a>
+          <p class="auth-error-help" data-i18n>Se il problema continua, contatta l’amministratore.</p>
+        </section>
+      </main>
+      <footer class="site-footer"><span>© <span id="current-year">2026</span> punto</span><span data-i18n>Fatto per lavorare meglio, insieme.<span class="footer-dot"></span></span></footer>
+    </div>
+  </body>
+</html>

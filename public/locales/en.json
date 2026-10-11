@@ -2675,5 +2675,15 @@
   "Tutta la squadra": "Whole team",
   "Tutti gli account attivi: lavoro assegnato e ore personali.": "All active accounts: assigned work and personal hours.",
   "Vista Finance: costi aggregati per commessa, senza il dettaglio delle ore delle altre persone.": "Finance view: costs aggregated by project, without other people's time entry details.",
-  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "Team view: your hours and those of people in your organizational groups, including subgroups."
+  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "Team view: your hours and those of people in your organizational groups, including subgroups.",
+  "Abilita JavaScript per uscire dall’account aziendale.": "Enable JavaScript to sign out of your company account.",
+  "Accesso aziendale non riuscito": "Company sign-in failed",
+  "Accesso aziendale non riuscito · punto": "Company sign-in failed · punto",
+  "Esci dall’account aziendale": "Sign out of company account",
+  "Esci dall’account aziendale per scegliere un altro account, poi riprova.": "Sign out of your company account to choose another account, then try again.",
+  "Impossibile uscire dall’account. Riprova.": "Unable to sign out. Try again.",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "Your session may have expired, or your account may not have access to Punto.",
+  "Se il problema continua, contatta l’amministratore.": "If the problem continues, contact your administrator.",
+  "Torna alla pagina di accesso": "Return to sign-in",
+  "Uscita dall’account…": "Signing out…"
 }

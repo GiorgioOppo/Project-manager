@@ -2675,5 +2675,15 @@
   "Tutta la squadra": "整个团队",
   "Tutti gli account attivi: lavoro assegnato e ore personali.": "所有活跃账户：已分配的工作和个人工时。",
   "Vista Finance: costi aggregati per commessa, senza il dettaglio delle ore delle altre persone.": "财务视图：按项目汇总的成本，不包含其他人员的工时记录明细。",
-  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "团队视图：您自己及所属组织组（包括子组）中人员的工时。"
+  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "团队视图：您自己及所属组织组（包括子组）中人员的工时。",
+  "Abilita JavaScript per uscire dall’account aziendale.": "请启用 JavaScript 以退出企业账户。",
+  "Accesso aziendale non riuscito": "企业账户登录失败",
+  "Accesso aziendale non riuscito · punto": "企业账户登录失败 · punto",
+  "Esci dall’account aziendale": "退出企业账户",
+  "Esci dall’account aziendale per scegliere un altro account, poi riprova.": "请退出企业账户，选择其他账户后重试。",
+  "Impossibile uscire dall’account. Riprova.": "无法退出账户。请重试。",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "会话可能已过期，或你的账户可能没有访问 Punto 的权限。",
+  "Se il problema continua, contatta l’amministratore.": "如果问题仍然存在，请联系管理员。",
+  "Torna alla pagina di accesso": "返回登录页面",
+  "Uscita dall’account…": "正在退出账户…"
 }

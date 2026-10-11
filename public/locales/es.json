@@ -2675,5 +2675,15 @@
   "Tutta la squadra": "Todo el equipo",
   "Tutti gli account attivi: lavoro assegnato e ore personali.": "Todas las cuentas activas: trabajo asignado y horas personales.",
   "Vista Finance: costi aggregati per commessa, senza il dettaglio delle ore delle altre persone.": "Vista Finanzas: costes agregados por proyecto, sin el detalle de las horas de otras personas.",
-  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "Vista del equipo: tus horas y las de las personas de tus grupos organizativos, incluidos los subgrupos."
+  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "Vista del equipo: tus horas y las de las personas de tus grupos organizativos, incluidos los subgrupos.",
+  "Abilita JavaScript per uscire dall’account aziendale.": "Activa JavaScript para salir de tu cuenta empresarial.",
+  "Accesso aziendale non riuscito": "Error de acceso empresarial",
+  "Accesso aziendale non riuscito · punto": "Error de acceso empresarial · punto",
+  "Esci dall’account aziendale": "Salir de la cuenta empresarial",
+  "Esci dall’account aziendale per scegliere un altro account, poi riprova.": "Cierra la sesión de tu cuenta empresarial para elegir otra cuenta y vuelve a intentarlo.",
+  "Impossibile uscire dall’account. Riprova.": "No se ha podido cerrar la sesión. Vuelve a intentarlo.",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "Es posible que la sesión haya caducado o que tu cuenta no tenga acceso a Punto.",
+  "Se il problema continua, contatta l’amministratore.": "Si el problema persiste, contacta con el administrador.",
+  "Torna alla pagina di accesso": "Volver a la página de acceso",
+  "Uscita dall’account…": "Cerrando sesión…"
 }

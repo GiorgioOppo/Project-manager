@@ -726,6 +726,9 @@ static void login(int fd, Request *request) {
     json(fd, 200, "{\"ok\":true}", cookie);
 }
 
+static void serve_file_response(int fd, const char *name, const char *mime,
+                               bool head, int status, const char *extra);
+
 static void sso_login(int fd, const Request *request) {
     char location[8192], cookie[512], headers[9216];
     /* A host-only transaction cookie must be issued on the callback origin.
@@ -739,7 +742,11 @@ static void sso_login(int fd, const Request *request) {
         return;
     }
     int status = oidc_start(location, cookie);
-    if (status != 200) { error_response(fd, status); return; }
+    if (status != 200) {
+        serve_file_response(fd, "auth-error.html", "text/html; charset=utf-8",
+                            false, status, oidc_clear_cookie());
+        return;
+    }
     int n = snprintf(headers, sizeof(headers), "Location: %s\r\n%s", location, cookie);
     if (n < 0 || (size_t)n >= sizeof(headers)) { error_response(fd, 500); return; }
     respond(fd, 303, "text/plain; charset=utf-8", "", 0, headers, false);
@@ -767,12 +774,14 @@ static void sso_callback(int fd, Request *request, const char *query) {
         }
     }
     if (status != 200) {
-        json(fd, status, "{\"ok\":false,\"error\":\"Accesso aziendale non riuscito. Torna alla pagina di accesso e riprova; verifica che il tuo account sia collegato e attivo.\"}", oidc_clear_cookie());
+        serve_file_response(fd, "auth-error.html", "text/html; charset=utf-8",
+                            false, status, oidc_clear_cookie());
         return;
     }
     Session *session = new_session(lifetime, account.id);
     if (!session) {
-        json(fd, 500, "{\"ok\":false,\"error\":\"Impossibile creare la sessione.\"}", oidc_clear_cookie());
+        serve_file_response(fd, "auth-error.html", "text/html; charset=utf-8",
+                            false, 500, oidc_clear_cookie());
         return;
     }
     /* Rotate only after successful authentication, preserving an existing
@@ -786,7 +795,8 @@ static void sso_callback(int fd, Request *request, const char *query) {
     respond(fd, 303, "text/plain; charset=utf-8", "", 0, headers, false);
 }
 
-static void serve_file(int fd, const char *name, const char *mime, bool head) {
+static void serve_file_response(int fd, const char *name, const char *mime,
+                               bool head, int status, const char *extra) {
     char filename[4096];
     int length = snprintf(filename, sizeof(filename), "%s/%s", public_dir, name);
     if (length < 0 || (size_t)length >= sizeof(filename)) { error_response_head(fd, 500, head); return; }
@@ -802,9 +812,13 @@ static void serve_file(int fd, const char *name, const char *mime, bool head) {
     size_t read_size = fread(data, 1, (size_t)file_size, file);
     fclose(file);
     if (read_size == (size_t)file_size)
-        respond(fd, 200, mime, data, read_size, NULL, head);
+        respond(fd, status, mime, data, read_size, extra, head);
     else error_response_head(fd, 500, head);
     free(data);
+}
+
+static void serve_file(int fd, const char *name, const char *mime, bool head) {
+    serve_file_response(fd, name, mime, head, 200, NULL);
 }
 
 /* Output needs at most six bytes per input byte, plus the terminating NUL. */
@@ -1557,6 +1571,37 @@ static void route(int fd, Request *request) {
             json(fd, 200, body, NULL); return;
         }
     }
+    if (strcmp(target, "/auth/error") == 0) {
+        if (!get && !head) { error_response_head(fd, 405, head); return; }
+        if (!oidc_enabled()) { error_response_head(fd, 404, head); return; }
+        if (query && *query && strcmp(query, "lang=it") && strcmp(query, "lang=en") &&
+            strcmp(query, "lang=zh") && strcmp(query, "lang=es") &&
+            strcmp(query, "lang=fr") && strcmp(query, "lang=de")) {
+            error_response_head(fd, 400, head); return;
+        }
+        serve_file(fd, "auth-error.html", "text/html; charset=utf-8", head); return;
+    }
+    if (strcmp(target, "/auth/logout") == 0) {
+        if (!post) { error_response_head(fd, 405, head); return; }
+        if (!oidc_enabled()) { error_response(fd, 404); return; }
+        if (!request->origin[0] || !same_origin(request)) { error_response(fd, 403); return; }
+        if ((query && *query) || *request->body) { error_response(fd, 400); return; }
+        char location[8192];
+        int status = oidc_logout(location);
+        if (status != 200) { error_response(fd, status); return; }
+        size_t capacity = 6 * strlen(location) + 64;
+        char *escaped = malloc(capacity), *body = malloc(capacity);
+        if (!escaped || !body) { free(escaped); free(body); error_response(fd, 500); return; }
+        escape_json(escaped, location);
+        snprintf(body, capacity, "{\"ok\":true,\"logout_url\":\"%s\"}", escaped);
+        Session *session = find_session(request->cookie);
+        if (session) revoke_session(session);
+        char headers[1024];
+        snprintf(headers, sizeof(headers), "%sSet-Cookie: punto_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0%s\r\n",
+                 oidc_clear_cookie(), secure_request(request) ? "; Secure" : "");
+        json(fd, 200, body, headers);
+        free(escaped); free(body); return;
+    }
     if (strcmp(target, "/auth/login") == 0 || strcmp(target, "/auth/callback") == 0) {
         if (!get) { error_response_head(fd, 405, head); return; }
         if (!oidc_enabled()) { error_response(fd, 404); return; }
@@ -1596,6 +1641,8 @@ static void route(int fd, Request *request) {
         {"/index.html", "index.html", "text/html; charset=utf-8"},
         {"/styles.css", "styles.css", "text/css; charset=utf-8"},
         {"/login.js", "login.js", "text/javascript; charset=utf-8"},
+        {"/auth-error.js", "auth-error.js", "text/javascript; charset=utf-8"},
+        {"/auth-error.css", "auth-error.css", "text/css; charset=utf-8"},
         {"/i18n.js", "i18n.js", "text/javascript; charset=utf-8"},
         {"/i18n.css", "i18n.css", "text/css; charset=utf-8"},
         {"/locales/en.json", "locales/en.json", "application/json; charset=utf-8"},

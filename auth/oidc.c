@@ -653,6 +653,31 @@ static char *make_form(CURL *curl, const char *const names[], const char *const 
     return result;
 }
 
+int oidc_logout(char location[8192]) {
+    if (!location) return 400;
+    location[0] = '\0';
+    if (!oidc_enabled()) return 404;
+    /* validate_url requires this exact callback path. Derive the return URL
+       from that configured origin, never a request parameter or Host header. */
+    const size_t callback_length = sizeof("/auth/callback") - 1;
+    size_t origin_length = strlen(config.redirect) - callback_length;
+    char return_uri[URL_SIZE];
+    int length = snprintf(return_uri, sizeof(return_uri), "%.*s/",
+                          (int)origin_length, config.redirect);
+    if (length < 0 || (size_t)length >= sizeof(return_uri)) return 503;
+    CURL *curl = curl_easy_init();
+    if (!curl) return 503;
+    const char *names[] = {"client_id", "post_logout_redirect_uri"};
+    const char *values[] = {config.client, return_uri};
+    char *form = make_form(curl, names, values, sizeof(names) / sizeof(names[0]));
+    curl_easy_cleanup(curl);
+    if (!form) return 503;
+    length = snprintf(location, 8192, "%s/protocol/openid-connect/logout?%s", config.issuer, form);
+    free(form);
+    if (length < 0 || length >= 8192) { location[0] = '\0'; return 503; }
+    return 200;
+}
+
 int oidc_start(char location[8192], char cookie[512]) {
     if (!location || !cookie) return 400;
     location[0] = cookie[0] = '\0';

@@ -2675,5 +2675,15 @@
   "Tutta la squadra": "Toute l’équipe",
   "Tutti gli account attivi: lavoro assegnato e ore personali.": "Tous les comptes actifs : travail attribué et heures personnelles.",
   "Vista Finance: costi aggregati per commessa, senza il dettaglio delle ore delle altre persone.": "Vue Finance : coûts agrégés par projet, sans le détail des heures des autres personnes.",
-  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "Vue d’équipe : vos heures et celles des membres de vos groupes organisationnels, y compris les sous-groupes."
+  "Vista della squadra: le tue ore e quelle delle persone nei tuoi gruppi organizzativi, inclusi i sottogruppi.": "Vue d’équipe : vos heures et celles des membres de vos groupes organisationnels, y compris les sous-groupes.",
+  "Abilita JavaScript per uscire dall’account aziendale.": "Activez JavaScript pour vous déconnecter de votre compte professionnel.",
+  "Accesso aziendale non riuscito": "Échec de la connexion professionnelle",
+  "Accesso aziendale non riuscito · punto": "Échec de la connexion professionnelle · punto",
+  "Esci dall’account aziendale": "Déconnecter le compte professionnel",
+  "Esci dall’account aziendale per scegliere un altro account, poi riprova.": "Déconnectez-vous de votre compte professionnel pour choisir un autre compte, puis réessayez.",
+  "Impossibile uscire dall’account. Riprova.": "Impossible de vous déconnecter. Réessayez.",
+  "La sessione potrebbe essere scaduta oppure il tuo account potrebbe non essere abilitato a Punto.": "Votre session a peut-être expiré ou votre compte n’a peut-être pas accès à Punto.",
+  "Se il problema continua, contatta l’amministratore.": "Si le problème persiste, contactez votre administrateur.",
+  "Torna alla pagina di accesso": "Revenir à la page de connexion",
+  "Uscita dall’account…": "Déconnexion en cours…"
 }

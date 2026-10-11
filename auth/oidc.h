@@ -39,6 +39,12 @@ int oidc_callback_identity(const char *query, const char *cookie, OidcIdentity *
    module. The caller redirects only on success. */
 int oidc_start(char location[8192], char cookie[512]);
 
+/* Construct the provider's browser logout URL from immutable configuration.
+   No login or ID token is required: the provider may ask the user to confirm.
+   The fixed post-logout destination is the configured callback origin's root.
+   The caller must authorize the request and clear its own application session. */
+int oidc_logout(char location[8192]);
+
 /* Consume a browser-bound, encrypted-cookie transaction after verifying its ID
    token and resolve its subject through OIDC_BINDINGS_FILE. Return 200 with a canonical
    local email and bounded session lifetime, or an HTTP error status. The caller

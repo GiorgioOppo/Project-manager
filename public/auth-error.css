@@ -1,0 +1,107 @@
+.auth-error-shell {
+  max-width: 1180px;
+}
+
+.auth-error-main {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  padding: 36px 0 64px;
+}
+
+.auth-error-card {
+  width: min(100%, 560px);
+  padding: 40px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--paper);
+  box-shadow: 0 12px 38px #282c2606;
+}
+
+.auth-error-icon {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  color: #b84b35;
+  background: #fff0eb;
+  border-radius: 15px;
+}
+
+.auth-error-card h1 {
+  margin: 25px 0 18px;
+  font-size: clamp(26px, 4vw, 34px);
+  line-height: 1.2;
+  letter-spacing: -1px;
+  overflow-wrap: anywhere;
+}
+
+.auth-error-card p {
+  margin: 0 0 16px;
+  color: #62685d;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.auth-error-logout {
+  margin: 28px 0 18px;
+}
+
+.auth-error-logout .primary-button {
+  height: auto;
+  min-height: 48px;
+  padding: 14px 18px;
+  line-height: 1.4;
+  white-space: normal;
+  background: #c34d36;
+}
+
+.auth-error-logout .primary-button:hover {
+  background: #b84b35;
+}
+
+.auth-error-card .auth-error-status {
+  margin: 14px 0 0;
+  color: var(--error);
+}
+
+.auth-error-logout noscript p {
+  margin: 14px 0 0;
+}
+
+.auth-error-back {
+  display: block;
+  width: fit-content;
+  margin: 0 auto;
+  padding: 8px 0;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  line-height: 1.5;
+}
+
+.auth-error-back:hover {
+  color: var(--accent-dark);
+}
+
+.auth-error-card .auth-error-help {
+  margin: 24px 0 0;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+@media (max-width: 540px) {
+  .auth-error-shell {
+    padding: 0 20px;
+  }
+
+  .auth-error-main {
+    padding: 24px 0 40px;
+  }
+
+  .auth-error-card {
+    padding: 28px 24px;
+  }
+}
